@@ -22,13 +22,6 @@ says "done," Tycho turns some ✅s into `FAILED` / `STALE` / `INDETERMINATE` wit
 *inside* the distro — launch your agent from the WSL shell — rather than driving `wsl.exe` from a
 Windows-hosted agent, so Tycho's Stop hook and the commands it verifies share one environment.
 
-**Codex on Windows is verify-only.** Codex's own hook execution is broken on Windows — it fires
-the Stop hook but doesn't reliably deliver the payload (and can hang the turn), a defect upstream
-in Codex that Tycho can't work around. So on Windows the *automatic* Stop-hook verdict doesn't
-fire for Codex; run `tycho verify --harness codex` manually instead. Discovery, the reader, and
-the `~/.codex` data root all work. Tracked in `docs/harness-support.md` and re-enabled once Codex
-ships a fix. (Claude Code, Cursor, and OpenCode are unaffected; other-platform Codex is untested.)
-
 ## Install
 
 Fastest — the standalone binary, no Python needed:
@@ -79,21 +72,20 @@ tycho init              # install the completion hook into the harnesses you act
 tycho init --yes        # skip the prompts (scripts and CI)
 ```
 
-Tycho only touches harnesses it finds — Claude Code, Cursor, Codex, or OpenCode — and only inside this
-repo. It merges with hooks you already have, backs up anything it changes, and refuses to touch a config
-it can't parse rather than risk it.
+Tycho only touches Claude Code, and only inside this repo. It merges with hooks you already have, backs
+up anything it changes, and refuses to touch a config it can't parse rather than risk it. (Cursor, Codex,
+and OpenCode support is in development.)
 
-On Claude Code it also adds a status-bar badge and a set of `/tycho` slash commands, so you can see it's
-on and drive it without leaving the session — see [In Claude Code](#in-claude-code) below. On the other
-three harnesses, `tycho statusline` prints that same badge for a shell prompt or tmux status line — see
-[The badge in any shell](#the-badge-in-any-shell).
+It also adds a status-bar badge and a set of `/tycho` slash commands, so you can see it's on and drive it
+without leaving the session — see [In Claude Code](#in-claude-code) below. `tycho statusline` also prints
+that badge for a shell prompt or tmux status line — see [The badge in any shell](#the-badge-in-any-shell).
 
 That's it. The next time an agent finishes a turn, Tycho verifies it automatically and prints the
 verdict. To run it by hand:
 
 ```sh
 tycho verify                     # auto-discovers the most-recently-used session and verifies it
-tycho verify --harness cursor    # force a harness (default: whichever ran most recently)
+tycho verify --harness claude    # force a harness (default: whichever ran most recently)
 tycho verify --session <path>    # verify a specific transcript
 tycho verify --claim "added rate limiting, tests pass"   # echo the claim above the verdict
 tycho help                       # what Tycho is, whether it's live here, and every command
@@ -224,7 +216,7 @@ everywhere for a session.
 
 ## Let the agent see its own verdict — the relay
 
-By default Tycho's verdict on Claude Code and Codex is **human-only**: it renders to your terminal and never enters
+By default Tycho's verdict on Claude Code is **human-only**: it renders to your terminal and never enters
 the model's context, so the agent can't see when its own turn came back `FAILED` or `STALE`. That's the
 safe default — **Tycho free never spends your context or tokens unless you ask it to.**
 
@@ -242,8 +234,7 @@ tycho relay --off      # back to human-only (the default)
 
 In Claude Code the same three are `/tycho-relay`, `/tycho-relay-on`, and `/tycho-relay-off`; bare
 `/tycho-relay` shows the current status and how to toggle. The setting is a hand-editable, per-repo key in
-`.tycho.toml` (`[relay] enabled`). It works on Claude Code and Codex on macOS/Linux; Codex hooks
-remain broken upstream on Windows.
+`.tycho.toml` (`[relay] enabled`). It works on Claude Code today; other harnesses are in development.
 
 **Agent override.** Off by default, and it requires the relay to be on — an override only exists
 to break a relay loop, so there's nothing for it to do while the agent never sees its verdict.
@@ -285,10 +276,8 @@ the cheapest, quietest default; turn it on when you'd rather the agent fix a bad
 
 ## The badge in any shell
 
-Only the *wiring* is Claude-only. `statusLine` is the one harness setting that means "run this command and
-render its stdout", so `tycho init` has nowhere to hang the badge on Cursor, Codex, or OpenCode. The badge
-itself doesn't care: `tycho statusline` reads `.tycho/` off disk and prints one line, whichever agent wrote the
-state. Call it from anything that renders a command:
+The badge isn't tied to the editor: `tycho statusline` reads `.tycho/` off disk and prints one line,
+whichever agent wrote the state. Call it from anything that renders a command:
 
 ```sh
 PS1='$(tycho statusline) '$PS1                                        # bash / zsh prompt
@@ -322,8 +311,8 @@ too, warning on stderr if the hook is broken. See [`docs/hooks.md`](docs/hooks.m
 ## Uninstall
 
 ```sh
-tycho uninstall                  # remove Tycho's hooks from every harness
-tycho uninstall --harness codex  # just one
+tycho uninstall                  # remove Tycho's hooks
+tycho uninstall --harness claude # just one
 tycho uninstall --purge          # hooks, plus this repo's .tycho/ state and .tycho.toml config
 ```
 
@@ -374,14 +363,13 @@ now, read `tool_call_provenance` as a hint, and confirm from the transcript when
 ## How it works
 
 The engine is pure and harness-agnostic: `gather → check → verdict` over an immutable snapshot, all I/O
-at the edges. The four harnesses differ only in transcript format, repo field, and output channel —
-isolated in one adapter. See [`docs/hooks.md`](docs/hooks.md) for the multi-harness design.
+at the edges. Harness-specific differences (transcript format, repo field, output channel) are isolated
+in one adapter, so more harnesses can be added without touching the engine. See
+[`docs/hooks.md`](docs/hooks.md) for the design.
 
-Tycho looks for each agent's sessions under the usual `~/.claude`, `~/.cursor`, `~/.codex`, and
-`~/.local/share/opencode`. If yours live elsewhere, set `TYCHO_CLAUDE_HOME`, `TYCHO_CURSOR_HOME`,
-`TYCHO_CODEX_HOME`, or `TYCHO_OPENCODE_HOME` to the directory that holds them — each agent's own
-variable (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `XDG_DATA_HOME`) is honored too. See
-[`docs/hooks.md`](docs/hooks.md#overriding-where-an-agents-data-lives).
+Tycho looks for Claude Code's sessions under the usual `~/.claude`. If yours live elsewhere, set
+`TYCHO_CLAUDE_HOME` to the directory that holds them — Claude's own `CLAUDE_CONFIG_DIR` is honored too.
+See [`docs/hooks.md`](docs/hooks.md#overriding-where-an-agents-data-lives).
 
 Tycho's own machine-level state — just the all-time tally behind `tycho count` — lives under
 `~/.local/share/tycho`; set `TYCHO_HOME` (or `XDG_DATA_HOME`) to move it. Everything else Tycho
