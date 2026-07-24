@@ -1,4 +1,22 @@
+<div align="center">
+
+<img src="docs/swail-logo-rounded.png" alt="Swail" width="96">
+
 # Tycho
+
+**by [Swail](https://swail.dev)**
+
+The local verifier that proves your AI coding agent actually did what it claims.
+
+[![CI](https://github.com/swail-labs/tycho/actions/workflows/ci.yml/badge.svg)](https://github.com/swail-labs/tycho/actions)
+[![PyPI](https://img.shields.io/pypi/v/tycho-cli)](https://pypi.org/project/tycho-cli/)
+[![Python](https://img.shields.io/badge/python-%E2%89%A5%203.11-blue)](https://www.python.org/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
+[![Deps](https://img.shields.io/badge/deps-stdlib%20only-orange)](pyproject.toml)
+
+</div>
+
+---
 
 A free, offline, open-source **local verifier** that proves an AI coding agent actually did what it
 claims — from git, the filesystem, process exit codes, and the harness event stream. When an agent
