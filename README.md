@@ -34,7 +34,7 @@ ships a fix. (Claude Code, Cursor, and OpenCode are unaffected; other-platform C
 Fastest — the standalone binary, no Python needed:
 
 ```sh
-curl -fsSL https://swail.dev/install.sh | sh
+curl -fsSL https://swail.dev/tycho/install.sh | sh
 ```
 
 It downloads the binary for your platform, verifies it against the release checksums, and drops
