@@ -1,0 +1,252 @@
+# Release for Tycho (TYCHO-10). Tag `vX.Y.Z` → build sdist+wheel, smoke-test the artifact,
+# publish to PyPI. Scaffold: it does nothing until you (a) push a version tag and (b) set up
+# publishing on PyPI (see the `publish` job). Nothing here is triggered automatically.
+#
+# The tag must match tycho/__init__.py:__version__ (Hatchling reads it). The build job asserts
+# that, so a mistagged release fails loudly instead of shipping the wrong number.
+#
+# Not piped, deliberately — a piped runner discards its exit code (TYCHO-31). Keep it that way.
+#
+# The `binaries` job (TYCHO-69) freezes a standalone one-file binary per target and asserts
+# `tycho --version`. It then SIGNS each binary when the signing secrets exist (TYCHO-103) —
+# the signing steps are guarded (`if: env.<secret> != ''`) so they no-op cleanly until you
+# load the certs; nothing here fails when they're absent. The `release` job (TYCHO-104) tars
+# each binary, writes SHA256SUMS, and attaches them to the GitHub Release. Binaries ship
+# checksummed-but-unsigned until the certs land, then signed automatically. See the signing
+# secrets documented on the `binaries` job env block. Ref: docs/bundler-spike.md.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    name: build + smoke-test the artifact
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"  # build on the floor from requires-python
+
+      - name: Tag matches the package version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(python -c 'import tycho; print(tycho.__version__)')"
+          test "$tag" = "$pkg" || { echo "tag $tag != package $pkg"; exit 1; }
+
+      - name: Build sdist + wheel
+        run: |
+          python -m pip install build
+          python -m build  # -> dist/*.tar.gz, dist/*.whl
+
+      - name: Smoke-test the built wheel
+        run: |
+          python -m venv /tmp/smoke
+          # Install by the *distribution* name (tycho-cli); the console script it drops is `tycho`.
+          /tmp/smoke/bin/pip install --no-index --find-links dist tycho-cli
+          got="$(/tmp/smoke/bin/tycho --version)"
+          test "$got" = "tycho ${GITHUB_REF_NAME#v}" || { echo "smoke: got '$got'"; exit 1; }
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+
+  binaries:
+    name: standalone binary — ${{ matrix.target }}
+    # Freeze a one-file binary per target with PyInstaller and assert `tycho --version` (TYCHO-69).
+    # Build-only: no signing/notarization, no release upload — those need operator secrets.
+    #
+    # PyInstaller can't cross-compile — it freezes for the arch of the Python running it — so each
+    # target picks its Python arch (`py-arch`) on a runner that can run it. The Intel macOS binary
+    # (macos-x86_64) is NOT built on a `macos-13` Intel runner: that runner class is capacity-starved
+    # and the job queues until it times out. Instead we build it on the plentiful `macos-14` Apple
+    # Silicon runner under **Rosetta** — `setup-python` fetches an x86_64 CPython, which runs
+    # translated, and PyInstaller inside it freezes an x86_64 Mach-O. Same Intel artifact, available
+    # runner (TYCHO-104 follow-up).
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: macos-arm64, runs-on: macos-14, py-arch: arm64 }
+          - { target: macos-x86_64, runs-on: macos-14, py-arch: x64 }   # Rosetta cross-build
+          - { target: linux-x86_64, runs-on: ubuntu-latest, py-arch: x64 }
+          - { target: windows-x86_64, runs-on: windows-latest, py-arch: x64 }
+    runs-on: ${{ matrix.runs-on }}
+    timeout-minutes: 20  # a freeze + smoke is a few minutes; fail fast instead of hanging
+    # Signing secrets (TYCHO-103). All optional: a missing secret skips its signing step, so the
+    # job still produces a working (unsigned) binary. Load them under Settings → Secrets → Actions.
+    #   macOS  — MACOS_CERT_P12: base64 of the "Developer ID Application" .p12 cert
+    #            MACOS_CERT_PASSWORD: the .p12 export password
+    #            MACOS_SIGN_IDENTITY: e.g. "Developer ID Application: Swail Labs (TEAMID)"
+    #            MACOS_NOTARY_APPLE_ID / MACOS_NOTARY_TEAM_ID / MACOS_NOTARY_PASSWORD (app-specific pw)
+    #   Windows — WINDOWS_CERT_PFX: base64 of the Authenticode .pfx; WINDOWS_CERT_PASSWORD: its password
+    env:
+      MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+      MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+      MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+      MACOS_NOTARY_APPLE_ID: ${{ secrets.MACOS_NOTARY_APPLE_ID }}
+      MACOS_NOTARY_TEAM_ID: ${{ secrets.MACOS_NOTARY_TEAM_ID }}
+      MACOS_NOTARY_PASSWORD: ${{ secrets.MACOS_NOTARY_PASSWORD }}
+      WINDOWS_CERT_PFX: ${{ secrets.WINDOWS_CERT_PFX }}
+      WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"  # build on the floor from requires-python
+          architecture: ${{ matrix.py-arch }}  # x64 on macos-14 => Rosetta build of the Intel binary
+
+      - name: Freeze a one-file binary
+        run: |
+          python -m pip install pyinstaller .
+          pyinstaller --onefile --clean --noconfirm --name tycho --console --collect-submodules tycho tycho/__main__.py
+
+      - name: Sign + notarize (macOS)
+        # Guarded: only macOS targets, only when the cert secret is present.
+        if: startsWith(matrix.target, 'macos') && env.MACOS_CERT_P12 != ''
+        run: |
+          set -euo pipefail
+          # Import the Developer ID cert into a throwaway keychain scoped to this run.
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          security create-keychain -p "" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "" "$KEYCHAIN"
+          echo "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -k "" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          # Hardened runtime + secure timestamp — both required for notarization to pass.
+          codesign --force --options runtime --timestamp --sign "$MACOS_SIGN_IDENTITY" dist/tycho
+          codesign --verify --strict --verbose=2 dist/tycho
+          # Notarize. A bare Mach-O executable can't be stapled (stapling needs .app/.pkg/.dmg);
+          # notarization still registers the binary hash so Gatekeeper clears it on first run via
+          # its online check. If offline first-run trust is ever needed, ship a signed .pkg instead.
+          ditto -c -k dist/tycho "$RUNNER_TEMP/tycho.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/tycho.zip" \
+            --apple-id "$MACOS_NOTARY_APPLE_ID" --team-id "$MACOS_NOTARY_TEAM_ID" \
+            --password "$MACOS_NOTARY_PASSWORD" --wait
+
+      - name: Sign (Windows Authenticode)
+        if: matrix.target == 'windows-x86_64' && env.WINDOWS_CERT_PFX != ''
+        shell: pwsh
+        run: |
+          $pfx = "$env:RUNNER_TEMP\cert.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERT_PFX))
+          $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" | Select-Object -Last 1
+          & $signtool.FullName sign /f $pfx /p $env:WINDOWS_CERT_PASSWORD /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 dist\tycho.exe
+          & $signtool.FullName verify /pa dist\tycho.exe
+
+      - name: Smoke-test the binary (tycho --version)
+        shell: bash  # bash is present on the Windows runner; keeps the assert one shell
+        run: |
+          bin="dist/tycho"; [ -f "dist/tycho.exe" ] && bin="dist/tycho.exe"
+          got="$("$bin" --version)"
+          test "$got" = "tycho ${GITHUB_REF_NAME#v}" || { echo "smoke: got '$got'"; exit 1; }
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: tycho-${{ matrix.target }}
+          path: dist/tycho*
+
+  release:
+    name: attach binaries to the GitHub Release
+    # TYCHO-104: tar each frozen binary, write SHA256SUMS, attach to the Release for this tag.
+    # Runs after build+binaries so a failed wheel or a failed freeze blocks the asset upload.
+    #
+    # Public releases only: the `0.0.x` line is pre-public alphas (see TYCHO-107) — they publish to
+    # PyPI but must NOT create a GitHub Release with downloadable binaries. Assets attach from the
+    # first public tag (`v0.1.0`) onward. Bump the guard if the alpha series ever leaves `0.0.`.
+    if: ${{ !startsWith(github.ref_name, 'v0.0.') }}
+    needs: [build, binaries]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # create/edit the GitHub Release and upload assets
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: tycho-*   # each artifact -> artifacts/tycho-<target>/tycho[.exe] (merge-multiple stays false)
+          path: artifacts
+
+      - name: Package tarballs + SHA256SUMS
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          for d in artifacts/tycho-*; do
+            name="$(basename "$d")"                 # tycho-<target>
+            chmod +x "$d"/tycho 2>/dev/null || true  # preserve the exec bit (lost across artifact zip)
+            tar -C "$d" -czf "release/$name.tar.gz" .
+          done
+          ( cd release && sha256sum *.tar.gz > SHA256SUMS && cat SHA256SUMS )
+
+      - name: Upload assets to the Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}  # this job has no checkout; tell gh the repo explicitly
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          # A semver prerelease tag (contains '-', e.g. v0.1.0-rc.1) is flagged --prerelease so it
+          # never becomes the repo's "Latest release"; final tags stay the headline release.
+          pre=""; case "$tag" in *-*) pre="--prerelease" ;; esac
+          # Create the release if the tag push hasn't produced one yet; then upload (idempotent).
+          gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" --title "$tag" --generate-notes $pre
+          gh release upload "$tag" release/*.tar.gz release/SHA256SUMS --clobber
+
+  npm-publish:
+    name: publish the npm wrapper (@swail-labs/tycho)
+    # TYCHO-106: stamp the wrapper's version from the tag (so it matches PyPI + the binaries it
+    # fetches) and publish @swail-labs/tycho. `needs: release` — the wrapper resolves binaries from the
+    # GitHub Release at npx-runtime, so publish only after those assets are attached. Public
+    # releases only, same gate as `release`. Guarded on NPM_TOKEN: the publish step no-ops when the
+    # secret is absent, so this stays inert until the operator provisions the token + @swail scope.
+    if: ${{ !startsWith(github.ref_name, 'v0.0.') }}
+    needs: [release]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"  # current Active LTS (20 is entering maintenance)
+          registry-url: "https://registry.npmjs.org"  # writes the .npmrc that reads NODE_AUTH_TOKEN
+      - name: Stamp version + publish
+        working-directory: packaging/npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "NPM_TOKEN not set — skipping npm publish (scaffold inert)."; exit 0
+          fi
+          node test.js  # verification self-check gates the publish
+          # Match the wrapper version to the release tag (no git commit/tag); the version is what
+          # bin/tycho.js uses to build the binary download URL, so it MUST equal the release.
+          npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version --allow-same-version
+          # Prerelease versions (tag contains '-') publish under the `next` dist-tag so a plain
+          # `npm i @swail-labs/tycho` (which resolves `latest`) never picks up an RC; finals go to
+          # `latest`. `--access public` is required for a scoped package's first publish.
+          dist="latest"; case "${GITHUB_REF_NAME}" in *-*) dist="next" ;; esac
+          npm publish --access public --tag "$dist"
+
+  publish:
+    name: publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    # Trusted Publishing (OIDC) — no stored token. TO ENABLE: on PyPI, add this repo +
+    # workflow as a "trusted publisher" for the `tycho-cli` project (Project → Publishing).
+    # Prefer a GitHub Environment named `pypi` with required reviewers so a human approves
+    # each publish. Alternatively, drop OIDC and pass `password: ${{ secrets.PYPI_API_TOKEN }}`.
+    environment:
+      name: pypi
+      url: https://pypi.org/project/tycho-cli/
+    permissions:
+      id-token: write  # OIDC token for Trusted Publishing
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@release/v1

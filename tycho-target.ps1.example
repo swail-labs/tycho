@@ -1,0 +1,21 @@
+# Toggle tycho hooks/statusline between the local editable venv (.venv, tracks live repo source)
+# and the pinned release venv (.venv-release, a fixed non-editable install). Both live in the repo
+# and are fully isolated — editing source or `tycho update`-ing one never touches the other.
+# Copy to tycho-target.ps1 (gitignored) and run from the repo root.
+# Usage: .\tycho-target.ps1   (flips)   |   .\tycho-target.ps1 local   |   .\tycho-target.ps1 release
+$settings = Join-Path $PSScriptRoot ".claude\settings.json"
+$local   = (Join-Path $PSScriptRoot ".venv\Scripts\tycho.EXE").Replace("\", "/")
+$release = (Join-Path $PSScriptRoot ".venv-release\Scripts\tycho.EXE").Replace("\", "/")
+
+$text = Get-Content $settings -Raw
+$isLocal = $text.Contains($local)
+$want = $args[0]
+if (-not $want) { $want = if ($isLocal) { "release" } else { "local" } }
+
+switch ($want) {
+  "local"   { $text = $text.Replace($release, $local) }
+  "release" { $text = $text.Replace($local, $release) }
+  default   { Write-Host "arg must be 'local' or 'release'"; exit 1 }
+}
+[System.IO.File]::WriteAllText($settings, $text)  # UTF-8 no BOM (Set-Content -Encoding utf8 adds a BOM in PS 5.1)
+Write-Host "tycho -> $want"

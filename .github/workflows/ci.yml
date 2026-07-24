@@ -1,0 +1,70 @@
+# CI for Tycho (TYCHO-9). Tycho gates other people's work, so its own gate has to be real:
+# every job here fails loudly rather than degrading to a pass.
+#
+# Note the commands are NOT piped. Piping a runner through `tail`/`head` discards its exit
+# code (a POSIX pipeline exits with its *last* command's status), which is exactly the
+# false-green Tycho exists to catch — see TYCHO-31. Keep it that way.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # uv.lock is checked in to pin the dev toolchain, but nothing installs from it (the
+  # matrix below uses pip), so drift is invisible until someone runs `uv sync` and gets an
+  # environment matching neither CI nor pyproject.toml. It had already silently drifted
+  # once (TYCHO-42). This job is the enforcement that makes tracking it mean something.
+  # uv comes from pip rather than an action: one less third-party version to pin.
+  lock:
+    name: uv.lock is current
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"  # the floor in requires-python — resolve against the oldest
+      - run: python -m pip install uv
+      - name: Check lockfile
+        run: uv lock --check  # fails if uv.lock disagrees with pyproject.toml
+
+  test:
+    name: py${{ matrix.python-version }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Report every version's result: "does it break on 3.11?" is the question this
+      # matrix exists to answer, and fail-fast would cancel the answer.
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+        os: [ubuntu-latest]
+        # Windows is a first-class target (TYCHO-28): one job proves the suite, the wheel
+        # build/install, and the console-script hook all work under cp1252/backslash/`.exe`.
+        # One version keeps it cheap — the version matrix is the Linux axis's job.
+        include:
+          - python-version: "3.12"
+            os: windows-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install
+        run: python -m pip install -e ".[dev]"
+
+      - name: Lint
+        run: ruff check tycho tests
+
+      # Includes tests/test_e2e_install.py, which builds the wheel *and* the sdist and
+      # installs each into a clean venv on this exact interpreter — so the matrix covers
+      # both artifacts users get, not just the in-tree package.
+      - name: Test
+        run: pytest -q --cov=tycho --cov-fail-under=80

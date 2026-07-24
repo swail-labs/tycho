@@ -1,0 +1,12 @@
+{"type":"system","timestamp":"2026-07-13T14:18:59.000Z","content":"session start"}
+{"type":"user","timestamp":"2026-07-13T14:19:00.000Z","message":{"role":"user","content":"add a greeting helper to app.py"}}
+{"type":"assistant","timestamp":"2026-07-13T14:20:00.000Z","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"text","text":"Writing the helper."},{"type":"tool_use","id":"tu_01","name":"Write","input":{"file_path":"app.py"}}]}}
+{"type":"attachment","timestamp":"2026-07-13T14:20:00.500Z","content":"file-history-snapshot"}
+{"type":"user","timestamp":"2026-07-13T14:20:01.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu_01","is_error":false}]},"toolUseResult":{"filePath":"app.py","type":"create"}}
+{"type":"assistant","timestamp":"2026-07-13T14:20:04.000Z","message":{"role":"assistant","stop_reason":"end_turn","content":[]}}
+{"type":"assistant","timestamp":"2026-07-13T14:20:05.000Z","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Added `greet()` to app.py."}]}}
+{"type":"user","timestamp":"2026-07-13T14:24:59.000Z","isMeta":true,"message":{"role":"user","content":"<local-command-stdout>ignored harness noise</local-command-stdout>"}}
+{"type":"user","timestamp":"2026-07-13T14:25:00.000Z","message":{"role":"user","content":"did it work? just read it back to me"}}
+{"type":"assistant","timestamp":"2026-07-13T14:25:10.000Z","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","id":"tu_02","name":"Read","input":{"file_path":"app.py"}}]}}
+{"type":"user","timestamp":"2026-07-13T14:25:11.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu_02","is_error":false}]},"toolUseResult":{"filePath":"app.py","type":"text"}}
+{"type":"assistant","timestamp":"2026-07-13T14:25:20.000Z","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Yes — `greet()` is there and returns a string."}]}}

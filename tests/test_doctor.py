@@ -1,0 +1,405 @@
+"""TYCHO-8 — the hook compatibility contract: does Tycho notice when it isn't running?
+
+The failure guarded against here is the quiet one: hooks that look installed, a verdict
+that never comes, and a developer who reads silence as "verified". So these tests care
+less about pretty output than about two questions — does doctor catch a hook that would
+not fire, and does it stay quiet when it has no evidence of a problem? A diagnostic that
+cries wolf gets ignored exactly when it's finally right.
+"""
+
+import io
+import json
+import sys
+import time
+from pathlib import Path
+
+import pytest
+
+from tycho import cli, doctor, hook
+from tycho import init as init_mod
+from tycho import state
+
+CLAUDE = Path(".claude/settings.json")
+
+
+@pytest.fixture(autouse=True)
+def _isolate(tmp_path, monkeypatch):
+    """No real $HOME: detection and discovery must not depend on this machine."""
+    empty = tmp_path / "elsewhere"
+    empty.mkdir()
+    monkeypatch.setattr(init_mod.harness_mod, "home", lambda name: empty / f".{name}")
+    monkeypatch.setattr(init_mod.opencode_mod, "db_path", lambda: empty / "oc" / "opencode.db")
+    monkeypatch.setattr(doctor.harness_mod, "home", lambda name: empty / f".{name}")
+
+
+def _install(repo: Path) -> None:
+    (repo / ".claude").mkdir(exist_ok=True)
+    init_mod.init(repo, only="claude", assume_yes=True)
+
+
+def _set_hook_command(repo: Path, command: str) -> None:
+    """Rewrite the installed Stop hook command via JSON, not text replace.
+
+    A path with spaces makes `hook_command()` return a quoted string whose quotes are
+    backslash-escaped in the file — so a `.replace(hook_command(), ...)` on the raw text
+    silently misses. Mutating the structure is correct regardless of path or quoting.
+    """
+    settings = repo / CLAUDE
+    data = json.loads(settings.read_text())
+    data["hooks"]["Stop"] = [{"hooks": [{"type": "command", "command": command}]}]
+    settings.write_text(json.dumps(data))
+
+
+def _levels(findings) -> list[str]:
+    return [f.level for f in findings]
+
+
+# --- the state that makes any of this knowable -------------------------------
+
+def test_init_stamps_the_schema_and_what_it_wired(tmp_path: Path):
+    _install(tmp_path)
+    assert state.installed_schema(tmp_path) == state.SCHEMA
+    assert init_mod._is_tycho_hook(state.read_install(tmp_path)["claude"]["command"])
+
+
+def test_uninstall_forgets_the_harness_so_doctor_stops_diagnosing_a_ghost(tmp_path: Path):
+    _install(tmp_path)
+    init_mod.uninstall(tmp_path, only="claude")
+    assert state.read_install(tmp_path) == {}
+    assert not state.dir_for(tmp_path).exists()  # nothing left to remember
+    assert doctor.healthy(doctor.diagnose(tmp_path))  # gone is not broken
+
+
+def test_uninstalling_one_harness_keeps_the_others_recorded(tmp_path: Path):
+    # Auto-detect surfaces only Claude now, so install the second harness explicitly (its
+    # installer is kept). Uninstalling Claude must leave the other's install record intact.
+    init_mod.init(tmp_path, only="claude", assume_yes=True)
+    init_mod.init(tmp_path, only="cursor", assume_yes=True)
+    init_mod.uninstall(tmp_path, only="claude")
+    assert list(state.read_install(tmp_path)) == ["cursor"]
+
+
+# --- the heartbeat: a dead hook can't write one ------------------------------
+
+def test_the_hook_records_a_heartbeat_when_it_runs(tmp_path: Path):
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(json.dumps({"message": {"content": [{"type": "text", "text": "hi"}]}}))
+    payload = json.dumps({"cwd": str(tmp_path), "transcript_path": str(transcript)})
+
+    assert hook.run(payload) is None  # nothing to verify — but the wiring still fired
+    beat = state.last_run(tmp_path)
+    assert beat["harness"] == "claude"
+    assert beat["at"] == pytest.approx(time.time(), abs=10)
+
+
+def test_prompt_submit_records_a_pending_beat(tmp_path: Path, monkeypatch):
+    # TYCHO-94: the UserPromptSubmit hook marks a run in flight (pending), so the badge shows
+    # frost-blue "verifying" for the whole turn — the Stop hook later clears it to the verdict.
+    import io
+
+    payload = json.dumps({"cwd": str(tmp_path), "hook_event_name": "UserPromptSubmit", "prompt": "hi"})
+    monkeypatch.setattr("sys.stdin", io.StringIO(payload))
+    assert hook.prompt_submit() == 0
+    beat = state.last_run(tmp_path)
+    assert beat["harness"] == "claude"
+    assert beat["pending"] is True and beat.get("verdict") is None
+
+
+def test_prompt_submit_never_raises_on_bad_stdin(tmp_path: Path, monkeypatch):
+    # Same invariant as every hook: a UserPromptSubmit hook must never break the prompt.
+    import io
+
+    monkeypatch.setattr("sys.stdin", io.StringIO("not json at all"))
+    assert hook.prompt_submit() == 0
+    assert state.last_run(tmp_path) is None  # nothing written, nothing raised
+
+
+def test_a_heartbeat_that_cannot_be_written_never_breaks_the_hook(tmp_path: Path, monkeypatch):
+    # The invariant that outranks this entire feature: Tycho never breaks the agent's Stop.
+    def boom(*a, **k):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(state, "_write_json", boom)
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(json.dumps({"message": {"content": [{"type": "text", "text": "hi"}]}}))
+    payload = json.dumps({"cwd": str(tmp_path), "transcript_path": str(transcript)})
+
+    assert hook.run(payload) is None  # no exception escaped
+    assert state.last_run(tmp_path) is None
+
+
+def test_doctor_reports_the_heartbeat_age(tmp_path: Path):
+    _install(tmp_path)
+    state.record_run(tmp_path, "claude")
+    assert "hook last fired just now (via claude)" in doctor.render(doctor.diagnose(tmp_path))
+
+
+# --- what doctor must catch --------------------------------------------------
+
+def test_a_command_that_does_not_resolve_is_broken(tmp_path: Path, monkeypatch):
+    # The silent death: the entry is there, the harness runs it, nothing exists to run.
+    monkeypatch.setattr(init_mod, "hook_command", lambda: "/nonexistent/python -m tycho.cli hook")
+    _install(tmp_path)
+    findings = doctor.diagnose(tmp_path)
+    assert doctor.BROKEN in _levels(findings)
+    assert not doctor.healthy(findings)
+    broken = next(f for f in findings if f.level == doctor.BROKEN)
+    assert "doesn't resolve" in broken.text and "tycho init" in broken.fix
+
+
+def test_a_hook_that_vanished_from_config_is_broken(tmp_path: Path):
+    # We recorded an install and the entry is gone: an upgrade, a hand-edit, a
+    # teammate's settings landing on top. The user believes they're covered and isn't.
+    _install(tmp_path)
+    (tmp_path / CLAUDE).write_text(json.dumps({"model": "opus"}))
+    findings = doctor.diagnose(tmp_path)
+    assert doctor.BROKEN in _levels(findings)
+    assert "gone from" in next(f for f in findings if f.level == doctor.BROKEN).text
+
+
+def test_an_old_schema_is_outdated(tmp_path: Path):
+    _install(tmp_path)
+    path = state.dir_for(tmp_path) / "install.json"
+    data = json.loads(path.read_text())
+    path.write_text(json.dumps({**data, "schema": state.SCHEMA - 1}))
+    findings = doctor.diagnose(tmp_path)
+    assert doctor.OUTDATED in _levels(findings)
+    assert not doctor.healthy(findings)
+
+
+def test_a_stale_path_to_a_deleted_venv_is_broken(tmp_path: Path):
+    _install(tmp_path)
+    _set_hook_command(tmp_path, "/gone/venv/bin/python -m tycho.cli hook")
+    assert doctor.BROKEN in _levels(doctor.diagnose(tmp_path))
+
+
+def test_the_console_script_form_is_not_flagged(tmp_path: Path):
+    # Regression, caught by running doctor on the real repo: `init.hook_command()` returns
+    # the console script (`.venv/bin/tycho hook`) or `<python> -m tycho.cli hook` depending
+    # on whether the venv is on PATH at that instant. Comparing the installed command
+    # against it marked four perfectly working hooks OUTDATED. Both forms run; both are
+    # healthy. Anything that resolves and is ours passes.
+    script = tmp_path / "venv" / "bin" / "tycho"
+    script.parent.mkdir(parents=True)
+    script.write_text("#!/bin/sh\n")
+    script.chmod(0o755)
+
+    _install(tmp_path)
+    _set_hook_command(tmp_path, f"{script} hook")
+
+    findings = doctor.diagnose(tmp_path)
+    assert doctor.healthy(findings), "a resolvable tycho command must never read as broken"
+    assert doctor.OUTDATED not in _levels(findings)
+
+
+def test_malformed_config_is_broken_not_a_traceback(tmp_path: Path):
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / CLAUDE).write_text("{oops")
+    assert doctor.BROKEN in _levels(doctor.diagnose(tmp_path))
+
+
+# --- what doctor must NOT cry wolf about -------------------------------------
+
+def test_a_fresh_install_that_has_not_fired_yet_is_not_broken(tmp_path: Path):
+    # No heartbeat here only means no agent turn has finished. Calling that BROKEN
+    # would train the user to ignore the word.
+    _install(tmp_path)
+    findings = doctor.diagnose(tmp_path)
+    assert doctor.healthy(findings)
+    assert doctor.BROKEN not in _levels(findings)
+    assert "has not run here yet" in doctor.render(findings)
+
+
+def test_a_repo_with_no_tycho_is_not_broken(tmp_path: Path):
+    findings = doctor.diagnose(tmp_path)
+    assert doctor.healthy(findings)
+    assert "no Tycho hook is installed" in doctor.render(findings)
+
+
+def test_an_uninstalled_harness_is_not_diagnosed(tmp_path: Path):
+    _install(tmp_path)  # cursor was never installed; only claude should appear
+    text = doctor.render(doctor.diagnose(tmp_path))
+    assert "claude" in text and "cursor:" not in text
+
+
+# --- harness version drift (TYCHO-34) ----------------------------------------
+
+def test_drift_reports_when_the_harness_moved_past_the_verified_version(monkeypatch):
+    monkeypatch.setattr(doctor, "_probe_version", lambda probe: "2.9.9 (Claude Code)")
+    findings = doctor._harness_drift(["claude"])
+    assert _levels(findings) == [doctor.DRIFT]
+    assert "verified against 2.1.210" in findings[0].text and "2.9.9" in findings[0].text
+
+
+def test_drift_is_silent_when_the_version_still_matches(monkeypatch):
+    # The pinned version appearing anywhere in the --version line means "current".
+    monkeypatch.setattr(doctor, "_probe_version", lambda probe: "2.1.210 (Claude Code)")
+    assert doctor._harness_drift(["claude"]) == []
+
+
+def test_drift_is_silent_when_version_cannot_be_read(monkeypatch):
+    # Missing binary / unparseable --version → can't tell → say nothing (fail open).
+    monkeypatch.setattr(doctor, "_probe_version", lambda probe: None)
+    assert doctor._harness_drift(["claude"]) == []
+
+
+def test_drift_does_not_sink_healthy(monkeypatch):
+    # A version bump is "re-verify", not "broken": it must never make doctor NOT healthy.
+    monkeypatch.setattr(doctor, "_probe_version", lambda probe: "9.9.9")
+    assert doctor.healthy(doctor._harness_drift(["claude"]))
+
+
+def test_probe_version_never_raises_on_a_missing_binary():
+    assert doctor._probe_version(("tycho-no-such-harness-binary", "--version")) is None
+
+
+def test_pinned_versions_stay_in_step_with_the_support_matrix_doc():
+    # The dict is the machine copy of docs/harness-support.md's "Verified against" row —
+    # guard against the two drifting apart (the exact failure the matrix exists to prevent).
+    doc = (Path(__file__).parent.parent / "docs" / "harness-support.md").read_text(encoding="utf-8")
+    for name, pinned in doctor.harness_mod.VERIFIED_AGAINST.items():
+        assert pinned["version"] in doc, f"{name} version {pinned['version']} missing from harness-support.md"
+
+
+# --- resolution rules --------------------------------------------------------
+
+@pytest.mark.skipif(sys.platform == "win32", reason="no executable bit on Windows")
+def test_resolves_absolute_path_only_when_executable(tmp_path: Path):
+    prog = tmp_path / "prog"
+    prog.write_text("#!/bin/sh\n")
+    assert doctor._resolves(f"{prog} hook") is False  # exists, but not +x
+    prog.chmod(0o755)
+    assert doctor._resolves(f"{prog} hook") is True
+    assert doctor._resolves(f"{tmp_path / 'missing'} hook") is False
+
+
+def test_resolves_an_existing_path_regardless_of_platform(tmp_path: Path):
+    # The cross-platform half of the rule: an existing program path resolves, a
+    # missing one doesn't. On Windows existence is the whole test (no +x bit); on
+    # POSIX the sibling test above adds the executable-bit requirement.
+    prog = tmp_path / "prog"
+    prog.write_text("#!/bin/sh\n")
+    prog.chmod(0o755)
+    assert doctor._resolves(f"{prog} hook") is True
+    assert doctor._resolves(f"{tmp_path / 'missing'} hook") is False
+
+
+def test_resolves_bare_name_via_path():
+    assert doctor._resolves("sh hook") is True
+    assert doctor._resolves("definitely-not-a-real-program-xyz hook") is False
+
+
+def test_resolves_handles_unparseable_and_empty_commands():
+    assert doctor._resolves('sh "unbalanced') is False
+    assert doctor._resolves("") is False
+
+
+# --- CLI ---------------------------------------------------------------------
+
+def test_cli_doctor_exits_ok_when_healthy(tmp_path: Path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    _install(tmp_path)
+    assert cli.main(["doctor"]) == cli.ExitCode.OK
+    assert "healthy" in capsys.readouterr().out
+
+
+def test_cli_doctor_exits_unhealthy_when_broken(tmp_path: Path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(init_mod, "hook_command", lambda: "/nonexistent/python -m tycho.cli hook")
+    _install(tmp_path)
+    assert cli.main(["doctor"]) == cli.ExitCode.UNHEALTHY
+    out = capsys.readouterr().out
+    assert doctor.BROKEN in out and "NOT healthy" in out
+
+
+def test_cli_doctor_survives_a_legacy_codepage_console(tmp_path: Path, monkeypatch):
+    # TYCHO-40: doctor prints ✓/✗/•/→; a cp1252 (legacy Windows) console can't encode
+    # them, and an unguarded print() raises UnicodeEncodeError — a traceback where the
+    # whole point is a fail-open verdict. cli._force_utf8 must keep that from happening.
+    monkeypatch.chdir(tmp_path)
+    _install(tmp_path)
+    buf = io.BytesIO()
+    monkeypatch.setattr(sys, "stdout", io.TextIOWrapper(buf, encoding="cp1252"))
+    code = cli.main(["doctor"])  # must not raise
+    sys.stdout.flush()
+    assert code in (cli.ExitCode.OK, cli.ExitCode.UNHEALTHY)
+    assert b"tycho doctor" in buf.getvalue()
+
+
+def test_cli_doctor_never_edits_anything(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _install(tmp_path)
+    settings = tmp_path / CLAUDE
+    before = (settings.read_text(), settings.stat().st_mtime_ns)
+    cli.main(["doctor"])
+    assert (settings.read_text(), settings.stat().st_mtime_ns) == before
+
+
+def test_verify_warns_loudly_when_the_hook_is_broken(tmp_path: Path, monkeypatch, capsys):
+    # The diagnostic has to reach the command people actually run.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(init_mod, "hook_command", lambda: "/nonexistent/python -m tycho.cli hook")
+    _install(tmp_path)
+    cli.main(["verify"])
+    err = capsys.readouterr().err
+    assert doctor.BROKEN in err and "tycho init" in err
+
+
+def test_verify_stays_quiet_when_the_hook_is_fine(tmp_path: Path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    _install(tmp_path)
+    cli.main(["verify"])
+    assert doctor.BROKEN not in capsys.readouterr().err
+
+
+def test_bare_tycho_defaults_to_verify(tmp_path: Path, monkeypatch, capsys):
+    # `tycho` with no subcommand is the one-word on-demand verdict (TYCHO-124). No session
+    # here, so it renders the same INDETERMINATE "no recent session" note `verify` does.
+    monkeypatch.chdir(tmp_path)
+    assert cli.main([]) == cli.ExitCode.OK
+    assert "no recent session found" in capsys.readouterr().out
+
+
+# --- `tycho help`: what it is, and whether it's on here (TYCHO-38) -----------
+
+def _boom(*a, **k):
+    raise RuntimeError("disk gone")
+
+
+def test_help_answers_is_it_on_here(tmp_path: Path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    _install(tmp_path)
+    state.record_run(tmp_path, "claude")
+
+    assert cli.main(["help"]) == cli.ExitCode.OK
+    out = capsys.readouterr().out
+    assert "Status here: installed (claude) — hook last fired just now" in out
+    assert "Stop hook" in out  # what Tycho is
+    for name, text in cli._COMMANDS.items():  # every command, one line each
+        assert name in out and text in out
+
+
+def test_help_tells_an_unhooked_repo_how_to_install(tmp_path: Path, monkeypatch, capsys):
+    # Help is what a confused user reaches for; on a bare repo it must degrade, not crash.
+    monkeypatch.chdir(tmp_path)
+
+    assert cli.main(["help"]) == cli.ExitCode.OK
+    assert "NOT installed here — run `tycho init`" in capsys.readouterr().out
+
+
+def test_help_reports_a_broken_hook_rather_than_claiming_it_is_live(tmp_path: Path, monkeypatch):
+    # The whole point of the status line: it must not answer "installed" when the
+    # installed thing could never fire.
+    monkeypatch.setattr(init_mod, "hook_command", lambda: "/nonexistent/python -m tycho.cli hook")
+    _install(tmp_path)
+
+    assert "not working" in doctor.liveness(tmp_path)
+
+
+def test_help_status_survives_a_doctor_that_blows_up(tmp_path: Path, monkeypatch, capsys):
+    # A status line must never be the reason `tycho help` fails.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(doctor, "_wired_harnesses", _boom)
+
+    assert cli.main(["help"]) == cli.ExitCode.OK
+    assert "status unknown (RuntimeError) — run `tycho doctor`" in capsys.readouterr().out

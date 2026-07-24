@@ -1,0 +1,53 @@
+{
+  "info": {
+    "id": "ses_eval_masked",
+    "directory": "/repo",
+    "version": "1.17.20"
+  },
+  "messages": [
+    {
+      "info": {
+        "role": "user",
+        "time": {
+          "created": 1784055781824
+        }
+      },
+      "parts": []
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "time": {
+          "created": 1784055781851,
+          "completed": 1784055788863
+        }
+      },
+      "parts": [
+        {
+          "type": "text",
+          "text": "All tests pass."
+        },
+        {
+          "type": "tool",
+          "tool": "bash",
+          "callID": "call_eval_masked_red",
+          "state": {
+            "status": "completed",
+            "input": {
+              "command": "pytest -q | tail -1"
+            },
+            "metadata": {
+              "exit": 0,
+              "truncated": false
+            },
+            "title": "pytest -q | tail -1",
+            "time": {
+              "start": 1784055786095,
+              "end": 1784055787200
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

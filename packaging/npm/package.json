@@ -1,0 +1,12 @@
+{
+  "name": "@swail-labs/tycho",
+  "version": "0.0.0-REPLACE_ME",
+  "description": "npx-installable wrapper that fetches and runs the standalone Tycho binary (the offline agent verifier). No Python required.",
+  "keywords": ["ai", "agents", "verification", "claude-code", "cursor", "codex", "deterministic", "independent", "local", "offline", "opencode"],
+  "homepage": "https://swail.dev",
+  "repository": { "type": "git", "url": "https://github.com/swail-labs/tycho.git" },
+  "license": "Apache-2.0",
+  "bin": { "tycho": "bin/tycho.js" },
+  "files": ["bin/"],
+  "engines": { "node": ">=18" }
+}

@@ -1,0 +1,884 @@
+{
+  "info": {
+    "id": "ses_fixture",
+    "directory": "/repo",
+    "version": "1.17.20"
+  },
+  "messages": [
+    {
+      "info": {
+        "role": "user",
+        "time": {
+          "created": 1784055781824
+        }
+      },
+      "parts": []
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "time": {
+          "created": 1784055781851,
+          "completed": 1784055788863
+        }
+      },
+      "parts": [
+        {
+          "type": "tool",
+          "tool": "bash",
+          "callID": "call_00_ta8OnM8qca7UfWtyG7M43326",
+          "state": {
+            "status": "completed",
+            "input": {
+              "command": "ls -la ~/.opencode/ 2>/dev/null"
+            },
+            "metadata": {
+              "exit": 0,
+              "truncated": false
+            },
+            "title": "ls -la ~/.opencode/ 2>/dev/null",
+            "time": {
+              "start": 1784055786095,
+              "end": 1784055786097
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "tool": "bash",
+          "callID": "call_01_UZ2xk148w0whBQ9U31uz4496",
+          "state": {
+            "status": "completed",
+            "input": {
+              "command": "cat ~/.opencode/.gitignore 2>/dev/null; echo \"---\"; ls -la /repo/.opencode/ 2>/dev/null"
+            },
+            "metadata": {
+              "exit": 0,
+              "truncated": false
+            },
+            "title": "cat ~/.opencode/.gitignore 2>/dev/null; echo \"---\"; ls -la /repo/.opencode/ 2>/dev/null",
+            "time": {
+              "start": 1784055788718,
+              "end": 1784055788721
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "tool": "read",
+          "callID": "call_02_uTIBhRsGIjXYEyiFS1HN9546",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/repo/tycho/opencode.py"
+            },
+            "metadata": {
+              "truncated": false,
+              "loaded": []
+            },
+            "title": "tycho/opencode.py",
+            "time": {
+              "start": 1784055786676,
+              "end": 1784055786680
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "time": {
+          "created": 1784055788881,
+          "completed": 1784055792970
+        }
+      },
+      "parts": [
+        {
+          "type": "tool",
+          "tool": "bash",
+          "callID": "call_00_xIH3lk1U0WEZ4NSrsoOZ1363",
+          "state": {
+            "status": "completed",
+            "input": {
+              "command": "ls -la /repo/.opencode/plugins/"
+            },
+            "metadata": {
+              "exit": 0,
+              "truncated": false
+            },
+            "title": "ls -la /repo/.opencode/plugins/",
+            "time": {
+              "start": 1784055792425,
+              "end": 1784055792428
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "tool": "grep",
+          "callID": "call_01_7RhygspAdoqeJEwL7K2g6065",
+          "state": {
+            "status": "completed",
+            "input": {
+              "pattern": "opencode",
+              "include": "*.py",
+              "path": "/repo/tycho"
+            },
+            "metadata": {
+              "matches": 17,
+              "truncated": false
+            },
+            "title": "opencode",
+            "time": {
+              "start": 1784055792804,
+              "end": 1784055792835
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "time": {
+          "created": 1784055792978,
+          "completed": 1784055796206
+        }
+      },
+      "parts": [
+        {
+          "type": "tool",
+          "tool": "read",
+          "callID": "call_00_J0YIE2WZMr8qRFNz0Gra1461",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/repo/.opencode/plugins/tycho.js"
+            },
+            "metadata": {
+              "truncated": false,
+              "loaded": []
+            },
+            "title": ".opencode/plugins/tycho.js",
+            "time": {
+              "start": 1784055795695,
+              "end": 1784055795706
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "tool": "read",
+          "callID": "call_01_nzwiaUFm1xfnJXaXqznQ6620",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/repo/tycho/init.py",
+              "offset": 115
+            },
+            "metadata": {
+              "truncated": false,
+              "loaded": []
+            },
+            "title": "tycho/init.py",
+            "time": {
+              "start": 1784055796058,
+              "end": 1784055796062
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "time": {
+          "created": 1784055796224,
+          "completed": 1784055804383
+        }
+      },
+      "parts": [
+        {
+          "type": "tool",
+          "tool": "bash",
+          "callID": "call_00_p0vRGkkCgpzzaKlPZ2ES6484",
+          "state": {
+            "status": "completed",
+            "input": {
+              "command": "cat ~/.opencode/package.json 2>/dev/null; echo \"---\"; ls -la ~/.opencode/node_modules/ 2>/dev/null | head -5"
+            },
+            "metadata": {
+              "exit": 0,
+              "truncated": false
+            },
+            "title": "cat ~/.opencode/package.json 2>/dev/null; echo \"---\"; ls -la ~/.opencode/node_modules/ 2>/dev/null | head -5",
+            "time": {
+              "start": 1784055804263,
+              "end": 1784055804265
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "tool": "bash",
+          "callID": "call_01_O6WrWP5WneLlxt4NNQPh6989",
+          "state": {
+            "status": "completed",
+            "input": {
+              "command": "cat /repo/.opencode/package.json 2>/dev/null"
+            },
+            "metadata": {
+              "exit": 0,
+              "truncated": false
+            },
+            "title": "cat /repo/.opencode/package.json 2>/dev/null",
+            "time": {
+              "start": 1784055802543,
+              "end": 1784055802545
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "time": {
+          "created": 1784055804401,
+          "completed": 1784055809290
+        }
+      },
+      "parts": [
+        {
+          "type": "tool",
+          "tool": "bash",
+          "callID": "call_00_CxXXEjpCqdggbQX2DPTx0667",
+          "state": {
+            "status": "completed",
+            "input": {
+              "command": "find ~/.opencode -name \"*.json\" -not -path \"*/node_modules/*\" 2>/dev/null -exec echo \"=== {} ===\" \\; -exec head -30 {} \\;"
+            },
+            "metadata": {
+              "exit": 0,
+              "truncated": false
+            },
+            "title": "find ~/.opencode -name \"*.json\" -not -path \"*/node_modules/*\" 2>/dev/null -exec echo \"=== {} ===\" \\; -exec head -30 {} \\;",
+            "time": {
+              "start": 1784055807917,
+              "end": 1784055807918
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "tool": "webfetch",
+          "callID": "call_01_I5R2OHuyCPv83ztjyvsG1499",
+          "state": {
+            "status": "completed",
+            "input": {
+              "url": "https://opencode.ai",
+              "format": "markdown"
+            },
+            "metadata": {
+              "truncated": false
+            },
+            "title": "https://opencode.ai (text/html)",
+            "time": {
+              "start": 1784055808056,
+              "end": 1784055809172
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "time": {
+          "created": 1784055809297,
+          "completed": 1784055812670
+        }
+      },
+      "parts": [
+        {
+          "type": "tool",
+          "tool": "webfetch",
+          "callID": "call_00_Xs5OJvui3v0KGXGELqDV4998",
+          "state": {
+            "status": "completed",
+            "input": {
+              "format": "markdown",
+              "url": "https://opencode.ai/docs"
+            },
+            "metadata": {
+              "truncated": false
+            },
+            "title": "https://opencode.ai/docs (text/html)",
+            "time": {
+              "start": 1784055812376,
+              "end": 1784055812535
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "time": {
+          "created": 1784055812688,
+          "completed": 1784055816203
+        }
+      },
+      "parts": [
+        {
+          "type": "tool",
+          "tool": "webfetch",
+          "callID": "call_00_MMRcIfz2gO3oCn1AlkGE8355",
+          "state": {
+            "status": "completed",
+            "input": {
+              "format": "markdown",
+              "url": "https://opencode.ai/docs/plugins/"
+            },
+            "metadata": {
+              "truncated": false
+            },
+            "title": "https://opencode.ai/docs/plugins/ (text/html)",
+            "time": {
+              "start": 1784055815933,
+              "end": 1784055816089
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "time": {
+          "created": 1784055816211,
+          "completed": 1784055828034
+        }
+      },
+      "parts": [
+        {
+          "type": "tool",
+          "tool": "read",
+          "callID": "call_00_5cOVWlahbG4kspieOSQh6740",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/repo/tycho/cli.py"
+            },
+            "metadata": {
+              "truncated": false,
+              "loaded": []
+            },
+            "title": "tycho/cli.py",
+            "time": {
+              "start": 1784055827740,
+              "end": 1784055827751
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "time": {
+          "created": 1784055828052,
+          "completed": 1784055859019
+        }
+      },
+      "parts": [
+        {
+          "type": "tool",
+          "tool": "bash",
+          "callID": "call_00_4JqWKuznMFUnh6Fghlcn9602",
+          "state": {
+            "status": "completed",
+            "input": {
+              "command": "ls -la /repo/.venv/bin/tycho 2>/dev/null && /repo/.venv/bin/tycho --help 2>&1 | head -5"
+            },
+            "metadata": {
+              "exit": 0,
+              "truncated": false
+            },
+            "title": "ls -la /repo/.venv/bin/tycho 2>/dev/null && /repo/.venv/bin/tycho --help 2>&1 | head -5",
+            "time": {
+              "start": 1784055844297,
+              "end": 1784055844309
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "tool": "bash",
+          "callID": "call_01_GT3lNQ0wx9o9f3JyV9xP1943",
+          "state": {
+            "status": "completed",
+            "input": {
+              "command": "cat ~/.local/state/opencode/prompt-history.jsonl 2>/dev/null"
+            },
+            "metadata": {
+              "exit": 0,
+              "truncated": false
+            },
+            "title": "cat ~/.local/state/opencode/prompt-history.jsonl 2>/dev/null",
+            "time": {
+              "start": 1784055858855,
+              "end": 1784055858858
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "time": {
+          "created": 1784055859044,
+          "completed": 1784055893628
+        }
+      },
+      "parts": [
+        {
+          "type": "tool",
+          "tool": "bash",
+          "callID": "call_00_Y2HV8NEOjz5IFlioBE9f9610",
+          "state": {
+            "status": "completed",
+            "input": {
+              "command": "find ~/.local/state/opencode -type f -name \"*.log\" -o -name \"*.json\" -o -name \"*.txt\" 2>/dev/null | head -20; echo \"---\"; find /tmp -name \"*opencode*\" -o -name \"*tycho*\" 2>/dev/null | head -10"
+            },
+            "metadata": {
+              "exit": 0,
+              "truncated": false
+            },
+            "title": "find ~/.local/state/opencode -type f -name \"*.log\" -o -name \"*.json\" -o -name \"*.txt\" 2>/dev/null | head -20; echo \"---\"; find /tmp -name \"*opencode*\" -o -name \"*tycho*\" 2>/dev/null | head -10",
+            "time": {
+              "start": 1784055869073,
+              "end": 1784055869075
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "tool": "bash",
+          "callID": "call_01_wbrhbplXgd6AOVRaSktd2611",
+          "state": {
+            "status": "completed",
+            "input": {
+              "command": "ls -la ~/.local/state/opencode/ 2>/dev/null; echo \"---\"; cat ~/.local/state/opencode/locks/* 2>/dev/null | head -20"
+            },
+            "metadata": {
+              "exit": 0,
+              "truncated": false
+            },
+            "title": "ls -la ~/.local/state/opencode/ 2>/dev/null; echo \"---\"; cat ~/.local/state/opencode/locks/* 2>/dev/null | head -20",
+            "time": {
+              "start": 1784055893492,
+              "end": 1784055893503
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "time": {
+          "created": 1784055893653,
+          "completed": 1784055912310
+        }
+      },
+      "parts": [
+        {
+          "type": "tool",
+          "tool": "bash",
+          "callID": "call_00_nPbzOs86rAKRe9RrQSqP6288",
+          "state": {
+            "status": "completed",
+            "input": {
+              "command": "cat ~/.local/state/opencode/locks/*/meta.json 2>/dev/null"
+            },
+            "metadata": {
+              "exit": 0,
+              "truncated": false
+            },
+            "title": "cat ~/.local/state/opencode/locks/*/meta.json 2>/dev/null",
+            "time": {
+              "start": 1784055912170,
+              "end": 1784055912172
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "tool": "bash",
+          "callID": "call_01_fpbRuAYm21CmO3OL8Bg78580",
+          "state": {
+            "status": "completed",
+            "input": {
+              "command": "# Test if the opencode export command works\nopencode export --help 2>&1 | head -20"
+            },
+            "metadata": {
+              "exit": 0,
+              "truncated": false
+            },
+            "title": "# Test if the opencode export command works\nopencode export --help 2>&1 | head -20",
+            "time": {
+              "start": 1784055898139,
+              "end": 1784055898142
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "time": {
+          "created": 1784055912331,
+          "completed": 1784055917828
+        }
+      },
+      "parts": [
+        {
+          "type": "tool",
+          "tool": "bash",
+          "callID": "call_00_FgMUyQKk6tF2HwKGRKxf8076",
+          "state": {
+            "status": "completed",
+            "input": {
+              "command": "# Check if the lock token is the session ID\nopencode export \"6763afff-5729-4557-a16e-3e2e3fa42b2a\" 2>&1 | head -5"
+            },
+            "metadata": {
+              "exit": 0,
+              "truncated": false
+            },
+            "title": "# Check if the lock token is the session ID\nopencode export \"6763afff-5729-4557-a16e-3e2e3fa42b2a\" 2>&1 | head -5",
+            "time": {
+              "start": 1784055916950,
+              "end": 1784055916953
+            }
+          }
+        },
+        {
+          "type": "tool",
+          "tool": "bash",
+          "callID": "call_01_zZQ9YUBvE7cPTcLIpRe23545",
+          "state": {
+            "status": "completed",
+            "input": {
+              "command": "# Also try listing sessions or checking what sessions exist\nopencode ls --help 2>&1 | head -10; echo \"---\"; opencode ls 2>&1 | head -20"
+            },
+            "metadata": {
+              "exit": 0,
+              "truncated": false
+            },
+            "title": "# Also try listing sessions or checking what sessions exist\nopencode ls --help 2>&1 | head -10; echo \"---\"; opencode ls 2>&1 | head -20",
+            "time": {
+              "start": 1784055917713,
+              "end": 1784055917715
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "time": {
+          "created": 1784055917835,
+          "completed": 1784055927125
+        }
+      },
+      "parts": [
+        {
+          "type": "tool",
+          "tool": "read",
+          "callID": "call_00_JBPLwU8cI0eVM32OlRkD0029",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/repo/tycho/hook.py"
+            },
+            "metadata": {
+              "truncated": false,
+              "loaded": []
+            },
+            "title": "tycho/hook.py",
+            "time": {
+              "start": 1784055926832,
+              "end": 1784055926838
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "time": {
+          "created": 1784055927146,
+          "completed": 1784055946023
+        }
+      },
+      "parts": [
+        {
+          "type": "tool",
+          "tool": "read",
+          "callID": "call_00_VBsizSZ9oGRZMpVAe9vW7645",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/repo/tycho/opencode.py"
+            },
+            "metadata": {
+              "truncated": false,
+              "loaded": []
+            },
+            "title": "tycho/opencode.py",
+            "time": {
+              "start": 1784055945881,
+              "end": 1784055945888
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "time": {
+          "created": 1784055946043,
+          "completed": 1784055958375
+        }
+      },
+      "parts": [
+        {
+          "type": "tool",
+          "tool": "edit",
+          "callID": "call_00_W0yuKYuutKHf7HLnYpta0800",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "/repo/tycho/opencode.py",
+              "oldString": "def run(session_id: str, repo: Path) -> str | None:\n    \"\"\"Export one OpenCode session and return its Tycho report, failing open.\"\"\"\n    executable = shutil.which(\"opencode\") or Path.home() / \".opencode\" / \"bin\" / \"opencode\"\n    if not Path(executable).is_file():\n        return None\n    try:\n        exported = subprocess.run(\n            [executable, \"export\", session_id],\n            cwd=repo,\n            check=True,\n            capture_output=True,\n            text=True,\n        ).stdout\n        with tempfile.NamedTemporaryFile(\"w\", suffix=\".json\", encoding=\"utf-8\") as transcript:\n            transcript.write(exported)\n            transcript.flush()\n            session = engine.gather(Path(transcript.name), repo, parse=parse_opencode)\n        if not engine.has_verifiable_activity(session):\n            return None\n        results = engine.run_checks(session)\n        return render(engine.verdict_of(results), results)\n    except (OSError, ValueError, subprocess.SubprocessError):\n        return None",
+              "newString": "def run(session_id: str, repo: Path) -> str | None:\n    \"\"\"Export one OpenCode session and return its Tycho report, failing open.\n\n    Unlike Claude/Cursor/Codex hooks (which fire only after tool use), OpenCode's\n    ``session.idle`` fires after *every* turn \u2014 including text-only turns where no\n    tools ran.  So we always run checks and render a verdict; when nothing happened\n    every check will honestly report UNSUPPORTED.\n    \"\"\"\n    executable = shutil.which(\"opencode\") or Path.home() / \".opencode\" / \"bin\" / \"opencode\"\n    if not Path(executable).is_file():\n        return None\n    try:\n        exported = subprocess.run(\n            [executable, \"export\", session_id],\n            cwd=repo,\n            check=True,\n            capture_output=True,\n            text=True,\n        ).stdout\n        with tempfile.NamedTemporaryFile(\"w\", suffix=\".json\", encoding=\"utf-8\") as transcript:\n            transcript.write(exported)\n            transcript.flush()\n            session = engine.gather(Path(transcript.name), repo, parse=parse_opencode)\n        results = engine.run_checks(session)\n        return render(engine.verdict_of(results), results)\n    except (OSError, ValueError, subprocess.SubprocessError):\n        return None"
+            },
+            "metadata": {
+              "diagnostics": {},
+              "truncated": false
+            },
+            "title": "tycho/opencode.py",
+            "time": {
+              "start": 1784055958118,
+              "end": 1784055958121
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "time": {
+          "created": 1784055958395,
+          "completed": 1784055966811
+        }
+      },
+      "parts": [
+        {
+          "type": "tool",
+          "tool": "bash",
+          "callID": "call_00_IvrGKAWeXrUKQQiAlqua9608",
+          "state": {
+            "status": "completed",
+            "input": {
+              "command": "cd /repo && python3 -m pytest tests/ -v 2>&1",
+              "timeout": 60000
+            },
+            "metadata": {
+              "exit": 0,
+              "truncated": false
+            },
+            "title": "cd /repo && python3 -m pytest tests/ -v 2>&1",
+            "time": {
+              "start": 1784055966665,
+              "end": 1784055966688
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "time": {
+          "created": 1784055966831,
+          "completed": 1784055971529
+        }
+      },
+      "parts": [
+        {
+          "type": "tool",
+          "tool": "bash",
+          "callID": "call_00_6QLe2OTO2bEMPYPlBvp80339",
+          "state": {
+            "status": "completed",
+            "input": {
+              "command": "cd /repo && python3 -c \"\nfrom pathlib import Path\nfrom tycho import verify as engine\nfrom tycho.report import render\n\n# Simulate what happens when opencode.run() runs on an empty session (no tool parts)\n# Use the opencode fixture to test\nfrom tycho.events import parse_opencode\nfixture = Path('tests/fixtures/opencode_transcript_sample.json')\n\nsession = engine.gather(fixture, Path.cwd())\nprint(f'Session has activity: {engine.has_verifiable_activity(session)}')\nprint(f'Events: {len(session.events)}')\nresults = engine.run_checks(session)\nprint(render(engine.verdict_of(results), results))\n\"\n"
+            },
+            "metadata": {
+              "exit": 0,
+              "truncated": false
+            },
+            "title": "cd /repo && python3 -c \"\nfrom pathlib import Path\nfrom tycho import verify as engine\nfrom tycho.report import render\n\n# Simulate what happens when opencode.run() runs on an empty session (no tool parts)\n# Use the opencode fixture to test\nfrom tycho.events import parse_opencode\nfixture = Path('tests/fixtures/opencode_transcript_sample.json')\n\nsession = engine.gather(fixture, Path.cwd())\nprint(f'Session has activity: {engine.has_verifiable_activity(session)}')\nprint(f'Events: {len(session.events)}')\nresults = engine.run_checks(session)\nprint(render(engine.verdict_of(results), results))\n\"\n",
+            "time": {
+              "start": 1784055971393,
+              "end": 1784055971402
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "time": {
+          "created": 1784055971537,
+          "completed": 1784055978733
+        }
+      },
+      "parts": [
+        {
+          "type": "tool",
+          "tool": "bash",
+          "callID": "call_00_XjTMuXDgq6PbVIIYQfuL4844",
+          "state": {
+            "status": "completed",
+            "input": {
+              "command": "cd /repo && python3 -c \"\nfrom pathlib import Path\nfrom tycho import verify as engine\nfrom tycho.events import parse_opencode\nfrom tycho.report import render\n\nfixture = Path('tests/fixtures/opencode_transcript_sample.json')\n\nsession = engine.gather(fixture, Path.cwd(), parse=parse_opencode)\nprint(f'Session has activity: {engine.has_verifiable_activity(session)}')\nprint(f'Events: {len(session.events)}')\nfor e in session.events:\n    print(f'  {e.tool}: {e.input.get(\\\"command\\\") or e.input.get(\\\"filePath\\\", \\\"\\\")} is_error={e.is_error}')\nresults = engine.run_checks(session)\nprint(render(engine.verdict_of(results), results))\n\"\n"
+            },
+            "metadata": {
+              "exit": 0,
+              "truncated": false
+            },
+            "title": "cd /repo && python3 -c \"\nfrom pathlib import Path\nfrom tycho import verify as engine\nfrom tycho.events import parse_opencode\nfrom tycho.report import render\n\nfixture = Path('tests/fixtures/opencode_transcript_sample.json')\n\nsession = engine.gather(fixture, Path.cwd(), parse=parse_opencode)\nprint(f'Session has activity: {engine.has_verifiable_activity(session)}')\nprint(f'Events: {len(session.events)}')\nfor e in session.events:\n    print(f'  {e.tool}: {e.input.get(\\\"command\\\") or e.input.get(\\\"filePath\\\", \\\"\\\")} is_error={e.is_error}')\nresults = engine.run_checks(session)\nprint(render(engine.verdict_of(results), results))\n\"\n",
+            "time": {
+              "start": 1784055978614,
+              "end": 1784055978624
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "user",
+        "time": {
+          "created": 1784055978735
+        }
+      },
+      "parts": []
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "time": {
+          "created": 1784055978768,
+          "completed": 1784055998573
+        }
+      },
+      "parts": []
+    },
+    {
+      "info": {
+        "role": "user",
+        "time": {
+          "created": 1784055998578
+        }
+      },
+      "parts": []
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "time": {
+          "created": 1784055998607,
+          "completed": 1784056002098
+        }
+      },
+      "parts": [
+        {
+          "type": "tool",
+          "tool": "grep",
+          "callID": "call_00_vFxk9REQ0S0zgHkDrssQ9820",
+          "state": {
+            "status": "completed",
+            "input": {
+              "pattern": "opencode\\.run",
+              "path": "/repo"
+            },
+            "metadata": {
+              "matches": 1,
+              "truncated": false
+            },
+            "title": "opencode\\.run",
+            "time": {
+              "start": 1784056001765,
+              "end": 1784056001819
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "time": {
+          "created": 1784056002111,
+          "completed": 1784056004962
+        }
+      },
+      "parts": [
+        {
+          "type": "tool",
+          "tool": "grep",
+          "callID": "call_00_Rna8J73YnjiAAdA09xgZ7059",
+          "state": {
+            "status": "completed",
+            "input": {
+              "pattern": "opencode.hook|opencode-hook|session.idle",
+              "path": "/repo/tests"
+            },
+            "metadata": {
+              "matches": 2,
+              "truncated": false
+            },
+            "title": "opencode.hook|opencode-hook|session.idle",
+            "time": {
+              "start": 1784056004621,
+              "end": 1784056004652
+            }
+          }
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "time": {
+          "created": 1784056004988,
+          "completed": 1784056010402
+        }
+      },
+      "parts": []
+    }
+  ]
+}

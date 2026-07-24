@@ -1,0 +1,17 @@
+{
+  "hook_event_name": "stop",
+  "session_id": "6f1c9a2e-3b47-4d18-9c05-2ab7e8d4f011",
+  "conversation_id": "6f1c9a2e-3b47-4d18-9c05-2ab7e8d4f011",
+  "generation_id": "b83d5471-0e2a-4c66-91f7-5d0c3ae91b24",
+  "model": "claude-opus-4-8",
+  "status": "completed",
+  "loop_count": 0,
+  "input_tokens": 18432,
+  "output_tokens": 1204,
+  "cache_read_tokens": 16384,
+  "cache_write_tokens": 2048,
+  "cursor_version": "2026.07.09-a3815c0",
+  "workspace_roots": ["/Users/me/projects/tycho"],
+  "user_email": "me@example.com",
+  "transcript_path": "/Users/me/.cursor/projects/Users-me-projects-tycho/agent-transcripts/6f1c9a2e-3b47-4d18-9c05-2ab7e8d4f011/transcript.jsonl"
+}
