@@ -143,7 +143,7 @@ invocations inside a JavaScript `exec_command` call sent to Codex's internal run
 
 ### How Tycho reads it
 
-`events.parse_codex()` returns **every** turn's events (TYCHO-20 — it used to filter to the latest
+`events.parse_codex()` returns **every** turn's events (it used to filter to the latest
 turn, which blinded the session-scoped checks to earlier turns):
 1. Extracts commands from `custom_tool_call.input` by parsing the `exec_command({cmd:…})` JS wrapper.
 2. Pairs calls with results by `call_id`.
