@@ -42,7 +42,7 @@ documented `hook_event_name` and `turn_id`; otherwise Tycho defaults to Claude. 
 Which harness version each of these was last *verified* against — and how to re-verify when one
 drifts — lives in [`harness-support.md`](harness-support.md). A wrong output field here is invisible:
 the hook fires, doctor reports healthy, and the verdict reaches nobody. That is not hypothetical; it
-is what `user_message` did on Cursor for the life of the adapter (TYCHO-19).
+is what `user_message` did on Cursor for the life of the adapter.
 
 `Harness` is a frozen record of those four differences:
 
@@ -64,7 +64,7 @@ There is a second, separate output channel: the **bootup update-notice** at sess
 (`hook.session_start`), which rides `Harness.notice_output` — a *human-only* field, distinct from
 `format_output` on purpose. It defaults to `None` ("no user-facing bootup channel"), so a notice is
 suppressed rather than sent somewhere the model would read it and be commissioned to self-update
-(the TYCHO-35 rule). Claude/Codex use `systemMessage`, OpenCode toasts `message`; Cursor — whose only
+(the user-facing rule). Claude/Codex use `systemMessage`, OpenCode toasts `message`; Cursor — whose only
 channels are model-facing — stays `None`. The per-harness SessionStart contract is in
 [`harness-support.md`](harness-support.md).
 
@@ -104,9 +104,9 @@ renamed over the target. Rename is atomic, so a run killed mid-write leaves the 
 than a truncated husk. Permissions and unrelated keys are preserved, and symlinks are written *through*
 (a settings file symlinked into a dotfiles repo stays a symlink).
 
-**`uninstall` does not prompt, and that asymmetry is deliberate (TYCHO-18).** `init` asks per harness
+**`uninstall` does not prompt, and that asymmetry is deliberate.** `init` asks per harness
 because it writes *new* behavior into a config the user may not have meant to change — the surprise
-TYCHO-6 exists to prevent. `uninstall` only ever removes Tycho's *own* entries (`_is_tycho_hook`), never
+this design exists to prevent. `uninstall` only ever removes Tycho's *own* entries (`_is_tycho_hook`), never
 user content, and the user named the verb: running it *is* the consent. A prompt would also break the
 one context that matters most for removal — a CI or teardown script tearing the hook back out
 non-interactively — so `uninstall` stays promptless and needs no `--yes`. It still refuses (not prompts)
@@ -172,7 +172,7 @@ re-run. Every file under `.tycho/` is ours alone, and gitignored.
 
 **The catch record (`tycho count`).** The heartbeat is overwritten every run, so nothing in
 it accumulates — `.tycho/catches.json` is what remembers, and a machine-wide twin under
-`TYCHO_HOME` sums it across every repo. It holds two things (TYCHO-62):
+`TYCHO_HOME` sums it across every repo. It holds two things:
 
 - **A running tally** of `FAILED`, `STALE`, and `INDETERMINATE`. "Caught" is the adverse pair
   (`FAILED` + `STALE`); `INDETERMINATE` is tallied too but reported apart, since a blind spot
@@ -249,7 +249,7 @@ it keys on `id` and pairs `tool_result` blocks that don't exist. So Cursor needs
 `events.parse_cursor`, which pulls each `tool_use` into an `Event(ts=0.0, name, input, is_error=None,
 result={})`. `file_edits` reads from `input.file_path`, `input.path`, or `result.filePath` (Claude,
 Cursor, or Codex), so the FileEdit projection is shared. It skips events with `is_error` **true** —
-a denied or errored call never reached the disk (TYCHO-33) — but keeps `is_error is None`, which
+a denied or errored call never reached the disk — but keeps `is_error is None`, which
 means *no status was recorded* rather than failure; Cursor records none, so dropping those would
 leave it with zero edits.
 
@@ -258,8 +258,8 @@ tool calls/results. `events.parse_codex` returns **every** turn's events — ext
 from `custom_tool_call`, pairing results by `call_id`, and converting successful
 `patch_apply_end.changes` entries into file edits — and `events.turn_start_codex` reports the latest
 event-bearing turn's `task_started` timestamp. The Stop then narrows to that turn via `turn_start`
-exactly as Claude does, while the session-scoped checks keep the full history they need (TYCHO-20;
-before, the reader filtered to the latest `turn_id`, which blinded freshness/provenance to earlier
+exactly as Claude does, while the session-scoped checks keep the full history they need (before,
+the reader filtered to the latest `turn_id`, which blinded freshness/provenance to earlier
 turns).
 
 Codex documents `transcript_path` as convenient but not stable. Tycho therefore pins the observed
@@ -284,10 +284,10 @@ checks genuinely need the full history.
 
 | Scope | Checks | Why |
 |---|---|---|
-| **Turn** | `command_execution`, `file_state`, `git_state`, `scope_drift`, plus the `has_verifiable_activity` gate | They answer "what did this turn do?". Session-scoped, they re-passed on every later Stop once a session had edited anything — a permanent green light unrelated to what just happened (TYCHO-17). |
+| **Turn** | `command_execution`, `file_state`, `git_state`, `scope_drift`, plus the `has_verifiable_activity` gate | They answer "what did this turn do?". Session-scoped, they re-passed on every later Stop once a session had edited anything — a permanent green light unrelated to what just happened. |
 | **Session** | `test_freshness`, `test_provenance`, `assertion_weakening`, `skip_mock_injection` | Their whole job is reasoning across turns: a source edited three turns ago and never retested really is stale, and assertion weakening accumulates. |
 
-The turn/session split is a real distinction, not per-check special-casing (TYCHO-23): the turn-scoped
+The turn/session split is a real distinction, not per-check special-casing: the turn-scoped
 checks **attribute work** ("did *this turn's* edits land?"), while the session-scoped ones **describe the
 tree right now** ("is a source uncovered against the last green run?"). A staleness that's still live but
 was caused by an earlier turn is announced as exactly that — `test_freshness` says "still uncovered since
@@ -303,7 +303,7 @@ vs "this session"), because mislabelling the scope is the same bug in prose.
 | Harness | `turn_start` | Why |
 |---|---|---|
 | Claude | last user message | A turn is `user prose → assistant work → stop_reason=end_turn`. Anchored on the user side because real sessions emit *adjacent* `end_turn` markers (an empty one, then the contentful one), so counting markers over-counts turns. Pinned by `tests/fixtures/transcript_multiturn.jsonl`. |
-| Codex | latest turn's `task_started` | `parse_codex` returns every turn (TYCHO-20); `turn_start_codex` anchors on the latest event-bearing turn. Codex is the only harness with an explicit `turn_id`, so it can mark the boundary precisely. |
+| Codex | latest turn's `task_started` | `parse_codex` returns every turn; `turn_start_codex` anchors on the latest event-bearing turn. Codex is the only harness with an explicit `turn_id`, so it can mark the boundary precisely. |
 | Cursor | `0.0` | Every Event is `ts=0.0` — no timestamps to scope by — and the transcript is one turn end-to-end. |
 | OpenCode | last user message | A user message opens the next turn, so the last one opens the turn the Stop fires on — the same shape snitch reads out of this store. `message.data.time.created` is ms; `turn_start_opencode` scales it to the seconds `parse_opencode` emits. Pinned by `tests/fixtures/opencode_transcript_sample.json` (three real turns). |
 
@@ -358,7 +358,7 @@ loop.
 `hook.run(stdin_text) -> dict | None` is split from stdin/stdout so it's unit-testable without
 patching the process; `hook.main()` is the thin I/O wrapper `tycho hook` calls.
 
-### Agent override (`OVERRIDDEN`, TYCHO-118)
+### Agent override (`OVERRIDDEN`)
 
 When the relay is on and `[override] enabled = true` (off by default), the agent may record a
 per-check override with `tycho override <check> "<reason>"`. The Stop hook drops that check,
@@ -384,6 +384,6 @@ silently mis-parsing:
 - `tests/fixtures/codex_transcript_sample.jsonl` — Codex, two turns: turn 1 runs the tests green and
   adds a file, turn 2 edits a source. The tests prove the reader returns both turns, that `turn_start`
   narrows the turn-scoped view to turn 2, and that a source left uncovered since turn 1's green run
-  reports STALE (TYCHO-20).
+  reports STALE.
 - `tests/fixtures/opencode_transcript_sample.json` — the tool-part shape captured from OpenCode
   1.17.20's exported session schema, minimized to an edit and a successful test command.

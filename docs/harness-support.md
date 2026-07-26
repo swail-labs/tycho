@@ -14,10 +14,10 @@ versions are the only thing that closes it.
 
 This is not hypothetical. Both known instances were found *by accident*:
 
-- **TYCHO-19** — Cursor's Stop output field was `user_message`, inferred and never
+- **Cursor** — its Stop output field was `user_message`, inferred and never
   verified. Cursor never reads it. Every Cursor verdict Tycho ever produced was silently
   dropped, for the entire life of the adapter.
-- **TYCHO-32** — Claude Code emits `"originalFile": null` on repeat edits, so
+- **Claude Code** emits `"originalFile": null` on repeat edits, so
   `assertion_weakening` and `skip_mock_injection` — the tamper checks — quietly report
   UNSUPPORTED on real test edits.
 
@@ -43,10 +43,10 @@ the harness moves underneath us. Re-verification has to look at the harness itse
 
 ⚠️ **partial / fixture only** means: the transcript reader is pinned to a real fixture, but
 the *output* field is documented-or-inferred, not confirmed against the harness's own code
-or a captured live payload. That is precisely the state Cursor was in before TYCHO-19 —
+or a captured live payload. That is precisely the state Cursor was in before we caught it —
 and Cursor turned out to be wrong. **Treat every ⚠️ as unverified, not as probably-fine.**
 
-### Codex hooks on Windows — payload not delivered on stdin (TYCHO-124)
+### Codex hooks on Windows — payload not delivered on stdin
 
 Codex's Stop/SessionStart hooks are **dead on Windows**, verified live against **both**
 codex-cli 0.144.4 (stable, npm) and 0.145.0-alpha.18 (desktop). The hook *fires* (`hook: Stop
@@ -70,7 +70,7 @@ reader, `tycho verify`, and the `~/.codex` data root all work on Windows; `detec
 `codex` correctly. Only the hook-*fires* path is blocked, and the break is upstream Codex. So
 on Windows, Codex is **verify-only** (run `tycho verify --harness codex` manually); the automatic
 Stop verdict is **unsupported pending an upstream Codex fix**. Re-verify when Codex ships a
-Windows hook fix; the `systemMessage` render-path (TYCHO-111) can't be captured until then.
+Windows hook fix; the `systemMessage` render-path can't be captured until then.
 
 ### Cursor's output is not like the others
 
@@ -80,16 +80,16 @@ Cursor's stop hook reads exactly one key, `followup_message`, and replays it as 
 Tycho a reporter rather than a commissioner of work. That is a prompt, not a guarantee;
 `loop_count`/`loop_limit` is Cursor's own hard backstop. Exit 0 still never blocks.
 
-### Claude and Codex verdicts *can* reach the model — the opt-in relay (TYCHO-35)
+### Claude and Codex verdicts *can* reach the model — the opt-in relay
 
 The matrix row says Claude output reaches "human only", and by default it does: `systemMessage`
-renders to the terminal and never enters the model's context (confirmed both ways in TYCHO-35 — the
+renders to the terminal and never enters the model's context (confirmed both ways — the
 human saw the verdict, the model demonstrably didn't). But that is a property of the *field we choose*,
 not a hard limit of the harness.
 
 **Verified against Claude Code 2.1.212** (method 1 — read from the shipped binary; it's a compiled
-Mach-O, so `grep -a -b -o -F <string>` for byte offsets then decode the surrounding bytes, as the
-TYCHO-35 ticket describes). Two Stop-adjacent channels *do* reach the model:
+Mach-O, so `grep -a -b -o -F <string>` for byte offsets then decode the surrounding bytes).
+Two Stop-adjacent channels *do* reach the model:
 
 | Channel | What the binary does with it | Cost |
 |---|---|---|
@@ -101,7 +101,7 @@ nothing is halted. The Stop channel's continuation is what the **verdict relay**
 keep working until `VERIFIED` — deliberately **off by default** (no context spent unless opted in) and
 **bounded** (`state.relay_streak` caps auto-continuations per user turn at `relay_max()`, default 3), so
 an unsatisfiable verdict converges on a hard stop rather than an infinite loop. See `hook._relay_output`
-and the README's relay section. This revises TYCHO-35's original constraint 3 ("no extra generation") per
+and the README's relay section. This revises the original constraint 3 ("no extra generation") per
 an explicit operator decision: the relay *does* spend generations, on purpose, only when the user turns it
 on.
 
@@ -111,7 +111,7 @@ continuation prompt. Tycho sends the adverse-only report there and keeps the ful
 `systemMessage`, sharing the same opt-in flag and bounded streak as Claude. This is supported on
 macOS/Linux; the upstream Windows hook stdin/spawn failure described above still prevents it there.
 
-### Captured runner output (Claude Code only) — TYCHO-60
+### Captured runner output (Claude Code only)
 
 When the shell masks a runner's exit status (`pytest; echo done`, `pytest | tail`), the
 runner's own summary line is the only evidence left, so `checks._captured_output` reads
@@ -170,20 +170,19 @@ PY
 
 ## The status bar — auto-wired on Claude Code, renderable anywhere
 
-Two claims that are easy to conflate, and only the second is Claude-only (TYCHO-46):
+Two claims that are easy to conflate, and only the second is Claude-only:
 
 - **The command is harness-agnostic.** `tycho statusline` reads `.tycho/` off disk, imports no
   engine, and falls back to the cwd when there's no JSON on stdin (`status.repo_of`) — so a
   shell prompt, tmux, or starship renders the same badge on any of the four. Nothing below
   applies to that path; there's no harness in it. (It walks up from the cwd for `.tycho/`,
-  stopping at the git root, so the badge survives a subdirectory — TYCHO-79.)
+  stopping at the git root, so the badge survives a subdirectory.)
 - **The auto-wiring is Claude-only.** `statusLine` is the only "run this command, render its
   stdout" setting among the four, so `tycho init` writes the badge there and nowhere else
   (`init._with_statusline`). Cursor, Codex, and OpenCode have hook surfaces but no slot to
   write into — a missing setting upstream, not a missing feature here.
 
-That wiring is a second contract with the same harness, so it gets the same treatment
-(TYCHO-39).
+That wiring is a second contract with the same harness, so it gets the same treatment.
 
 **Verified against 2.1.210**, method 1 — read out of the shipped binary
 (`node_modules/@anthropic-ai/claude-code/bin/claude.exe`: the JS is bundled into a Mach-O,
@@ -208,7 +207,7 @@ Two consequences worth keeping in mind:
   everything and returns 0 with empty output, which renders as nothing.
 - **Windows: the command runs through Git Bash**, which consumes unquoted backslashes;
   the harness's own guidance is to write paths with forward slashes. Our commands come
-  from `sys.executable`/`shutil.which`, so they are backslashed on Windows — TYCHO-43.
+  from `sys.executable`/`shutil.which`, so they are backslashed on Windows.
 
 To re-verify:
 
@@ -219,10 +218,10 @@ grep -o 'statusLine:v.object([^)]*)' /tmp/cc.txt                # the settings s
 grep -o 'async function Mws(e,t,r=5000.\{0,900\}' /tmp/cc.txt   # spawn + stdout rules
 ```
 
-## The bootup update-notice — SessionStart (TYCHO-53, TYCHO-72)
+## The bootup update-notice — SessionStart
 
 At agent bootup Tycho surfaces a *newer-version-available* notice (`hook.session_start()` →
-`version.notice()`). The hard rule (TYCHO-35): it must land on a **user-facing** channel and
+`version.notice()`). The hard rule: it must land on a **user-facing** channel and
 never a model-facing one — a model that reads "a new Tycho is out" could go try to update
 itself. So this is a third contract per harness: does a session-start hook exist, and does it
 have a **human-only** sink?
@@ -240,7 +239,7 @@ have a **human-only** sink?
 **2.1.212, method 1.** `SessionStart` is in the hook-event table; hook output is processed
 through one shared attachment switch — `hook_system_message`, `hook_additional_context`,
 `hook_success`, … — that is *event-agnostic*. So `systemMessage` → `hook_system_message`
-(the user-UI attachment, the same one TYCHO-35 proved reaches the human and not the model),
+(the user-UI attachment, the same one proved to reach the human and not the model),
 while SessionStart's own `additionalContext` → `hook_additional_context` (model-facing). The
 embedded hook docs say it in words: *"systemMessage — Display a message to the user (all
 hooks)."* Tycho's `systemMessage` notice is correct. Re-verify:
@@ -259,7 +258,7 @@ grep -a -o 'hook_blocking_error.\{0,120\}'  $B | head   # …lists it beside hoo
 analogue** — `additional_context` → `additionalContext` and `user_message` → `userMessage`
 both re-enter the model loop (same `userMessage`/`agentMessage`/`additionalContext` triad as
 every other Cursor hook; see the stop-hook note above — Cursor has no human-only channel
-anywhere). A bootup notice here would necessarily be model-facing, which the TYCHO-35 rule
+anywhere). A bootup notice here would necessarily be model-facing, which the user-facing rule
 forbids. **Not supported.** Re-verify:
 
 ```sh
@@ -277,7 +276,7 @@ is flagged a "Codex extension"). So the field to emit is `systemMessage`, same a
 **Wired** in `_install_codex`: a `hooks.SessionStart` matcher-group in `.codex/hooks.json`,
 installed and stripped alongside Stop in one write. Stays ⚠️ on the *render path*: schema
 parity strongly implies `systemMessage` renders human-only, but that isn't observed here —
-confirm with a live capture (TYCHO-111) before release, same as Codex's Stop row. Until then
+confirm with a live capture before release, same as Codex's Stop row. Until then
 the risk is bounded — a wrong guess means the toast is silent, never model-facing. Re-verify:
 
 ```sh
@@ -306,7 +305,7 @@ grep -a -o 'type:"server.connected"' $B
 
 ## How to re-verify
 
-The procedure that actually worked for Cursor (TYCHO-19), in order of preference:
+The procedure that actually worked for Cursor, in order of preference:
 
 1. **Read the harness's shipped code.** Strongest evidence available offline, and
    exhaustive over the contract — it covers fields a single live capture would leave
@@ -342,7 +341,7 @@ tied to things that already happen:
 - **Before each release** — re-verify every ⚠️ row. Non-negotiable: shipping a dead
   output field is shipping a product that silently does nothing.
 - **On a version change** — when an installed harness moves off the pinned version,
-  re-verify that harness's output field. TYCHO-34 makes `tycho doctor` surface this, so
+  re-verify that harness's output field. `tycho doctor` surfaces this, so
   drift shows up where someone is already looking instead of relying on memory.
 - **On any "the verdict never appeared" report** — treat as a dead-hook contract bug until
   proven otherwise. That symptom has been right both times.
