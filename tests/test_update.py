@@ -206,6 +206,32 @@ def test_upgrade_command_npm_channel_overrides_prefix(monkeypatch):
     assert cli._upgrade_command() == ["npm", "install", "-g", "@swail-labs/tycho@latest"]
 
 
+@pytest.mark.parametrize("executable", ["/opt/homebrew/Cellar/tycho/0.1.0/bin/tycho",
+                                        "/home/linuxbrew/.linuxbrew/Cellar/tycho/0.1.0/bin/tycho"])
+def test_upgrade_command_detects_a_homebrew_binary_from_its_path(monkeypatch, executable):
+    # The formula installs a bare binary — no wrapper to set TYCHO_INSTALL the way npm does — so
+    # the channel comes from the Cellar path. Without this it falls through to a `pip install`
+    # the frozen binary can't run.
+    monkeypatch.setattr(cli.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(cli.sys, "executable", executable)
+    monkeypatch.setattr(cli.os.path, "realpath", lambda p: p)
+    monkeypatch.setattr(cli.sys, "prefix", "/usr")  # would otherwise be the plain-pip branch
+
+    assert cli._upgrade_command() == ["brew", "upgrade", "swail-labs/tap/tycho"]
+    assert cli._upgrade_command(force=True) == ["brew", "reinstall", "swail-labs/tap/tycho"]
+
+
+def test_pip_install_into_homebrews_python_is_not_the_brew_channel(monkeypatch):
+    # `pip install tycho-cli` under brew's Python lives in a Cellar path too, but upgrades with
+    # pip — only a *frozen* binary in the Cellar came from the tap.
+    monkeypatch.setattr(cli.sys, "executable", "/opt/homebrew/Cellar/python@3.12/3.12.8/bin/python3.12")
+    monkeypatch.setattr(cli.os.path, "realpath", lambda p: p)
+    monkeypatch.setattr(cli.sys, "prefix", "/opt/homebrew/Cellar/python@3.12/3.12.8")
+
+    assert cli._is_homebrew_install() is False
+    assert "brew" not in cli._upgrade_command()
+
+
 @pytest.mark.parametrize("prefix", ["/home/u/.local/pipx/venvs/tycho-cli",
                                     "/home/u/.local/share/uv/tools/tycho-cli"])  # pip has no persisted pin
 def test_force_crosses_a_version_pin_plain_respects_it(monkeypatch, prefix):
