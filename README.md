@@ -83,6 +83,11 @@ npx @swail-labs/tycho <command>     # run once, cached after first use
 npm install -g @swail-labs/tycho    # or put the `tycho` command on your PATH
 ```
 
+Pick one channel per machine. `npm install -g` and `brew install` both want to own
+`<brew-prefix>/bin/tycho` when your node is Homebrew-installed, so the second one you run won't
+link. They ship the same binary from the same release — `brew` tells you how to choose if you hit
+it.
+
 Then wire it into your repo (or let Tycho offer to on first run):
 
 ```sh

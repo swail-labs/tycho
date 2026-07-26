@@ -39,6 +39,29 @@ class Tycho < Formula
     bin.install "tycho"
   end
 
+  # The npm wrapper (@swail-labs/tycho, TYCHO-106) installs its shim at
+  # `<prefix>/bin/tycho` when node itself is Homebrew-installed — the exact path this formula
+  # links. Homebrew then refuses to link (correctly: it never clobbers a file it doesn't own)
+  # and reports a bare "Error: ... not linked", which reads like a broken formula rather than
+  # two install channels asking for the same name.
+  #
+  # Both are the same binary and the same release, so there's nothing to reconcile — the user
+  # just has to pick an owner. Deliberately NOT `link_overwrite "bin/tycho"`: that would
+  # silently delete a wrapper the user installed on purpose.
+  def caveats
+    return unless (HOMEBREW_PREFIX/"lib/node_modules/@swail-labs/tycho").exist?
+
+    <<~EOS
+      The npm wrapper (@swail-labs/tycho) already owns #{HOMEBREW_PREFIX}/bin/tycho, so this
+      formula is installed but not linked. Both run the same binary — pick one owner:
+
+        npm uninstall -g @swail-labs/tycho && brew link tycho   # let Homebrew own `tycho`
+        brew uninstall tycho                                    # keep the npm wrapper
+
+      `tycho update` upgrades whichever one you keep, via that channel.
+    EOS
+  end
+
   test do
     assert_match "tycho #{version}", shell_output("#{bin}/tycho --version")
   end

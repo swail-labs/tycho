@@ -60,6 +60,17 @@ def test_prefix_does_not_false_match_another_entry():
     assert stamp_mod.expected_hash(SUMS, "tycho-macos-x86_64.tar.gz") == INTEL  # binary marker
 
 
+def test_caveats_explain_the_npm_collision_without_clobbering_it():
+    # The npm wrapper owns <prefix>/bin/tycho when node is brew-installed, so the formula can't
+    # link and brew reports a bare "not linked" error. The caveats turn that into instructions.
+    # `link_overwrite` would "fix" it by deleting a wrapper the user installed on purpose.
+    assert "def caveats" in TEMPLATE
+    assert "@swail-labs/tycho" in TEMPLATE
+    # The directive itself, not the word — the comment above `caveats` explains why it's absent.
+    directives = [ln.strip() for ln in TEMPLATE.splitlines() if not ln.strip().startswith("#")]
+    assert not any(ln.startswith("link_overwrite") for ln in directives)
+
+
 def test_template_and_stamper_agree_on_markers_and_assets():
     # Drift guard: rename a marker or an asset in tycho.rb and the publish job would push an
     # unstamped formula (or stamp the wrong arch) — catch it here instead.
