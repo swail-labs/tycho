@@ -1,18 +1,12 @@
 """Read OpenCode sessions straight from its SQLite store (``opencode.db``).
 
 OpenCode persists every session in ``~/.local/share/opencode/opencode.db``
-(tables ``session`` / ``message`` / ``part``). Earlier Tycho shelled out to
-``opencode export <id>`` and captured stdout — but that command truncates at a
-fixed 128 KB whenever its stdout is a pipe (a Bun non-blocking-write quirk), so
-every non-trivial session came back as invalid JSON and the verdict was
-silently dropped.
+(tables ``session`` / ``message`` / ``part``). Don't shell out to ``opencode export``
+instead: it truncates at 128 KB whenever stdout is a pipe (Bun non-blocking-write quirk),
+so every non-trivial session comes back as invalid JSON.
 
-Reading the DB directly is both correct and *standard*: it's the same "read the
-harness's own on-disk store" shape the Claude/Cursor/Codex adapters already use.
 We reconstruct the exact ``{info, messages:[{parts:[…]}]}`` JSON that
-``events.parse_opencode`` already consumes, so normalization is unchanged and the
-OpenCode transcript flows through the identical ``parse → gather → checks``
-pipeline as every other harness.
+``events.parse_opencode`` already consumes.
 """
 
 from __future__ import annotations
@@ -27,10 +21,9 @@ from pathlib import Path
 def db_path() -> Path:
     """Location of OpenCode's SQLite store.
 
-    ``TYCHO_OPENCODE_HOME`` (the dir holding ``opencode.db``) wins, then
-    OpenCode's own ``XDG_DATA_HOME``, then the ``~/.local/share`` default. Same
-    override chain as every other harness (``harness.home``) — spelled out here
-    because OpenCode's root is an XDG data dir, not a ``~/.<name>`` dotdir.
+    ``TYCHO_OPENCODE_HOME`` (the dir holding ``opencode.db``) wins, then ``XDG_DATA_HOME``,
+    then ``~/.local/share``. Spelled out here, not via ``harness.home``, because OpenCode's
+    root is an XDG data dir rather than a ``~/.<name>`` dotdir.
     """
     override = os.environ.get("TYCHO_OPENCODE_HOME")
     if override:
@@ -47,12 +40,7 @@ def _connect(db: Path) -> sqlite3.Connection:
 
 
 def latest_session(cwd: Path, db: Path | None = None) -> str | None:
-    """Id of the most-recently-updated session rooted at ``cwd`` (or None).
-
-    This gives OpenCode the same on-disk discovery every other harness has:
-    ``tycho verify`` can find the newest session for a directory with no help
-    from the harness.
-    """
+    """Id of the most-recently-updated session rooted at ``cwd`` (or None)."""
     db = db or db_path()
     if not db.is_file():
         return None
@@ -79,23 +67,17 @@ def _json_object(raw: object) -> dict | None:
 def session_json(session_id: str, cwd: Path, db: Path | None = None) -> dict | None:
     """Reconstruct one session's export-shaped JSON from the DB (tool parts only).
 
-    Each ``part.data`` row is already the same object ``opencode export`` nests
-    under ``messages[].parts[]`` — carrying ``state.time`` and
-    ``state.metadata.exit`` — so freshness/provenance/command_execution keep
-    working. We drop non-tool parts (text/reasoning/step); ``parse_opencode``
-    ignores them anyway.
+    Each ``part.data`` row is already the object ``opencode export`` nests under
+    ``messages[].parts[]``, carrying ``state.time`` and ``state.metadata.exit``. Non-tool
+    parts are dropped; ``parse_opencode`` ignores them anyway.
 
-    One message in, one message out — parts grouped by ``part.message_id``. This used
-    to flatten every part into a single synthesized ``{"role": "assistant"}`` message
-    and never read the ``message`` table at all, which discarded the user messages
-    entirely. That is why OpenCode had no derivable turn boundary: the data
-    was in the DB the whole time, Tycho dropped it before the reader ever saw it. A user
-    message carries no tool parts, so it lands here with ``parts: []`` — kept, because
-    its timestamp is exactly what ``events.turn_start_opencode`` anchors on.
+    One message in, one message out — parts grouped by ``part.message_id``. Don't flatten
+    into one synthesized assistant message: that drops user messages, and their timestamps
+    are what ``events.turn_start_opencode`` anchors the turn boundary on (they carry no
+    tool parts, so they land here with ``parts: []``).
 
-    ``info`` keeps only ``role`` and ``time`` from ``message.data``, not the whole blob:
-    a user message's ``data`` also carries ``summary.diffs`` (full patches) and nothing
-    downstream reads them — no reason to copy that through a temp file on every Stop.
+    ``info`` keeps only ``role`` and ``time``: a user message's ``data`` also carries
+    ``summary.diffs`` (full patches) that nothing downstream reads.
     """
     db = db or db_path()
     if not db.is_file():
@@ -142,8 +124,7 @@ def session_json(session_id: str, cwd: Path, db: Path | None = None) -> dict | N
 def materialize(session_id: str, cwd: Path, db: Path | None = None) -> Path | None:
     """Write a session's reconstructed JSON to a temp file; return its path.
 
-    The caller hands this path to the standard engine (and unlinks it after),
-    so OpenCode reuses ``events.parse_opencode`` with zero special-casing.
+    The caller hands the path to the standard engine and unlinks it after.
     """
     data = session_json(session_id, cwd, db)
     if data is None:

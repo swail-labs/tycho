@@ -1,13 +1,10 @@
 """Parse a Claude Code transcript (JSONL) into normalized Events + FileEdits.
 
-Transcript schema (verified against a real session):
-- each line is a JSON entry with a top-level `timestamp` and a `message.content`
-  list of blocks;
-- an assistant `tool_use` block carries `id`, `name`, `input`;
-- a user `tool_result` block carries `tool_use_id`, `is_error`, and the entry
-  carries the structured `toolUseResult` (Bash: stdout/stderr; Edit/Write:
-  filePath/originalFile/type/…).
-Bash results have no numeric exit code — `is_error` is the failure signal.
+Transcript schema (verified against a real session): each line is a JSON entry with a
+top-level `timestamp` and a `message.content` list of blocks; an assistant `tool_use` block
+carries `id`, `name`, `input`; a user `tool_result` block carries `tool_use_id`, `is_error`,
+and the entry carries the structured `toolUseResult` (Bash: stdout/stderr; Edit/Write:
+filePath/originalFile/type/…). Bash results have no exit code — `is_error` is the signal.
 """
 
 from __future__ import annotations
@@ -24,7 +21,7 @@ _EDIT_TOOLS = frozenset({"Edit", "Write", "MultiEdit"})
 
 
 def _entries(transcript: Path):
-    """Yield parsed JSONL entries, skipping blank/malformed lines (external data)."""
+    """Yield parsed JSONL entries, skipping blank/malformed lines — this is external data."""
     for line in Path(transcript).read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line:
@@ -68,9 +65,8 @@ def parse(transcript: Path) -> tuple[Event, ...]:
 
 
 def assistant_messages(transcript: Path) -> tuple[Message, ...]:
-    """The assistant's natural-language `text` blocks — the agent's prose claims, for
-    `tool_call_provenance`. Skips tool_use/tool_result blocks and harness meta; a message
-    with no real text is dropped. Same JSONL schema as `parse` (verified fixture)."""
+    """The assistant's natural-language `text` blocks — its prose claims, for
+    `tool_call_provenance`. Skips tool_use/tool_result blocks and harness meta."""
     out = []
     for entry in _entries(transcript):
         if entry.get("type") != "assistant" or entry.get("isMeta"):
@@ -88,14 +84,10 @@ def attribution(transcript: Path) -> Attribution:
     """Who produced this Claude Code session: model id, harness version, session id.
 
     Verified against real transcripts under ``~/.claude/projects`` (2026-07): every row
-    carries a top-level ``sessionId`` and the harness ``version`` (e.g. ``"2.1.220"``), and
-    every ``type: "assistant"`` row carries ``message.model`` (e.g. ``"claude-opus-5"``).
-    The *last* value of each wins — a session can be resumed under a newer harness build or
-    a different model, and the turn a Stop is recording is the most recent one.
-
-    Never raises and never guesses: an unreadable transcript, or a field this harness build
-    doesn't write, yields None. The record stores that null rather than a plausible value —
-    the decay ledger is only worth anything if its model attribution is genuinely observed.
+    carries top-level ``sessionId`` and ``version``, every ``type: "assistant"`` row carries
+    ``message.model``. The *last* of each wins — a session can be resumed under a newer build
+    or a different model. Never guesses: a field this build doesn't write yields None, since
+    the decay ledger is only worth anything if attribution is genuinely observed.
     """
     model = version = session_id = None
     try:
@@ -114,34 +106,18 @@ def attribution(transcript: Path) -> Attribution:
 
 
 def turn_start(transcript: Path) -> float:
-    """Epoch at which the turn under review began — the later of the final user message
-    and the last verdict-relay boundary.
+    """Epoch at which the turn under review began — the later of the final user message and
+    the last verdict-relay boundary. 0.0 when neither is found ("the whole transcript").
 
-    A Claude turn is `user prose -> assistant work -> assistant stop_reason=end_turn`,
-    and the Stop hook fires at the end of the last one. We anchor on the *user* side
-    rather than counting `end_turn` markers: on real sessions one turn routinely emits
-    two adjacent `end_turn` assistant messages (a contentful one preceded by an empty
-    one), so a marker count over-counts turns and would place the boundary inside the
-    turn it's meant to open. User messages have no such duplication — on the session
-    this was verified against, 15 `end_turn` markers coalesce to exactly the 11 user
-    messages, alternating cleanly.
+    Anchored on the *user* side, never on `end_turn` markers: one turn routinely emits two
+    adjacent `end_turn` messages, so counting markers over-counts turns and puts the boundary
+    inside the turn it should open (15 markers vs 11 user messages on the verified session).
+    A content *list* is how Claude returns `tool_result` blocks to itself, so it only counts
+    when it carries a genuine `text` block.
 
-    Real user prose arrives as a plain `message.content` string; a content *list* is
-    how Claude delivers `tool_result` blocks back to itself, so a list only counts as
-    a turn start when it carries a genuine `text` block (a pasted image + prompt).
-
-    The verdict relay (hook._relay_guard) re-invokes the *assistant* with no new user
-    message, so several relay iterations share one user turn. Anchoring only on the user
-    message would hand each re-check every earlier iteration's prose — and
-    tool_call_provenance would keep re-failing prose an earlier iteration already
-    answered, echoing a verdict the agent's own fix has since made stale. A Tycho
-    `stop_hook_summary` entry marks where the previous iteration was verified, so it
-    opens the next iteration's turn exactly as a user message opens the first. The
-    current Stop's own summary is written *after* this runs, so `max` lands on the
-    previous boundary, never this one.
-
-    Returns 0.0 when nothing is found — "the whole transcript is the turn", which is
-    both the single-turn case and the honest fallback.
+    Relay iterations share one user turn, so without the `stop_hook_summary` boundary each
+    re-check would inherit earlier iterations' prose and re-fail claims already answered.
+    This Stop's own summary is written after this runs, so `max` lands on the previous one.
     """
     starts = [
         _epoch(e.get("timestamp"))
@@ -151,16 +127,14 @@ def turn_start(transcript: Path) -> float:
     return max(starts, default=0.0)
 
 
-# A relay re-check is a Tycho Stop verdict fed back to the agent (hook._relay_guard). The
-# entry is a `stop_hook_summary` whose injected context carries this fixed guard sentence —
-# stable across the "re-check N of M" / "final re-check" variants and unique to the relay, so
-# it can't collide with an honest assistant line. `hookAdditionalContext` is a list of strings.
+# The fixed sentence in a relay `stop_hook_summary`'s injected context: stable across the
+# "re-check N of M" / "final re-check" variants, and unique to the relay.
 _RELAY_BOUNDARY = "automated verification of the turn you just finished"
 
 
 def _is_relay_boundary(entry: dict) -> bool:
-    """True for a Tycho verdict-relay Stop summary — the boundary that opens the next
-    relay iteration's turn, so its prose is judged on its own tool calls (not the last one's)."""
+    """True for a Tycho verdict-relay Stop summary — the boundary opening the next relay
+    iteration's turn."""
     if entry.get("type") != "system" or entry.get("subtype") != "stop_hook_summary":
         return False
     ctx = entry.get("hookAdditionalContext")
@@ -182,12 +156,9 @@ def _is_user_prose(entry: dict) -> bool:
 def parse_cursor(transcript: Path) -> tuple[Event, ...]:
     """Read a Cursor agent transcript → Events.
 
-    Cursor's Stop transcript is thinner than Claude's: each ``tool_use`` block
-    carries only ``name`` + ``input`` — no ids, no timestamps, and no
-    ``tool_result`` blocks at all. So Events get ts=0.0, is_error=None,
-    result={}, and checks that need timings or exit codes (test_freshness,
-    command_execution) degrade to UNSUPPORTED honestly for Cursor sessions.
-    Verified against a real transcript at ``tests/fixtures/cursor_transcript_sample.jsonl``.
+    Cursor's Stop transcript carries only ``name`` + ``input`` per ``tool_use`` — no ids, no
+    timestamps, no ``tool_result`` blocks — so Events get ts=0.0, is_error=None, result={},
+    and checks needing timings or exit codes degrade to UNSUPPORTED rather than guessing.
     """
     events = []
     for entry in _entries(transcript):
@@ -199,15 +170,10 @@ def parse_cursor(transcript: Path) -> tuple[Event, ...]:
 
 
 def parse_codex(transcript: Path) -> tuple[Event, ...]:
-    """Read *every* turn from a Codex rollout JSONL transcript.
-
-    Returns all turns' events, not just the latest, so the session-scoped checks can
-    reason across turns (freshness/provenance, and the AST checks that diff the earliest
-    original against disk); the Stop narrows to the turn under review via
-    ``Harness.turn_start`` (``turn_start_codex``), exactly as Claude does. Filtering to the
-    latest ``turn_id`` here instead would leave those checks blind to earlier turns and make
-    Codex's scope disagree with every other reader.
-    """
+    """Read *every* turn from a Codex rollout JSONL transcript, not just the latest, so
+    session-scoped checks can reason across turns; the Stop narrows via ``turn_start_codex``,
+    exactly as Claude does. Filtering to the latest ``turn_id`` here would blind those checks
+    and make Codex's scope disagree with every other reader."""
     calls: dict[str, tuple[float, str]] = {}
     results: dict[str, tuple[bool | None, str]] = {}  # call_id -> (is_error, output text)
     events = []
@@ -241,10 +207,8 @@ def parse_codex(transcript: Path) -> tuple[Event, ...]:
             tool="Bash",
             input={"command": command},
             is_error=results.get(call_id, (None, ""))[0],
-            # Keep the runner's own words, not just the verdict we distilled from them.
-            # `is_error` alone is useless the moment the shell masks the status: the engine
-            # then has to re-read the output, and it can only read what the reader kept
-            #. Codex is the one harness whose transcript carries this text.
+            # Keep the runner's own words: `is_error` is useless once the shell masks the
+            # status, and the engine can only re-read output the reader kept.
             result={"stdout": out} if (out := results.get(call_id, (None, ""))[1]) else {},
         )
         for call_id, (ts, command) in calls.items()
@@ -253,11 +217,8 @@ def parse_codex(transcript: Path) -> tuple[Event, ...]:
 
 
 def assistant_messages_codex(transcript: Path) -> tuple[Message, ...]:
-    """Codex assistant prose from response-item messages.
-
-    Codex also mirrors these as ``event_msg.agent_message`` entries; reading only the
-    response item avoids counting every claim twice.
-    """
+    """Codex assistant prose. Codex mirrors these as ``event_msg.agent_message`` too, so only
+    the response item is read — otherwise every claim counts twice."""
     messages = []
     for entry in _entries(transcript):
         payload = entry.get("payload") or {}
@@ -278,13 +239,9 @@ def assistant_messages_codex(transcript: Path) -> tuple[Message, ...]:
 def turn_start_codex(transcript: Path) -> float:
     """Epoch of the latest Codex turn's ``task_started`` — the boundary its Stop reviews.
 
-    ``parse_codex`` now returns every turn, so the engine narrows to the turn
-    under review via ``turn_start`` just like Claude. We anchor on the latest turn that
-    actually has tool calls or edits: Codex emits empty trailing turns (compaction
-    follow-ups), and anchoring on one of those would push the boundary past all real work
-    and blank out ``turn_edits``. 0.0 when there is no such turn — the honest "the whole
-    transcript is the turn" fallback.
-    """
+    Anchors on the latest turn that actually has tool calls or edits: Codex emits empty
+    trailing turns (compaction follow-ups), and anchoring on one would push the boundary past
+    all real work and blank out ``turn_edits``. 0.0 when there is no such turn."""
     entries = list(_entries(transcript))
     turn_ids = [
         e.get("payload", {}).get("turn_id")
@@ -304,12 +261,9 @@ def turn_start_codex(transcript: Path) -> float:
 
 
 def _codex_relay_boundary(entry: dict) -> float:
-    """Timestamp of a Tycho continuation prompt, or 0.
-
-    Codex keeps relay iterations inside the same ``turn_id``. Its rejected Stop is written
-    back as a user ``<hook_prompt>`` response item, so that injection—not ``task_started``—
-    opens the next iteration.
-    """
+    """Timestamp of a Tycho continuation prompt, or 0. Codex keeps relay iterations inside one
+    ``turn_id``, writing the rejected Stop back as a user ``<hook_prompt>`` item, so that
+    injection — not ``task_started`` — opens the next iteration."""
     payload = entry.get("payload") or {}
     if (
         entry.get("type") != "response_item"
@@ -334,11 +288,9 @@ def _opencode_data(transcript: Path) -> dict:
 
 
 def parse_opencode(transcript: Path) -> tuple[Event, ...]:
-    """Read an OpenCode session JSON (``{info, messages:[{parts:[…]}]}``).
-
-    Tycho rebuilds this shape from ``opencode.db`` (see ``opencode.py``); it's
-    identical to what ``opencode export`` emits, so this reader is unchanged.
-    """
+    """Read an OpenCode session JSON (``{info, messages:[{parts:[…]}]}``). Tycho rebuilds this
+    shape from ``opencode.db`` (see ``opencode.py``); it matches what ``opencode export``
+    emits."""
     data = _opencode_data(transcript)
     events = []
     for message in data.get("messages", []):
@@ -369,19 +321,12 @@ def parse_opencode(transcript: Path) -> tuple[Event, ...]:
 
 
 def turn_start_opencode(transcript: Path) -> float:
-    """Epoch of the OpenCode session's last user message — the boundary its Stop reviews.
+    """Epoch of the OpenCode session's last user message — the boundary its Stop reviews, 0.0
+    when none carries a timestamp.
 
-    An OpenCode turn runs `user message -> assistant messages/tool parts`, so a user
-    message *starts* the next turn; the last one opens the turn the Stop fires on. Snitch
-    reads the same store and treats a user line the same way (`reader_opencode.go`).
-
-    OpenCode timestamps in ms, but ``parse_opencode`` divides by 1000 to give ``Event.ts``
-    in seconds — so the boundary is scaled to match. A ms boundary against second-scale
-    events would sit ~1000x in the future and silently blank out ``turn_edits``, which is
-    the quiet failure this scoping exists to prevent.
-
-    Returns 0.0 when no user message carries a timestamp — the same honest "the whole
-    transcript is the turn" fallback as the other readers.
+    OpenCode timestamps in ms; ``parse_opencode`` gives ``Event.ts`` in seconds, so the
+    boundary is divided to match. A ms boundary against second-scale events would sit ~1000x
+    in the future and silently blank out ``turn_edits``.
     """
     starts = [
         created
@@ -424,13 +369,10 @@ def _codex_command(value: object) -> str | None:
 
 
 def _codex_output_text(value: object) -> str:
-    """Flatten a Codex tool-call output into the text the command actually printed.
-
-    Codex nests it (`[{"type": "input_text", "text": "77 passed in 0.79s"}]`), so pull the
-    `text` leaves out and leave the scaffolding behind. Normalizing it into `result` is
-    what lets the harness-agnostic engine re-read a runner's verdict when the shell masked
-    the exit status — the reader is the only layer allowed to know this shape.
-    """
+    """Flatten a Codex tool-call output into the text the command printed — Codex nests it
+    (`[{"type": "input_text", "text": "77 passed in 0.79s"}]`). Normalizing it into `result`
+    lets the harness-agnostic engine re-read a runner's verdict when the shell masked the
+    exit status."""
     if isinstance(value, str):
         return value
     if isinstance(value, dict):
@@ -454,8 +396,7 @@ def _codex_is_error(value: object) -> bool | None:
         if match:
             return int(match.group(1)) != 0
         # Current Codex rollouts omit the exec exit code, so fall back to the runner's own
-        # summary — the same reading `checks` does for a shell-masked status, shared via
-        # `runlog` so one runner's output format is described in exactly one place.
+        # summary via `runlog`, the one place a runner's output format is described.
         # ("Script completed" is deliberately not success: it appears for failed commands.)
         return runlog.outcome(value)
     return None
@@ -464,14 +405,9 @@ def _codex_is_error(value: object) -> bool | None:
 def file_edits(events: tuple[Event, ...]) -> tuple[FileEdit, ...]:
     """Project the *successful* Edit/Write events into FileEdits (path, ts, before-content).
 
-    Reads Claude's ``file_path``/``filePath`` or Cursor's ``path`` input key.
-
-    A failed call is not evidence of an edit: one denied by a PreToolUse hook, blocked, or
-    errored never touched the disk, and — having no ``toolUseResult`` — would land here as a
-    phantom ``kind=create, original=None`` row. ``is_error is None`` means *no
-    status was recorded*, not failure, so those are still counted; Cursor never records one
-    and would otherwise report zero edits.
-    """
+    A failed call never touched the disk and, having no ``toolUseResult``, would land here as
+    a phantom ``kind=create, original=None`` row. ``is_error is None`` means *no status was
+    recorded*, not failure, so those still count — Cursor never records one."""
     out = []
     for e in events:
         if e.tool not in _EDIT_TOOLS or e.is_error:

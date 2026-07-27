@@ -1,11 +1,9 @@
 """Load and manage `.tycho.toml`. Zero-config default just works (no scope check, no disables).
 
-`tomllib` reads TOML but the stdlib has no writer, so the mutating helpers (`ensure`,
-`set_scope`/`add_scope`/`remove_scope`) re-render the file from a small canonical template.
-That keeps Tycho stdlib-only and preserves the built-in explanatory comments, at the cost
-of not preserving a user's own hand-added comments or unknown tables — the file is Tycho's
-to manage, and `tycho scope` says so. The keys Tycho's schema defines (`scope.include`,
-`scope.exclude`, `checks.disable`, `relay.enabled`) always round-trip.
+The stdlib has no TOML writer, so the mutating helpers re-render the whole file from a
+canonical template. Cost: a user's own comments and unknown tables are NOT preserved. Only
+the schema keys (`scope.include`/`exclude`, `checks.disable`, `relay.enabled`,
+`override.enabled`) round-trip.
 """
 
 from __future__ import annotations
@@ -29,9 +27,8 @@ class Config:
 
 
 def path(repo: Path) -> Path:
-    """The config for `repo` — resolved the same way as `.tycho/`, its sibling, so that a
-    command run from a subdirectory reads the repo's real scope instead of defaulting to
-    "no scope set"."""
+    """The config for `repo` — resolved like its sibling `.tycho/`, so a command run from a
+    subdirectory reads the repo's real scope instead of "no scope set"."""
     return state.root_for(repo) / CONFIG_NAME
 
 
@@ -57,8 +54,8 @@ def load(repo: Path) -> Config:
 # --- writing (stdlib-only, canonical render) --------------------------------
 
 def _toml_str(s: str) -> str:
-    """One glob as a TOML basic string. Globs use `/ * ? [ ]` — none need escaping; only
-    a backslash or double-quote would, so handle just those."""
+    """One glob as a TOML basic string. Glob metacharacters need no escaping; only a
+    backslash or double-quote does."""
     return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
@@ -119,8 +116,7 @@ def _write(repo: Path, text: str) -> None:
 
 
 def ensure(repo: Path) -> bool:
-    """Create `.tycho.toml` with the template if it's absent. Never clobber an existing
-    one. Returns True if it created the file."""
+    """Create `.tycho.toml` if absent, never clobbering. True if it created the file."""
     if path(repo).exists():
         return False
     _write(repo, render())
@@ -128,21 +124,19 @@ def ensure(repo: Path) -> bool:
 
 
 def _save(repo: Path, include: tuple[str, ...], exclude: tuple[str, ...]) -> None:
-    """Rewrite the file with these include/exclude lists, preserving disabled checks + relay."""
+    """Rewrite with these include/exclude lists, preserving the other settings."""
     cur = load(repo)
     _write(repo, render(tuple(include), cur.disabled_checks, tuple(exclude), cur.relay_enabled, cur.override_enabled))
 
 
 def set_relay(repo: Path, enabled: bool) -> None:
-    """Write the verdict-relay flag to `.tycho.toml`, preserving scope + disabled checks. Creates
-    the file if absent, so the setting is always visible and hand-editable."""
+    """Write the verdict-relay flag, creating the file if absent so it stays hand-editable."""
     cur = load(repo)
     _write(repo, render(cur.scope_include, cur.disabled_checks, cur.scope_exclude, enabled, cur.override_enabled))
 
 
 def set_override(repo: Path, enabled: bool) -> None:
-    """Write the override-capability flag to `.tycho.toml`, preserving scope + relay + disabled
-    checks. Creates the file if absent, so the setting is always visible and hand-editable."""
+    """Write the override-capability flag, creating the file if absent."""
     cur = load(repo)
     _write(repo, render(cur.scope_include, cur.disabled_checks, cur.scope_exclude,
                         cur.relay_enabled, enabled))

@@ -1,39 +1,19 @@
 """The commit trailer: `Tycho-Attestation: sha256:…` (strategy §9.7/§6.6).
 
-Cheap, rides git, permanent, `git log`-visible, and portable without a PR gate — the
-strategy explicitly *demotes* the blocking GitHub Action (§6, "What not to build"), so this
-is the whole distribution story for the attestation. Solo-useful six months later: it tells
-you which commits were agent-written, and which of those were **never verified by anything**.
-
-**What a commit's attestation covers.** Not one turn: a commit routinely spans fifteen. It
-covers *every recorded turn that touched a file in this commit*, bounded above by the
-commit's own timestamp. Concretely the body is::
+Covers every recorded turn that touched a file in the commit, bounded by the commit's own
+timestamp. Body, and the two rendered forms::
 
     {"schema": 1, "turns": [<record digest>, …], "verdicts": {"VERIFIED": 3, "STALE": 1}}
-
-and the trailer carries ``record.digest(body)`` — the same canonical-JSON sha256 the turn
-records use, so nothing new had to be invented and the two can't drift. The turn digests are
-themselves content-derived, which makes the attestation transitive: it pins the exact claims,
-files, commands and verdicts of every turn behind the commit, not a hand-wave over them.
-
-**The never-verified case is representable, not omitted.** That case *is* the stated solo
-value, so the trailer says it out loud rather than going quiet::
 
     Tycho-Attestation: sha256:6f… (4 turns, 3 VERIFIED, 1 STALE)
     Tycho-Attestation: sha256:1c… (2 turns, NEVER VERIFIED: 2 UNSUPPORTED)
 
-``git log --grep 'NEVER VERIFIED'`` is the six-months-later query. A commit with *no* recorded
-turn behind it gets **no trailer at all** — silence is the honest answer for "a human wrote
-this", "Tycho wasn't installed yet", or a merge commit that carries no work of its own.
+``git log --grep 'NEVER VERIFIED'`` is the six-months-later query. A commit with no recorded
+turn gets no trailer at all. `verify` recomputes the body and answers True/False/None — None
+because a pruned record must never read as a forged one.
 
-**Verification** (`verify`) recomputes the body from `.tycho/turns.jsonl` and the commit's own
-diff, and compares. Three answers, never two: True (matches), False (does not), None (cannot
-tell — no trailer, or the record no longer reaches back that far). "Cannot tell" is a distinct
-answer on purpose; a pruned record must never read as a forged one.
-
-**Never raises.** This is called from a git `prepare-commit-msg` hook, so it obeys the same
-rule as `hook.py`: a verifier that breaks `git commit` is dead on arrival. Every path here
-fails open — no trailer, never an exception, never a non-zero exit on the write path.
+**Never raises.** Called from a git `prepare-commit-msg` hook: a verifier that breaks
+`git commit` is dead on arrival, so every path fails open.
 """
 
 from __future__ import annotations
@@ -49,22 +29,16 @@ from . import state
 TRAILER = "Tycho-Attestation"
 SCHEMA = 1
 
-# The grep target for "agent-written and nothing ever confirmed it" (strategy §6.6).
 NEVER = "NEVER VERIFIED"
 
 _DIGEST_RE = re.compile(r"sha256:[0-9a-f]{64}")
 
-# Stable ordering for the human summary so the trailer text is deterministic across
-# platforms and dict orderings — the digest already is, and the prose must match it.
+# Stable ordering so the trailer prose is deterministic across dict orderings.
 _VERDICT_ORDER = ("VERIFIED", "OVERRIDDEN", "FAILED", "STALE", "INDETERMINATE", "UNSUPPORTED")
 
-# A commit's timestamp is written *after* the hook that composed its trailer ran, so every
-# record that existed at write time satisfies `ended_at <= commit time`. One second of slack
-# absorbs the epoch-second truncation git applies to its own dates.
+# Absorbs the epoch-second truncation git applies to its own dates.
 _CLOCK_SLACK = 1.0
 
-# `Key: value` — RFC-822-ish, the shape git itself calls a trailer. Used only to decide
-# whether a blank line is needed before ours.
 _TRAILER_SHAPE = re.compile(r"^[A-Za-z][A-Za-z0-9-]*: ")
 
 
@@ -72,11 +46,8 @@ _TRAILER_SHAPE = re.compile(r"^[A-Za-z][A-Za-z0-9-]*: ")
 
 
 def _git(repo: Path, *args: str) -> str | None:
-    """Read-only git in `repo`; stdout on success, None on any failure.
-
-    Inside a commit hook "git is missing" and "git said no" must be the same silent answer,
-    which `gitstate._git` already guarantees.
-    """
+    """Read-only git in `repo`; stdout on success, None on any failure — inside a commit
+    hook "git is missing" and "git said no" must be the same silent answer."""
     code, out = gitstate._git(repo, *args)
     return out if code == 0 else None
 
@@ -84,20 +55,16 @@ def _git(repo: Path, *args: str) -> str | None:
 def _paths_of(out: str | None) -> tuple[str, ...]:
     if not out:
         return ()
-    # De-duped, order preserved: a rename shows up on two lines, and `--name-only` over a
-    # multi-parent range can repeat a path.
+    # De-duped, order preserved: a rename shows up on two lines.
     return tuple(dict.fromkeys(
         line.strip().replace("\\", "/") for line in out.splitlines() if line.strip()
     ))
 
 
 def staged_paths(repo: Path, base: str = "HEAD") -> tuple[str, ...]:
-    """Repo-relative paths the pending commit will change.
-
-    `base` is HEAD for a normal commit and ``HEAD^`` for an amend, so amending attests the
-    whole rewritten commit rather than only the delta being folded in. Falls back to a bare
-    `--cached` diff when the base doesn't resolve — the root commit has no HEAD.
-    """
+    """Repo-relative paths the pending commit will change. ``HEAD^`` for an amend, so
+    amending attests the whole rewritten commit; falls back to a bare `--cached` diff when
+    the base doesn't resolve, as the root commit has no HEAD."""
     for args in ((base,), ()):
         out = _git(repo, "diff", "--cached", "--name-only", *args)
         if out is not None:
@@ -106,20 +73,16 @@ def staged_paths(repo: Path, base: str = "HEAD") -> tuple[str, ...]:
 
 
 def _commit_paths(repo: Path, ref: str) -> tuple[str, ...]:
-    """Paths `ref` changed against its first parent — the verify-side mirror of `staged_paths`."""
+    """Paths `ref` changed against its first parent — verify's mirror of `staged_paths`."""
     return _paths_of(_git(repo, "show", "--pretty=format:", "--name-only", ref))
 
 
 def _commit_time(repo: Path, ref: str) -> float | None:
-    """`ref`'s committer epoch — the upper bound on which turns it could possibly cover.
+    """`ref`'s committer epoch — the upper bound on which turns it could cover.
 
-    Committer date rather than author date because it tracks when the commit *object* was
-    made, which is what `--amend` moves and what the trailer is rewritten alongside.
-    ponytail: a rebase moves it later without re-running the hook, so a turn recorded between
-    the original commit and the rebase can widen the window and make an old trailer read as a
-    mismatch. Upgrade path if that ever bites: carry the covered turn ids in the trailer so
-    verification stops having to reconstruct the set.
-    """
+    ponytail: a rebase moves it later without re-running the hook, widening the window so an
+    old trailer can read as a mismatch. Upgrade path: carry the covered turn ids in the
+    trailer so verification needn't reconstruct the set."""
     out = _git(repo, "show", "-s", "--format=%ct", ref)
     try:
         return float((out or "").strip()) + _CLOCK_SLACK
@@ -133,10 +96,8 @@ def _commit_time(repo: Path, ref: str) -> float | None:
 def attestation(repo: Path, paths, until: float | None = None) -> dict | None:
     """The attestation body for a commit touching `paths`, or None when nothing covers it.
 
-    Pure over the record file: same records + same paths + same bound ⇒ same dict ⇒ same
-    digest, on any machine, forever. `until` bounds by `ended_at` so a turn recorded *after*
-    the commit can never sneak into a later recomputation and break verification.
-    """
+    `until` bounds by `ended_at` so a turn recorded *after* the commit can't sneak into a
+    later recomputation and break verification."""
     wanted = {str(p).replace("\\", "/") for p in paths if p}
     if not wanted:
         return None
@@ -160,8 +121,7 @@ def attestation(repo: Path, paths, until: float | None = None) -> dict | None:
 
 
 def summary(body: dict) -> str:
-    """The human half of the trailer: turn count and verdict tally, led by `NEVER VERIFIED`
-    when not one turn behind this commit ever reached VERIFIED."""
+    """Turn count and verdict tally, led by `NEVER VERIFIED` when no turn reached VERIFIED."""
     counts = body.get("verdicts") or {}
     known = [v for v in _VERDICT_ORDER if v in counts]
     tally = ", ".join(f"{counts[v]} {v}" for v in (*known, *sorted(set(counts) - set(known))))
@@ -176,13 +136,10 @@ def trailer_line(body: dict) -> str:
 
 
 def trailer(repo: Path, source: str | None = None) -> str | None:
-    """The trailer for the commit that is about to be made, or None when there's nothing.
+    """The trailer for the commit about to be made, or None when there's nothing.
 
-    `source` is git's own `prepare-commit-msg` second argument. A **merge** carries no work
-    of its own — its content was attested on the commits being merged — so it gets no
-    trailer. `commit` means `--amend` (or `-c`), so the base is HEAD^ and the attestation
-    covers the whole rewritten commit.
-    """
+    `source` is git's `prepare-commit-msg` second argument. A merge carries no work of its
+    own, so no trailer; `commit` means `--amend` (or `-c`), so the base is HEAD^."""
     if source == "merge":
         return None
     body = attestation(repo, staged_paths(repo, "HEAD^" if source == "commit" else "HEAD"))
@@ -193,41 +150,35 @@ def trailer(repo: Path, source: str | None = None) -> str | None:
 
 
 def _strip(text: str) -> str:
-    """Drop any trailer we previously wrote. Idempotency for a re-run, correctness for an
-    amend: the message comes back with the old line in it, and the new one must replace it
-    rather than stack on it."""
+    """Drop any trailer we previously wrote, so a re-run or an amend replaces it rather
+    than stacking on it."""
     return "".join(
         ln for ln in text.splitlines(keepends=True) if not ln.startswith(f"{TRAILER}:")
     )
 
 
 def _append(text: str, line: str) -> str:
-    """Put `line` at the end of the message body — after the prose, *before* git's comment
-    block (`# Please enter the commit message…`, the `# ------ >8 ------` scissors), which
-    git strips and which would otherwise swallow the trailer.
-    """
+    """Put `line` after the prose but *before* git's comment block, which git strips and
+    which would otherwise swallow the trailer."""
     lines = text.splitlines()
     cut = len(lines)
     while cut and (not lines[cut - 1].strip() or lines[cut - 1].lstrip().startswith("#")):
         cut -= 1
     body, tail = lines[:cut], lines[cut:]
-    # Normalize the gap between body and comment block to exactly one blank line, re-added
-    # below. Without this the run is not idempotent: the blank we insert before our trailer
-    # is *also* in `tail`, so a second pass adds another, and another.
+    # Normalize the gap to exactly one blank line, re-added below; without it a second pass
+    # keeps adding blanks and the run isn't idempotent.
     while tail and not tail[0].strip():
         tail.pop(0)
     if tail:
         tail = ["", *tail]
     if not body:
-        # An empty message (an editor commit, subject not typed yet). Two blank lines, so
-        # whatever the user types on line 1 still gets its separating blank line.
+        # Empty message (editor commit, subject not typed yet): two blank lines, so whatever
+        # the user types on line 1 still gets its separating blank line.
         block = ["", "", line]
     elif len(body) > 1 and _TRAILER_SHAPE.match(body[-1]):
-        # Already a trailer block (`Signed-off-by: …`) — join it rather than splitting it.
-        # `len(body) > 1` is load-bearing: a conventional-commit subject (`fix: tweak`,
-        # `feat: add x`) is *exactly* trailer-shaped, and treating line 1 as a trailer glues
-        # the attestation onto the subject — which is then the whole commit summary in every
-        # `git log --oneline` forever. The subject always gets its blank line.
+        # Already a trailer block (`Signed-off-by: …`) — join it. `len(body) > 1` is
+        # load-bearing: a conventional-commit subject (`fix: tweak`) is *exactly*
+        # trailer-shaped, and gluing the attestation onto it wrecks every `git log --oneline`.
         block = [*body, line]
     else:
         block = [*body, "", line]
@@ -237,12 +188,9 @@ def _append(text: str, line: str) -> str:
 def write_message(repo: Path, msg_path: str | Path, source: str | None = None) -> bool:
     """Stamp the trailer into git's commit-message file. True if the file changed.
 
-    The `prepare-commit-msg` entrypoint. **Never raises and never fails a commit**: an
-    unreadable message file, an unwritable one, a repo with no records, a repo where Tycho
-    was never installed — each returns False and leaves the message exactly as it was. An
-    existing trailer is only removed when there is a new one to put in its place, so a pruned
-    record downgrades to "stale trailer", never to "silently dropped attestation".
-    """
+    **Never raises and never fails a commit**: every failure returns False, message
+    untouched. An existing trailer is only removed when there's a new one to replace it, so
+    a pruned record downgrades to "stale trailer", never "dropped attestation"."""
     path = Path(msg_path)
     try:
         text = path.read_text(encoding="utf-8")
@@ -265,8 +213,7 @@ def write_message(repo: Path, msg_path: str | Path, source: str | None = None) -
 
 
 def claimed_digest(message: str) -> str | None:
-    """The `sha256:…` a commit message claims, or None. Last trailer wins, so a message that
-    somehow carries two is answered by the newest."""
+    """The `sha256:…` a commit message claims, or None. Last trailer wins."""
     found = None
     for line in message.splitlines():
         if line.startswith(f"{TRAILER}:") and (hit := _DIGEST_RE.search(line)):
@@ -277,10 +224,8 @@ def claimed_digest(message: str) -> str | None:
 def verify(repo: Path, ref: str = "HEAD") -> tuple[bool | None, str]:
     """Check a commit's trailer against the record. (True | False | None, one line).
 
-    None is a first-class answer, not a soft failure: "this commit has no attestation" and
-    "the record no longer reaches back this far" are both *unknown*, and reporting either as
-    a mismatch would turn ordinary history and ordinary pruning into a false accusation.
-    """
+    None is a first-class answer: reporting "no attestation" or "the record no longer
+    reaches back this far" as a mismatch would be a false accusation."""
     short = (_git(repo, "rev-parse", "--short", ref) or ref).strip() or ref
     message = _git(repo, "log", "-1", "--format=%B", ref)
     if message is None:
@@ -303,19 +248,13 @@ def verify(repo: Path, ref: str = "HEAD") -> tuple[bool | None, str]:
     )
 
 
-# --- entrypoint --------------------------------------------------------------
-#
-# `attest.py` carries its own `__main__` because the installed git hook calls
-# `<python> -m tycho.attest <msgfile> <source>` directly. Printing and verifying live in
-# `cli._attest`; this is only the write path.
+# --- entrypoint: the git hook calls `<python> -m tycho.attest <msgfile> <source>` ---------
 
 
 def main(argv: list[str] | None = None) -> int:
     """`[--write] <msgfile> [<source>]` — git's `prepare-commit-msg` argv, verbatim.
 
-    **Always returns 0.** It runs inside `git commit`, and a verifier that can make a commit
-    fail is one people uninstall.
-    """
+    **Always returns 0**: a verifier that can fail a commit is one people uninstall."""
     args = list(sys.argv[1:] if argv is None else argv)
     if args and args[0] == "--write":
         args = args[1:]

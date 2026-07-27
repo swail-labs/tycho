@@ -1,40 +1,24 @@
-"""`tycho review` — risk-focus the diff (strategy §9.4).
+"""`tycho review` — risk-focus the diff: which part of this do I actually need to read?
 
-*"These 3 hunks were touched by no test and exercised by no command."* Change-aware
-coverage, pitched as a review aid rather than a check. It answers the most expensive
-question a developer has — *which part of this do I actually need to read?* — and unlike a
-lie detector it doesn't decay, because it makes a coverage claim, not a correctness one.
-
-**What the signal actually proves, exactly.** Tycho has no per-line coverage: no
-coverage.py, no instrumentation, no import hook — and adding one would cost the
-zero-dependency invariant that is the reason this runs on every repo. So the honest claim
-is about *the record*, not about execution:
+**What the signal proves, exactly.** Tycho has no per-line coverage (that would cost the
+zero-dependency invariant), so the honest claim is about *the record*, not execution:
 
     "no command Tycho recorded ran after this hunk was written"
 
-That is a fact about the turn record and the diff, and it is checkable. What this module
-refuses to say is "this line never executed" — it cannot know that, because a command it
-never saw (a manual `pytest` in another terminal, CI, a debugger) proves nothing to it
-either way. A review tool that overclaims coverage is worse than no review tool, so every
-finding here is worded as what was *recorded*, not what happened.
+What this module refuses to say is "this line never executed" — a command it never saw (a
+manual `pytest`, CI, a debugger) proves nothing to it either way. A review tool that overclaims
+coverage is worse than none, so every finding is worded as what was *recorded*.
 
-**Granularity.** Hunks, not files: "this file wasn't covered" is unactionable on a
-900-line file. The coverage evidence itself is per-file — the record stores which files a
-turn touched, never which lines — so hunks in one file share a verdict. What hunks buy is
-the address: `tycho/state.py:88-114` is somewhere to put your eyes, `tycho/state.py` is a
-chore. That split is stated in the output rather than blurred.
+**Granularity.** Hunks, not files, because `tycho/state.py:88-114` is somewhere to put your
+eyes. The evidence itself is per-file (the record stores files, never lines), so hunks in one
+file share a verdict — stated in the output rather than blurred.
 
-**Timing is the whole game.** A passing test run *before* an edit landed proves nothing
-about that edit — it's the same reasoning `checks.test_freshness` encodes as STALE, and it
-is mirrored here rather than restated, down to reading the recorded `test_freshness`
-result when deciding what a turn's run covered. Two definitions of "covered" would
-eventually disagree with the verdict, which is the split-brain `checks._outcome` exists to
-prevent.
+**Timing is the whole game.** A passing run *before* an edit landed proves nothing about that
+edit. Rather than restate that rule, this reads the turn's own recorded `test_freshness` result;
+two definitions of "covered" would eventually disagree with the verdict.
 
-**Advisory, always.** `review` ranks and prints; it does not gate. The strategy doc
-demotes PR-blocking CI as a distraction that drags the roadmap toward "AI code review
-vendor" (§6), so the default exit is OK regardless of what it found. `unexercised()` backs
-the opt-in `--exit-code` gate in `cli.py`.
+**Advisory, always.** `review` ranks and prints; the default exit is OK regardless of what it
+found. `unexercised()` backs the opt-in `--exit-code` gate in `cli.py`.
 """
 
 from __future__ import annotations
@@ -48,8 +32,7 @@ from . import gitstate
 from . import record as record_mod
 from . import state
 
-# Risk levels, worst first — the list order *is* the ranking, so `_ORDER` never needs
-# maintaining separately from the constants.
+# Risk levels, worst first — the list order *is* the ranking.
 UNEXERCISED = "UNEXERCISED"    # nothing Tycho recorded ran after this was written
 UNTESTED = "NO TEST RUN"       # a command ran after it, but no test runner did
 UNRECORDED = "UNRECORDED"      # no recorded turn touched this file at all
@@ -59,8 +42,7 @@ PROSE = "PROSE"                # docs and assets: no test run covers them, by co
 
 _LEVELS = (UNEXERCISED, UNTESTED, UNRECORDED, TEST, EXERCISED, PROSE)
 _ORDER = {level: i for i, level in enumerate(_LEVELS)}
-# Levels that get one line each, in order. Everything below is one summary line: a wall of
-# every hunk is a wall nobody reads (§4 has a direct user warning about exactly that).
+# Levels that get one line each; everything below is one summary line.
 _DETAILED = (UNEXERCISED, UNTESTED, UNRECORDED, TEST)
 _MARK = {UNEXERCISED: "✗", UNTESTED: "⚠", UNRECORDED: "?", TEST: "•", EXERCISED: "✓", PROSE: "•"}
 _HEADLINE = {
@@ -70,11 +52,11 @@ _HEADLINE = {
     TEST: "the change is a test — it can't vouch for itself",
 }
 
-# How many hunks get their own line before the rest are counted. Past this the output has
-# stopped being a review aid and started being a diff.
+# How many hunks get their own line before the rest are counted. Past this it's a diff, not a
+# review aid.
 _MAX_DETAIL = 20
-# Bytes of an untracked file we'll read to size it. Beyond this the line range is a
-# formality anyway — the whole file is new, so the range is "all of it".
+# Bytes of an untracked file we'll read to size it. Beyond this the line range is a formality —
+# the whole file is new.
 _UNTRACKED_MAX_BYTES = 1 << 20
 
 
@@ -101,10 +83,9 @@ def review(repo: Path, since: str = "HEAD") -> list[str]:
 def inspect(repo: Path, since: str = "HEAD") -> tuple[list[str], list[Finding]]:
     """The rendered review *and* the findings behind it, in one pass.
 
-    `review` is the printing surface; a caller that also wants to act on the result — the
-    `--exit-code` gate in cli.py — needs the findings too, and re-deriving them would mean a
-    second `git diff` and a second pass over the record. Returns `[]` findings on every
-    can't-say path, so "no findings" is never mistaken for "nothing was wrong".
+    Re-deriving them for the `--exit-code` gate would mean a second `git diff` and a second pass
+    over the record. Returns `[]` findings on every can't-say path, so "no findings" is never
+    mistaken for "nothing was wrong".
     """
     if not gitstate.is_repo(repo):
         return ["tycho: not a git repository — nothing to review."], []
@@ -114,8 +95,8 @@ def inspect(repo: Path, since: str = "HEAD") -> tuple[list[str], list[Finding]]:
     untracked = _untracked_hunks(repo)
     blind = hunks is None
     if blind:
-        # The ref doesn't resolve (a fresh repo with no commits is the common one). The
-        # untracked files are still real, so review those and say what's missing.
+        # The ref doesn't resolve (usually a fresh repo with no commits). The untracked files are
+        # still real, so review those and say what's missing.
         if not untracked:
             return [f"tycho: can't diff against {since} — nothing to compare."], []
         hunks = ()
@@ -130,11 +111,8 @@ def inspect(repo: Path, since: str = "HEAD") -> tuple[list[str], list[Finding]]:
 
 
 def classify(repo: Path, hunks, now: float | None = None) -> list[Finding]:
-    """Rank `hunks` by what the record can say about them. One pass over the record.
-
-    `now` is injectable so the ages in the reasons are reproducible in a test — the same
-    reason a record's `ended_at` is passed into `record.build` rather than read from a clock.
-    """
+    """Rank `hunks` by what the record can say about them, in one pass. `now` is injectable so
+    the ages in the reasons are reproducible in a test."""
     now = time.time() if now is None else now
     paths = {h.path for h in hunks}
     facts = _facts(repo, paths)
@@ -163,10 +141,9 @@ class _Facts:
 def _facts(repo: Path, paths: set[str]) -> _Facts:
     """One pass, oldest→newest, keeping only aggregates for `paths`.
 
-    Bounded by construction: memory is O(len(paths)) whatever the record's size, so a repo
-    with 5000 turns costs the same as one with five. `iter_records` already skips corrupt
-    lines; the isinstance guards here cover the other half of that — a *well-formed* line
-    carrying a junk type, which would otherwise blow up on a comparison.
+    Memory is O(len(paths)) whatever the record's size. `iter_records` skips corrupt lines; the
+    isinstance guards cover the other half — a well-formed line carrying a junk type, which
+    would blow up on a comparison.
     """
     edited: dict[str, float] = {}
     last_test = last_command = None
@@ -189,14 +166,11 @@ def _facts(repo: Path, paths: set[str]) -> _Facts:
 def _run_ts(row: dict) -> tuple[bool, bool, float] | None:
     """(a test runner passed, some command passed, when) for one record — or None.
 
-    **When** is the subtle part. The record stores per-turn bounds, not per-command
-    timestamps, so the exact instant a command ran is not recoverable; the turn's
-    `ended_at` is the latest it could have been. Using that would quietly claim a run
-    covered an edit made later in the same turn — which is precisely what
-    `checks.test_freshness` reports as STALE. So when the turn itself recorded STALE, the
-    run is dated to `started_at` instead: the earliest it could have been, which is the
-    side of the trade that under-claims coverage. The two can't disagree, because this
-    reads that check's own result rather than re-deriving it.
+    **When** is the subtle part. The record stores per-turn bounds, not per-command timestamps,
+    so `ended_at` is the latest a command could have run — and using it would claim a run covered
+    an edit made later in the same turn. So when the turn itself recorded `test_freshness` STALE,
+    the run is dated to `started_at`: the earliest it could have been, the side that under-claims
+    coverage. Reading that check's own result rather than re-deriving it keeps the two agreeing.
     """
     passed_test = passed_any = False
     for c in record_mod._rows(row, "commands"):
@@ -267,10 +241,9 @@ def _status_note(hunk) -> str:
 def _has_sibling_test(path: str, changed_tests) -> bool:
     """Did a test file that looks like it belongs to `path` change in this same diff?
 
-    ponytail: stem-in-basename, which catches `test_foo.py`, `foo_test.go`, `foo.test.ts`
-    and `FooTest.java`. It over-matches (`test_foobar.py` claims `foo.py`) on the side that
-    stays quiet rather than the side that cries wolf — this only ever *suppresses* a
-    trailing note, never creates a finding.
+    ponytail: stem-in-basename, catching `test_foo.py`, `foo_test.go`, `foo.test.ts`,
+    `FooTest.java`. It over-matches on the quiet side — it only ever suppresses a trailing note,
+    never creates a finding.
     """
     stem = path.replace("\\", "/").rsplit("/", 1)[-1].split(".", 1)[0].lower()
     return bool(stem) and any(stem in t.rsplit("/", 1)[-1].lower() for t in changed_tests)
@@ -299,8 +272,8 @@ def _untracked_hunks(repo: Path) -> tuple[gitstate.Hunk, ...]:
 
 
 def _is_own_state(repo: Path, path: str) -> bool:
-    """Tycho's own `.tycho/` directory. Nobody reviews the verifier's state file, and it is
-    not gitignored, so an un-init'd repo would otherwise open every review with our noise."""
+    """Tycho's own `.tycho/` directory. It is not gitignored, so an un-init'd repo would
+    otherwise open every review with our own noise."""
     return path.replace("\\", "/").startswith(state.dir_for(repo).name + "/")
 
 
@@ -321,9 +294,8 @@ def _size_of(path: Path) -> tuple[int, bool]:
 def render(findings, since: str, truncated: bool = False) -> list[str]:
     """Worst first, aligned, and honest about its own limits in the last line.
 
-    No colour, ever — not conditionally on a tty, just none. `doctor` and `report` carry
-    this whole family on marks and indentation alone, and a review that is piped into a
-    file or a PR comment is a first-class use, not a degraded one.
+    No colour, ever — not even on a tty: a review piped into a file or a PR comment is a
+    first-class use, and marks plus indentation carry it.
     """
     files = len({f.hunk.path for f in findings})
     head = f"tycho review — {len(findings)} hunk(s) in {files} file(s) changed against {since}"

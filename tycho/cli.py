@@ -1,8 +1,7 @@
 """`tycho` command-line entry point.
 
-Exit codes are part of the public contract — a team gating in pre-push/CI depends on
-them. See ``ExitCode``: only an adverse finding is non-zero, and FAILED (1) is kept
-distinct from STALE (3) so a gate can choose which one blocks.
+Exit codes are a public contract (CI gates depend on them): only an adverse finding is
+non-zero, and each adverse kind gets its own code so a gate can choose what blocks.
 """
 
 from __future__ import annotations
@@ -30,17 +29,16 @@ class ExitCode(IntEnum):
     STALE = 3  # edits landed after the last passing test run
     INTERNAL = 4  # Tycho itself could not complete (bad transcript/config/git)
     UNHEALTHY = 5  # `doctor`: Tycho is installed here but not working (broken/outdated)
-    # `review --exit-code` only. Deliberately its own code rather than reusing FAILED: a hunk
-    # nothing exercised is a *coverage* claim, not a proof that anything is wrong, and a gate
-    # that can't tell those apart would fail honest work.
+    # `review --exit-code` only, never FAILED: a hunk nothing exercised is a coverage claim,
+    # not proof anything is wrong.
     UNEXERCISED = 6
     MISMATCH = 7  # `attest --verify`: the trailer does not match the record
 
 
 _VERDICT_EXIT = {Verdict.FAILED: ExitCode.FAILED, Verdict.STALE: ExitCode.STALE}
 
-# One line per command, defined once: argparse's `-h` and `tycho help` both render these,
-# and a help screen that disagrees with `-h` is worse than no help screen.
+# One line per command, defined once — both `-h` and `tycho help` render these, so they
+# can't drift apart.
 _COMMANDS = {
     "verify": "verify what the agent claimed and render a verdict",
     "hook": "Stop-hook entrypoint: read hook JSON on stdin, verify, print",
@@ -72,22 +70,13 @@ non-zero, so CI can gate on it."""
 
 
 def _force_utf8() -> None:
-    """Keep Windows' legacy console (cp1252) from crashing on our status glyphs.
-
-    `doctor`/`verify` print ✓/✗/•/→; a default Windows console can't encode them and
-    `print` raises UnicodeEncodeError — a traceback where the whole point is a verdict
-    that fails open. Reconfigure to UTF-8 (renders on any modern terminal), with
-    errors=replace so even a stream that can't do UTF-8 degrades instead of raising.
-    Fail-open: a stream without `reconfigure()` (older, or already wrapped) is left be.
-    """
+    """Keep Windows' legacy cp1252 console from raising UnicodeEncodeError on our ✓/✗/•/→
+    status glyphs. errors=replace so a non-UTF-8 stream degrades instead of raising."""
     for stream in (sys.stdout, sys.stderr):
         try:
             stream.reconfigure(encoding="utf-8", errors="replace")
         except Exception:
-            # broad catch is correct — this is best-effort cosmetic setup and
-            # must never be why a command fails (a stream with no/File reconfigure, or a
-            # hostile one that raises). Fail open and let the command run.
-            pass
+            pass  # fail open: cosmetic setup must never be why a command fails
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -98,9 +87,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         epilog="run `tycho help` for what Tycho is and whether it's live in this repo",
     )
     parser.add_argument("--version", action="version", version=f"tycho {__version__}")
-    # Not required: bare `tycho` defaults to `verify` (below), so "run tycho, see a verdict"
-    # is one word — the on-demand path that works even where the Stop hook can't fire, e.g.
-    # Codex on Windows.
+    # Not required: bare `tycho` defaults to `verify`, the on-demand path that works even
+    # where the Stop hook can't fire (e.g. Codex on Windows).
     sub = parser.add_subparsers(dest="command", required=False)
 
     v = sub.add_parser("verify", help=_COMMANDS["verify"])
@@ -144,8 +132,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="remove the machine-wide install instead of this repo's",
     )
     # `status` stays as a hidden back-compat alias: deployed statusLine entries and slash
-    # commands (/tycho-status, --off/--on) still say `status`, and this tool ships to installs
-    # that already have them.
+    # commands still say `status`.
     s = sub.add_parser("statusline", aliases=["status"], help=_COMMANDS["statusline"])
     toggle = s.add_mutually_exclusive_group()
     toggle.add_argument("--off", action="store_true", help="hide the indicator in this repo (the hook keeps verifying)")
@@ -163,18 +150,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     bl.add_argument("-n", "--limit", type=int, default=10, help="how many turns to show (default 10)")
     lg = sub.add_parser("log", help=_COMMANDS["log"])
     lg.add_argument("-n", "--limit", type=int, default=20, help="how many turns to show (default 20)")
-    # Both filter *inside* the bounded stream, so `--verdict FAILED -n 20` gives twenty
-    # failures rather than the failures among the last twenty turns.
+    # Both filter *inside* the bounded stream: `--verdict FAILED -n 20` gives twenty failures,
+    # not the failures among the last twenty turns.
     lg.add_argument("--verdict", help="only turns with this verdict, e.g. FAILED")
     lg.add_argument("--since", metavar="YYYY-MM-DD", help="only turns on or after this date")
     rv = sub.add_parser("review", help=_COMMANDS["review"])
     rv.add_argument("--since", default="HEAD", help="git ref to diff from (default: HEAD)")
-    # Advisory by default (§6 demotes PR-gating). This is the opt-in for a caller that
-    # genuinely wants a gate — a distinct code, never reusing verify's FAILED/STALE, because
-    # "nothing exercised this" is a coverage claim, not a proof that anything is wrong.
-    # Gates on UNEXERCISED/NO TEST RUN only — never on UNRECORDED, which just means no turn
-    # Tycho saw touched the file (human-written, or predating the install). Gating on that
-    # would fail every honest hand-written commit.
+    # Advisory by default; this is the opt-in gate. Gates on UNEXERCISED/NO TEST RUN only —
+    # never on UNRECORDED, which just means no turn Tycho saw touched the file (hand-written,
+    # or predating the install), and gating on that would fail every honest commit.
     rv.add_argument(
         "--exit-code", action="store_true",
         help=f"exit {int(ExitCode.UNEXERCISED)} if a recorded change had no command run after "
@@ -204,9 +188,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "paths", nargs="*", metavar="GLOB",
         help="one or more include globs — quote them so the shell keeps them literal, e.g. 'src/**' 'tests/**'",
     )
-    # nargs="+" (a value-taking option), not store_true: a bare flag interspersed between the
-    # `action` and `paths` positionals splits them into two groups, which argparse < 3.12 can't
-    # backfill (it drops the trailing glob). Carrying the globs on --exclude sidesteps that.
+    # nargs="+", not store_true: a bare flag between the `action` and `paths` positionals
+    # splits them into two groups, and argparse < 3.12 drops the trailing glob.
     sc.add_argument(
         "--exclude", nargs="+", metavar="GLOB",
         help="operate on the exclude list (paths carved OUT of include) instead, e.g. --exclude 'LICENSE'",
@@ -319,12 +302,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _run(argv: list[str]) -> int:
-    """`tycho run [--] <cmd>` — the opt-in escape hatch. Exec <cmd> directly and
-    forward its output and *exit code* unchanged, so `command_execution` sees the runner's
-    true status no matter how the command is wrapped, piped, or aliased — the cases static
-    parsing of the shell string can't reach. Tycho only wraps; it never alters the child's
-    exit code the caller sees, so this is safe to prefix onto anything.
-    """
+    """`tycho run [--] <cmd>` — exec <cmd> and forward its output and exit code unchanged,
+    so `command_execution` sees the true status however the command is wrapped or piped."""
     import subprocess
 
     cmd = argv[1:] if argv and argv[0] == "--" else argv
@@ -341,8 +320,7 @@ def _run(argv: list[str]) -> int:
 
 
 def _show(cwd: Path, turn: str | None) -> int:
-    """`tycho show [TURN]` — the full digest of a turn (strategy §9.1). The unprompted
-    digest is deliberately rare; this is the always-available on-demand view."""
+    """`tycho show [TURN]` — the full digest of a turn, on demand."""
     from . import digest as digest_mod
     from . import record as record_mod
     from . import state
@@ -360,7 +338,7 @@ def _show(cwd: Path, turn: str | None) -> int:
 
 def _archaeology(action: str, cwd: Path, target: str | None, limit: int,
                  verdict: str | None = None, since: str | None = None) -> int:
-    """`tycho blame <path>` / `tycho log` — what the agent did here (strategy §9.3)."""
+    """`tycho blame <path>` / `tycho log` — what the agent did here."""
     from . import archaeology
     from . import state
 
@@ -375,12 +353,7 @@ def _archaeology(action: str, cwd: Path, target: str | None, limit: int,
 
 
 def _review(cwd: Path, since: str, exit_code: bool = False) -> int:
-    """`tycho review` — which changes nothing exercised (strategy §9.4).
-
-    Advisory by default: it ranks and prints, and exits OK whatever it found. `--exit-code`
-    is the opt-in gate, and it gets its own `UNEXERCISED` code rather than `FAILED` — a hunk
-    nothing exercised is a coverage claim, not a proof that the code is wrong.
-    """
+    """`tycho review` — which changes nothing exercised. Advisory unless `--exit-code`."""
     from . import review as review_mod
     from . import state
 
@@ -393,13 +366,9 @@ def _review(cwd: Path, since: str, exit_code: bool = False) -> int:
 
 
 def _attest(cwd: Path, verify: str | None = None, write: list[str] | None = None) -> int:
-    """`tycho attest [--verify REF | --write MSGFILE [SOURCE]]` (strategy §9.7).
-
-    Bare: print the trailer for what's currently staged. `--verify`: check a commit's trailer
-    against the record — exit `MISMATCH` only on a genuine mismatch, never on "cannot tell",
-    because a pruned record must not read as a forged one. `--write` is the
-    prepare-commit-msg entrypoint, and like the hook it can never fail a commit.
-    """
+    """`tycho attest [--verify REF | --write MSGFILE [SOURCE]]`. Bare: print the trailer for
+    what's staged. `--verify` exits MISMATCH only on a genuine mismatch, never on "cannot tell" —
+    a pruned record must not read as a forged one. `--write` can never fail a commit."""
     from . import attest as attest_mod
     from . import state
 
@@ -419,12 +388,8 @@ def _attest(cwd: Path, verify: str | None = None, write: list[str] | None = None
 
 
 def _help(cwd: Path) -> int:
-    """One screen: what Tycho is, whether it's live *here*, and every command.
-
-    The liveness line is the reason this exists. `-h` lists subcommands but can't answer
-    the question people actually have — is it on? — and nobody discovers `doctor` until
-    they already suspect it isn't.
-    """
+    """One screen: what Tycho is, whether it's live *here*, and every command. The liveness
+    line is the reason this exists — `-h` can't answer "is it on?"."""
     from . import doctor
 
     print(f"tycho {__version__} — verify what an agent claims it did.")
@@ -438,17 +403,9 @@ def _help(cwd: Path) -> int:
 
 
 def _count(cwd: Path, show_ledger: bool = False) -> int:
-    """`tycho count [--ledger]` — the running tally of what Tycho caught.
-
-    Reads only what the hook already wrote (`state.catches.json`), like `status`: no engine,
-    no verification. "Caught" is the adverse tally (FAILED + STALE); INDETERMINATE is folded
-    into *blind*, because a blind spot isn't a save.
-
-    `--ledger` adds the decay view underneath (strategy §7): per-model and per-check rates
-    off the turn record. One flag, not a query language — the two questions it answers
-    ("which model is this" and "which check has gone quiet") are read together or not at all,
-    so splitting them into `--by-model`/`--checks` would only ever mean typing both.
-    """
+    """`tycho count [--ledger]` — the running tally of what Tycho caught, read straight off what
+    the hook wrote (no engine, no verification). "Caught" is FAILED + STALE; INDETERMINATE folds
+    into *blind*, because a blind spot isn't a save."""
     from . import state
 
     totals = state.totals(cwd)
@@ -457,23 +414,16 @@ def _count(cwd: Path, show_ledger: bool = False) -> int:
     print(f"this repo: {here} · all-time: {everywhere}")
     if show_ledger:
         print()
-        # `ledger` resolves the root itself, like counts(); `totals` is passed in so the view
-        # can explain its own denominator against the tally printed directly above it.
+        # `ledger` resolves the root itself; `totals` is passed in so the view can explain
+        # its denominator against the tally printed above it.
         for line in _ledger_lines(state.ledger(cwd), repo_runs=totals.get("runs")):
             print(line)
     return ExitCode.OK
 
 
 def _caught(counts: dict, totals: dict) -> str:
-    """"274 runs, 41 blind (15%), 12 caught (9 FAILED, 3 STALE)" — the headline, in the order
-    that matters. Blind rate leads because it's the one number that does *not*
-    improve as models get better: catch rate decays with agent competence, blind rate is a
-    harness/evidence problem, so a repo where catch → 0 and blind holds is telling you where
-    the work is. Shown even at 0% for that reason — a promoted metric you can't see isn't one.
-
-    The FAILED/STALE breakdown drops when zero; the whole denominator drops for a legacy tally
-    with no run count yet (runs == 0), falling back to the bare "N caught".
-    """
+    """"274 runs, 41 blind (15%), 12 caught (9 FAILED, 3 STALE)". Blind rate leads and shows
+    even at 0%: it's the one number that doesn't improve as models get better."""
     caught = counts["FAILED"] + counts["STALE"]
     breakdown = ", ".join(f"{counts[v]} {v}" for v in ("FAILED", "STALE") if counts[v])
     text = f"{caught} caught ({breakdown})" if caught else "0 caught"
@@ -495,17 +445,8 @@ def _rate(n: int, denominator: int) -> str:
 
 
 def _ledger_lines(data: dict, repo_runs: int | None = None) -> list[str]:
-    """Render `state.ledger` — per-model and per-check catch/blind rates (strategy §7).
-
-    Both denominators are printed in the header rather than left to the reader, because the
-    whole point of the view is deciding what to retire and a rate whose denominator you have
-    to guess is not evidence. Per check: catch rate is over the turns the check could *speak*
-    to, blind rate over every turn it ran in — see `state.ledger`.
-
-    The per-check `by model` column is the retirement signal itself: `caught/spoke` per model
-    id, most-observed first, so a check reading `0/…` across three generations is visible on
-    one line without any cross-model arithmetic.
-    """
+    """Render `state.ledger` — per-model and per-check catch/blind rates. Per check, catch rate
+    is over the turns the check could *speak* to, blind rate over every turn it ran in."""
     import time as time_mod
 
     turns = data["turns"]
@@ -523,11 +464,8 @@ def _ledger_lines(data: dict, repo_runs: int | None = None) -> list[str]:
         f"{data['caught']} caught ({_pct(data['caught'], turns)})",
         "  (the retained turn record — `count` above is the all-time tally)",
     ]
-    # The two numbers legitimately differ, and a reader who can't see why will assume one of
-    # them is broken. Name the two real causes rather than quietly printing both.
-    # We do NOT close the gap by writing a record from `tycho verify`: a manual verify audits a
-    # whole *session*, so recording it as a turn would invent a turn boundary that never
-    # existed — and then double-count, in the one view whose job is measuring check decay.
+    # `count` and the ledger legitimately differ; name why. Do NOT close the gap by recording a
+    # turn from `tycho verify` — it audits a whole session, so it would invent a turn boundary.
     if repo_runs is not None and repo_runs > turns:
         from .record import max_records
 
@@ -568,13 +506,12 @@ def _model_label(m: dict) -> str:
 
 def _scope(cwd: Path, action: str, paths: list[str], exclude_globs: list[str] | None = None) -> int:
     """`tycho scope list|set|add|remove [--exclude GLOB...]` — read or edit the scope_drift
-    bounds in `.tycho.toml`. Positional globs edit the include allowlist; `--exclude GLOB...`
-    edits the exclude denylist instead (paths carved back out of include — exclude wins). Zero-
-    config stays intact: an empty include means scope_drift is UNSUPPORTED. Globs are stored
-    verbatim (an explicit, deterministic bound), so quote them at the shell to keep them literal."""
+    bounds in `.tycho.toml`. Positional globs edit the include allowlist, `--exclude` the
+    denylist (exclude wins). An empty include leaves scope_drift UNSUPPORTED (zero-config).
+    Globs are stored verbatim, so quote them at the shell."""
     from . import config as config_mod
 
-    exclude = exclude_globs is not None  # --exclude carries its own globs, so its presence is the mode
+    exclude = exclude_globs is not None  # --exclude carries its own globs; its presence is the mode
     globs = exclude_globs if exclude else paths
     if action != "list":
         if not globs:
@@ -608,12 +545,9 @@ def _scope(cwd: Path, action: str, paths: list[str], exclude_globs: list[str] | 
 
 
 def _relay(cwd: Path, on: bool, off: bool) -> int:
-    """`tycho relay [--on|--off]` — the opt-in verdict relay. Off by default.
-
-    With it on, the Stop hook feeds a non-VERIFIED verdict back to Claude or Codex as context,
-    so the agent keeps working until VERIFIED — bounded by ``TYCHO_RELAY_MAX`` (default 3) so it
-    can't loop forever. Bare ``tycho relay`` reports the current setting without changing it.
-    """
+    """`tycho relay [--on|--off]` — the opt-in verdict relay, off by default. On, the Stop hook
+    feeds a non-VERIFIED verdict back to the agent, bounded by ``TYCHO_RELAY_MAX`` (default 3)
+    so it can't loop forever. Bare ``tycho relay`` just reports the setting."""
     from . import state
 
     repo = state.root_for(cwd)
@@ -636,9 +570,9 @@ def _relay(cwd: Path, on: bool, off: bool) -> int:
 
 def _override(cwd: Path, check: str | None, reason: str | None,
               on: bool, off: bool, veto: bool = False, unveto: bool = False) -> int:
-    """`tycho override [--on|--off|--veto|--unveto] | <check> "<reason>"` — the agent verdict
-    override. Toggle the capability, record a per-check override (agent), or veto one
-    (operator). Off by default; overrides and vetoes are logged to .tycho/overrides.json."""
+    """`tycho override [--on|--off|--veto|--unveto] | <check> "<reason>"` — toggle the
+    capability, record a per-check override (agent), or veto one (operator). Off by default;
+    overrides and vetoes are logged to .tycho/overrides.json."""
     from . import state
 
     repo = state.root_for(cwd)
@@ -721,14 +655,9 @@ def _print_update_notice() -> None:
 
 
 def _is_homebrew_install() -> bool:
-    """True when this is the frozen binary Homebrew installed.
-
-    A formula installs a bare executable into `<prefix>/Cellar/tycho/<version>/bin/tycho`, with
-    `<prefix>/bin/tycho` a symlink to it — so the *real* path is the signal (`realpath` resolves
-    the symlink the user actually invoked). Gated on `sys.frozen` deliberately: a plain
-    `pip install tycho-cli` into Homebrew's *Python* also lives under a Cellar path
-    (`.../Cellar/python@3.12/...`), and that one upgrades with pip, not brew.
-    """
+    """True when this is the frozen binary Homebrew installed. The realpath is the signal, since
+    `<prefix>/bin/tycho` is a symlink into the Cellar. Gated on `sys.frozen` because a plain
+    `pip install` into Homebrew's *Python* is also under a Cellar path but upgrades with pip."""
     if not getattr(sys, "frozen", False):
         return False
     real = os.path.realpath(sys.executable).replace("\\", "/").lower()
@@ -736,24 +665,13 @@ def _is_homebrew_install() -> bool:
 
 
 def _upgrade_command(force: bool = False) -> list[str]:
-    """The upgrade command for however Tycho was installed — best-effort from the install
-    path. Falls back to pip, which works for a plain `pip install`.
+    """The upgrade command for however Tycho was installed, best-effort from the install path,
+    falling back to pip.
 
-    Names the **distribution** (`tycho-cli`), not the import/command name `tycho`: the bare
-    `tycho` on PyPI is an unrelated project, so `pip install --upgrade tycho` would pull that,
-    and `pipx/uv upgrade tycho` wouldn't find the tool (installed as `tycho-cli`)
-    Single-sourced from the same constant the update check queries, so the two can't drift.
-
-    `force` reinstalls the latest even across a version pin set at install time (`uv tool
-    install tycho-cli==X` / `pipx install tycho-cli==X`). Without it, `uv tool upgrade` /
-    `pipx upgrade` only move within that pin — respecting a version the user chose on purpose.
-
-    A standalone binary can't infer its channel from `sys.prefix` (a PyInstaller build looks like
-    none of pipx/uv/pip), so its installer announces itself via ``TYCHO_INSTALL``: the npm wrapper
-    sets ``TYCHO_INSTALL=npm`` before exec'ing the binary. Without this the npm binary
-    would fall through to a `pip install` it can't run (no bundled pip). Homebrew
-    installs a bare binary with no wrapper to set that variable, so it's detected from the install
-    path instead — ``TYCHO_INSTALL=brew`` still works for anyone who wants to force it.
+    Names the **distribution** `tycho-cli`, never `tycho`: the bare `tycho` on PyPI is an
+    unrelated project. `force` crosses a version pin the user set at install time; plain upgrade
+    stays within it. A standalone binary can't infer its channel from `sys.prefix`, so its
+    installer announces itself via ``TYCHO_INSTALL`` (npm does; Homebrew is path-detected).
     """
     from . import version as version_mod
 
@@ -762,8 +680,6 @@ def _upgrade_command(force: bool = False) -> list[str]:
         return ["npm", "install", "-g", "@swail-labs/tycho@latest"]
     if channel == "brew" or _is_homebrew_install():
         # Tap-qualified: a bare `tycho` is ambiguous if another tap ships that name.
-        # `reinstall` also repairs a partially-linked keg; there's no user-set version pin for
-        # `--force` to cross here, since the formula pins the version, not the user.
         target = "swail-labs/tap/tycho"
         return ["brew", "reinstall", target] if force else ["brew", "upgrade", target]
 
@@ -803,10 +719,8 @@ def _update(skip: bool, force: bool = False) -> int:
     cmd = _upgrade_command(force=force)
     hint = "" if force else "  (if it's pinned and doesn't move, `tycho update --force`)"
     if sys.platform == "win32":
-        # A running .exe can't have its own launcher shim replaced on Windows — an in-process
-        # `uv tool upgrade` fails to copy `…\.local\bin\tycho.exe` with os error 32 ("being used
-        # by another process"). So defer: a detached child waits for THIS process to exit (which
-        # releases the lock), then upgrades against a free shim. POSIX replaces a running exe fine.
+        # A running .exe can't have its own launcher shim replaced on Windows (os error 32),
+        # so defer the upgrade to a detached child that waits for us to exit. POSIX is fine.
         try:
             _spawn_deferred_upgrade(cmd)
             print(f"Updating tycho {__version__} → {newest}. The upgrade runs once this process "
@@ -828,12 +742,8 @@ def _update(skip: bool, force: bool = False) -> int:
 
 
 def _spawn_deferred_upgrade(cmd: Sequence[str]) -> None:
-    """Windows only: run `cmd` in a detached process that first waits for us to exit, so the
-    running tycho.exe's shim is unlocked before the upgrade copies over it (follow-up).
-
-    Waits on THIS PID (deterministic, not a fixed sleep) with a 30s ceiling, then upgrades. Fully
-    detached — no console window, survives our exit — so `tycho update` returns immediately and the
-    swap happens a beat later against a released lock."""
+    """Windows only: run `cmd` detached, after waiting on THIS PID (30s ceiling) so the running
+    tycho.exe's shim is unlocked before the upgrade copies over it."""
     import os
     import subprocess
 
@@ -844,8 +754,8 @@ def _spawn_deferred_upgrade(cmd: Sequence[str]) -> None:
         f"Wait-Process -Id {ppid} -Timeout 30;"
         f"{call}"
     )
-    # CREATE_NO_WINDOW (no console flash) + CREATE_NEW_PROCESS_GROUP (survives our exit, ignores
-    # our console signals). NOT DETACHED_PROCESS — Windows rejects it alongside CREATE_NO_WINDOW.
+    # CREATE_NO_WINDOW + CREATE_NEW_PROCESS_GROUP (survives our exit). NOT DETACHED_PROCESS —
+    # Windows rejects it alongside CREATE_NO_WINDOW.
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
     subprocess.Popen(
         ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
@@ -854,11 +764,8 @@ def _spawn_deferred_upgrade(cmd: Sequence[str]) -> None:
 
 
 def _install(lines: Sequence[str]) -> int:
-    """Print init/uninstall status lines; exit non-zero if we refused to touch a file.
-
-    A refusal is an unfinished install, not a warning — `tycho init --yes` in a
-    provisioning script has to fail loudly rather than leave the repo unhooked.
-    """
+    """Print init/uninstall status lines; exit non-zero if we refused to touch a file — a
+    refusal is an unfinished install, and `tycho init --yes` in CI must fail loudly."""
     from .init import REFUSED
 
     for line in lines:
@@ -867,13 +774,9 @@ def _install(lines: Sequence[str]) -> int:
 
 
 def _warn_if_hook_broken(cwd: Path) -> None:
-    """Say so, loudly, if Tycho is installed here but wouldn't actually fire.
-
-    A manual `tycho verify` is often the only moment a human looks at Tycho — and the
-    verdict it prints would look identical whether the Stop hook has been running all
-    week or has been dead since the venv moved. Stderr, so it can't pollute a piped
-    report, and never fatal: a broken hook isn't a failed claim.
-    """
+    """Say so, loudly, if Tycho is installed here but wouldn't actually fire — a verdict looks
+    identical whether the Stop hook has been running all week or dead since the venv moved.
+    Stderr so it can't pollute a piped report, and never fatal."""
     try:
         from . import doctor
 
@@ -899,9 +802,8 @@ def _offer_first_run(cwd: Path) -> None:
 def _verify(args: argparse.Namespace) -> int:
     from . import state
 
-    # The repo root, not wherever the user happens to stand. Everything below is
-    # keyed to it: harnesses store transcripts under the *project* path, so discovery from a
-    # subdirectory finds no session and verify goes INDETERMINATE on a session that exists.
+    # The repo root, not wherever the user stands: harnesses store transcripts under the
+    # *project* path, so discovery from a subdirectory would find no session.
     cwd = state.root_for(Path.cwd())
     _offer_first_run(cwd)
     _warn_if_hook_broken(cwd)
@@ -931,16 +833,13 @@ def _verify(args: argparse.Namespace) -> int:
             if not args.session and harness.name == "opencode":
                 transcript.unlink(missing_ok=True)
     except Exception as exc:
-        # A verifier that dies on a corrupt transcript/config must say so plainly —
-        # a traceback is not a verdict. (The Stop hook stays silent; this is the
-        # manual path, where the human asked and deserves an answer.)
+        # A traceback is not a verdict: say plainly that we couldn't verify.
         print(f"tycho: could not verify {transcript} — {type(exc).__name__}: {exc}", file=sys.stderr)
         return ExitCode.INTERNAL
 
     results = engine.run_checks(session)
     verdict = engine.verdict_of(results)
-    # A manual verify is a real verification event — record it so the status bar reflects
-    # it (a green [TYCHO] after `tycho verify` → VERIFIED), same channel the hook writes.
+    # A manual verify is a real verification event — record it so the status bar reflects it.
     try:
         state.record_run(cwd, harness.name, verdict=verdict.name)
         state.record_catch(cwd, harness.name, verdict.name, results)  # evidence trail

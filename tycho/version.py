@@ -1,13 +1,11 @@
 """Is a newer Tycho published? A best-effort, offline-safe update check.
 
-**Never runs in the Stop hook and never blocks.** The check is a single stdlib HTTPS GET to
-the package index with a short timeout; anything that goes wrong — offline, slow, blocked,
-unparseable, opted out — returns None and the caller says nothing. The result is cached
-machine-wide so the network is hit at most once a day, and a dismissal counter records how
-often the user waved the notice away.
+**Never runs in the Stop hook and never blocks.** One stdlib HTTPS GET to the package index
+with a short timeout; anything that goes wrong returns None and the caller says nothing.
+Cached machine-wide, so the network is hit at most once a day.
 
-Surfaced only on the manual/less-frequent paths (`tycho doctor`, `tycho init`, the SessionStart
-agent-bootup hook) — the status bar reads the cache only, never the network.
+Surfaced only on manual paths (`tycho doctor`, `tycho init`, SessionStart bootup) — the
+status bar reads the cache only, never the network.
 """
 
 from __future__ import annotations
@@ -19,12 +17,11 @@ import urllib.request
 
 from . import __version__, state
 
-# PyPI distribution name. `tycho` is taken on PyPI by an unrelated project, so we publish and
-# check as `tycho-cli`. The import package and CLI command stay `tycho`. (Set to
-# None to make the check inert — it queries no index and never notifies.)
+# `tycho` is taken on PyPI, so we publish and check as `tycho-cli`; the import package and
+# CLI command stay `tycho`. None makes the check inert (queries nothing, never notifies).
 _DIST_NAME: str | None = "tycho-cli"
 _CHECK_TTL = 86400  # re-hit the index at most once a day
-_TIMEOUT = 2.0  # seconds — a slow index must never make a command drag
+_TIMEOUT = 2.0  # seconds
 _OPT_OUT_ENV = "TYCHO_NO_UPDATE_CHECK"
 
 
@@ -56,12 +53,10 @@ def _fetch() -> str | None:
 
 def refresh(force: bool = False) -> str | None:
     """Newest published version, hitting the network only if the cache is stale (≤ once/day)
-    and the user hasn't opted out. Cached machine-wide; never raises.
+    and the user hasn't opted out. Never raises.
 
-    `force=True` ignores the daily cache and re-hits the index now — for the explicit,
-    interactive paths (`tycho update`, `tycho doctor`), where a same-day release must be
-    seen immediately. The passive paths (status bar, per-session bootup) leave it False so
-    they never add a network round-trip."""
+    `force=True` bypasses the daily cache — for explicit paths only (`tycho update`,
+    `doctor`); passive paths leave it False so they add no network round-trip."""
     if _env_opted_out():
         return None
     cache = state.read_update_cache()
@@ -75,8 +70,7 @@ def refresh(force: bool = False) -> str | None:
 
 
 def cached_latest() -> str | None:
-    """The newest version already known from the cache — no network. For display after a
-    caller has (or hasn't) refreshed; the status header reads this."""
+    """The newest version already known from the cache — no network."""
     try:
         got = state.read_update_cache().get("latest")
         return got if isinstance(got, str) and got else None
@@ -85,8 +79,8 @@ def cached_latest() -> str | None:
 
 
 def _tuple(v: str) -> tuple[int, ...]:
-    """Numeric release tuple: "0.1.0" -> (0, 1, 0). Non-numeric suffixes are dropped — fine
-    for the 0.0.x-alpha → 0.1.0 scheme (no pre-release tags in play)."""
+    """Numeric release tuple: "0.1.0" -> (0, 1, 0). Non-numeric suffixes dropped — no
+    pre-release tags are in play."""
     return tuple(int("".join(c for c in part if c.isdigit()) or 0) for part in v.split("."))
 
 
@@ -95,10 +89,9 @@ def is_newer(candidate: str, than: str) -> bool:
 
 
 def notice(refresh_first: bool = False, force: bool = False) -> str | None:
-    """One line if a newer version exists and the user hasn't opted out or dismissed it — else
-    None. `refresh_first=True` permits the network check (doctor/init/bootup); the default reads
-    only the cache, which is what the status bar must use. `force=True` additionally bypasses the
-    daily cache (explicit `tycho update`/`doctor`). Never raises."""
+    """One line if a newer version exists and the user hasn't opted out or dismissed it, else
+    None. `refresh_first=True` permits the network check; the default reads only the cache,
+    which is what the status bar must use. Never raises."""
     if _env_opted_out():
         return None
     try:

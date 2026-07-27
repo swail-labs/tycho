@@ -9,11 +9,8 @@ from pathlib import Path
 
 
 def _git(repo: Path, *args: str) -> tuple[int, str]:
-    """Run a git command in `repo`; return (returncode, stdout). Never raises.
-
-    Git missing from PATH must read as "git said no", not as an exception: this is reachable
-    from `review.inspect` and from the commit hook, both of which promise never to raise.
-    """
+    """Run a git command in `repo`; return (returncode, stdout). Never raises — git missing
+    from PATH must read as "git said no" on the review and commit-hook paths."""
     try:
         proc = subprocess.run(
             ["git", "-C", str(repo), *args],
@@ -57,12 +54,8 @@ def blob_at(repo: Path, ref: str, path: str) -> str | None:
 
 
 def untracked(repo: Path) -> tuple[str, ...]:
-    """Paths git doesn't know about yet, honouring .gitignore.
-
-    `git diff` cannot see these, and a brand-new file an agent just wrote is exactly the
-    thing a review must not silently omit — so `tycho review` asks for them separately
-   . Non-ignored only: reviewing `node_modules` is how a review gets closed.
-    """
+    """Paths git doesn't know about yet — `git diff` can't see these, and a brand-new
+    agent-written file is exactly what a review must not omit. Honours .gitignore."""
     code, out = _git(repo, "ls-files", "--others", "--exclude-standard")
     if code != 0:
         return ()
@@ -71,16 +64,10 @@ def untracked(repo: Path) -> tuple[str, ...]:
 
 # --- diff hunks --------------------------------------------------------------
 #
-# File-level granularity is a much weaker statement than it looks: "this file wasn't
-# covered" is unactionable on a 900-line file, where "lines 88-114 weren't" is a place to
-# put your eyes. So `review` needs actual hunks, which means parsing unified diff — git has
-# no plumbing that hands you line ranges directly.
-#
-# Parsed off `git diff`'s own text with the counts in the `@@` header as the authority for
-# where a hunk body ends, rather than "until a line that doesn't start with +/-/space" — a
-# blank context line and a diff of a diff both break the latter. Anything this parser does
-# not recognize degrades to a whole-file entry marked `unparsed`, never to silence and never
-# to a guessed range: an invented line number in a review tool is worse than no line number.
+# The counts in the `@@` header are the authority for where a hunk body ends, NOT "until a
+# line that doesn't start with +/-/space": a blank context line and a diff of a diff both
+# break the latter. Anything unrecognized degrades to a whole-file `unparsed` entry — an
+# invented line number is worse than no line number.
 
 MAX_HUNKS = 2000  # a bound, not a policy — see `parse_hunks`
 
@@ -91,12 +78,9 @@ _HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 class Hunk:
     """One contiguous run of changed lines, addressed on the side that still exists.
 
-    `start`/`end` are 1-based and inclusive, and are the *changed* lines only — the
-    surrounding context git printed is trimmed off, because context is what you read, not
-    what you review. Both are 0 for a hunk that has no line range at all (`binary`,
-    `renamed` with no edit, `unparsed`), which `ref` renders as a bare path.
-
-    `status` is one of: modified | added | deleted | renamed | binary | unparsed | untracked.
+    `start`/`end` are 1-based, inclusive, and cover the *changed* lines only; both are 0 for
+    a hunk with no line range (`binary`, `renamed` with no edit, `unparsed`). `status`:
+    modified | added | deleted | renamed | binary | unparsed | untracked.
     """
 
     path: str
@@ -108,7 +92,7 @@ class Hunk:
 
     @property
     def ref(self) -> str:
-        """`file:line-range` — clickable in most terminals, greppable in all of them."""
+        """`file:line-range` — clickable in most terminals."""
         if not self.start:
             return self.path
         return f"{self.path}:{self.start}" if self.start == self.end else (
@@ -124,9 +108,7 @@ def diff_hunks(repo: Path, since: str = "HEAD", limit: int = MAX_HUNKS) -> tuple
     """Changed hunks between `since` and the working tree, or **None** when git couldn't say.
 
     None is not "no changes" — it is "unknown ref, no commits yet, not a repo, git blew up".
-    Callers must keep those apart; reporting a bad ref as a clean diff would be the tool
-    quietly claiming everything is fine.
-    """
+    Reporting a bad ref as a clean diff would quietly claim all is fine."""
     code, out = _git(
         repo,
         "-c", "core.quotePath=false",  # keep non-ASCII paths readable rather than \xNN-escaped
@@ -140,18 +122,16 @@ def diff_hunks(repo: Path, since: str = "HEAD", limit: int = MAX_HUNKS) -> tuple
 def parse_hunks(text: str, limit: int = MAX_HUNKS) -> tuple[Hunk, ...]:
     """Unified diff text → hunks. Pure, total, and never raises on malformed input.
 
-    `limit` caps the result: a 40k-hunk refactor is not something anyone reviews hunk by
-    hunk, and an unbounded parse turns a review into a hang. Callers compare against the
-    limit to say the list was cut.
-    """
+    `limit` caps the result so an unbounded parse can't hang a review; callers compare
+    against it to say the list was cut."""
     hunks: list[Hunk] = []
     path: str | None = None
     status = "modified"
     produced = False
 
     def flush() -> None:
-        # A pure rename (or a mode change) has no `@@` at all, yet the file did change —
-        # emit it with no range rather than dropping it.
+        # A pure rename or mode change has no `@@` yet the file did change — emit it with
+        # no range rather than dropping it.
         nonlocal produced
         if path and not produced and status in ("renamed", "deleted", "added"):
             hunks.append(Hunk(path, 0, 0, 0, 0, status))
@@ -209,10 +189,8 @@ def parse_hunks(text: str, limit: int = MAX_HUNKS) -> tuple[Hunk, ...]:
 def _read_body(lines, i, m, path, status):
     """Consume one hunk body, returning (hunk|None, next index).
 
-    Walks both cursors at once so a deletion is addressable on the new side too — where a
-    removed line *was* is still a place to look, and a hunk that only deletes is otherwise
-    unaddressable. The header's counts decide when the body ends.
-    """
+    Walks both cursors at once so a delete-only hunk is still addressable on the new side.
+    The header's counts decide when the body ends."""
     old_start, old_left = int(m.group(1)), int(m.group(2) or 1)
     new_start, new_left = int(m.group(3)), int(m.group(4) or 1)
     new_len = new_left

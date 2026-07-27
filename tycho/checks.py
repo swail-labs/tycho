@@ -1,8 +1,6 @@
-"""The deterministic checks. Each is a pure function of the Session snapshot.
-
-A check returns exactly one CheckResult. When a check doesn't apply (no relevant
-input) it returns UNSUPPORTED with a reason — never a false FAIL. `run_checks`
-drives the registry and honours `config.disabled_checks`.
+"""The deterministic checks. Each is a pure function of the Session snapshot returning one
+CheckResult. A check that doesn't apply returns UNSUPPORTED with a reason — never a false FAIL.
+`run_checks` drives the registry and honours `config.disabled_checks`.
 """
 
 from __future__ import annotations
@@ -60,39 +58,30 @@ _TEST_RUNNERS = (
     "tox",
 )
 
-# The shell tools an agent runs commands through. Runner detection isn't Bash-specific:
-# a PowerShell/pwsh/Shell tool runs `pytest` just the same, and a Bash-only filter made
-# those runs — and every check that depends on them — invisible. Cursor already
-# maps Shell→Bash in its reader; this covers tools/harnesses that don't normalize.
+# Not Bash-only: a PowerShell/Shell tool runs `pytest` just the same, and filtering them out
+# makes those runs invisible to every check.
 _SHELL_TOOLS = frozenset({"Bash", "Shell", "sh", "PowerShell", "powershell", "pwsh"})
 
-# Ephemeral-env wrappers put their own flags between the wrapper and the real runner:
-# `uv run --python 3.12 --with pytest python -m pytest -q`. The plain runner match misses
-# that, so for a wrapper we also look for a *multi-word* runner phrase later in the segment
-#. Multi-word phrases like `python -m pytest` are never a `--with` value, which
-# keeps this from firing on `uv run --with pytest ruff check`.
+# Ephemeral-env wrappers put flags between themselves and the runner (`uv run --with pytest
+# python -m pytest`), defeating a prefix match. Only *multi-word* phrases count later in the
+# segment: a phrase is never a `--with` value, so `uv run --with pytest ruff check` can't fire.
 _RUN_WRAPPERS = ("uv run", "uvx", "poetry run", "pdm run", "hatch run", "rye run", "npx", "pnpm dlx", "bunx")
 _PHRASE_RUNNERS = tuple(r for r in _TEST_RUNNERS if " " in r)
 
-# `<python> -m <module>` — the module IS the runner, so the leading executable can be
-# anything, including a shell variable (`"$PY" -m pytest`) or path we can't resolve
-# statically. Recognising the module directly is what makes a variable-indirected
-# interpreter visible instead of counted as "no test ran".
+# `<python> -m <module>` — the module IS the runner, so a variable-indirected interpreter
+# (`"$PY" -m pytest`) is still visible instead of counting as "no test ran".
 _MODULE_RUNNERS = ("pytest", "unittest", "nose2")
 
-# Wrappers that carry the real command *inside* an argument, so the runner is invisible
-# until we descend into it. `_unwrap` peels these; the shapes it knows are
-# `<w> ... -- <cmd>` (wsl/env), `<shell> -c '<cmd>'`, `ssh <host> <cmd>`, and our own
-# `tycho run` escape hatch. `wsl.exe`/`bash.exe` reduce to the bare name first.
+# Wrappers carrying the real command *inside* an argument, invisible until `_unwrap` descends:
+# `<w> ... -- <cmd>` (wsl/env), `<shell> -c '<cmd>'`, `ssh <host> <cmd>`, `tycho run`.
 _DASHDASH_WRAPPERS = ("wsl", "env")
 _C_SHELLS = ("bash", "sh", "zsh", "dash", "ash")
 _EXE_SUFFIX = re.compile(r"\.(?:exe|bat|cmd|ps1)$", re.IGNORECASE)
 
 
 def _looks_like_interpreter(tok: str) -> bool:
-    """True for a token that could be a Python interpreter — a real name (`python3.12`,
-    the `py` launcher) or an unresolved shell/Windows variable (`$PY`, `%PY%`, `${PY}`)
-    whose value we can't see. Keeps the `-m pytest` rule off `echo -m pytest`."""
+    """True for a token that could be a Python interpreter — a real name (`python3.12`, `py`)
+    or an unresolved variable (`$PY`, `%PY%`). Keeps the `-m pytest` rule off `echo -m pytest`."""
     if tok[:1] in "$%{":
         return True
     name = tok.lower()
@@ -101,21 +90,19 @@ def _looks_like_interpreter(tok: str) -> bool:
 # Split a shell command into segments so a runner name buried in a quoted
 # echo/grep argument doesn't count as "the tests ran".
 _SEGMENT_SEP = re.compile(r"&&|\|\||[;|\n()]")
-# The same separators, kept as capture groups: *which* separator follows the runner is the
-# whole question in `_status_is_masked`, so unlike `_SEGMENT_SEP` we can't discard them.
+# Same separators as capture groups: `_status_is_masked` needs to know *which* one follows.
 _SEGMENT_TOKENS = re.compile(r"(&&|\|\||[;|\n()])")
 _ENV_PREFIX = re.compile(r"^(?:\s*\w+=\S+\s+)+")
 
-# How much of a runner's output to read back for its summary. pytest's verdict is the last
-# line; the slack absorbs the trailing warnings block and blank lines that follow it under
-# `-q`. Deliberately small: the further up the blob we look, the more we're reading the run
-# rather than its conclusion.
+# How much output to read back for the summary. pytest's verdict is the last line; the slack
+# absorbs the trailing warnings block. Small on purpose — further up we'd read the run, not
+# its conclusion.
 _SUMMARY_TAIL_LINES = 12
 
 
 def _normalize_segment(segment: str) -> str:
-    """Strip env prefixes and any leading path from the executable so
-    `.venv/bin/python -m pytest` reads as the same runner as bare `pytest`."""
+    """Strip env prefixes and the executable's leading path, so `.venv/bin/python -m pytest`
+    reads as the same runner as bare `pytest`."""
     segment = _ENV_PREFIX.sub("", segment.strip())
     try:
         parts = shlex.split(segment)
@@ -123,8 +110,7 @@ def _normalize_segment(segment: str) -> str:
         parts = []
     if parts:
         exe = parts[0].rsplit("/", 1)[-1]
-        # Windows interpreters carry a suffix (`python.exe`); strip it so a venv
-        # runner reads the same as its POSIX `python` bare name.
+        # Strip the Windows suffix so `python.exe` reads as POSIX `python`.
         exe = re.sub(r"\.(?:exe|bat|cmd|ps1)$", "", exe, flags=re.IGNORECASE)
         segment = " ".join([exe, *parts[1:]])
     return segment
@@ -135,8 +121,7 @@ def _is_runner(segment: str) -> bool:
     java_runner = segment.startswith("java ") and ("junit" in segment.lower() or "testng" in segment.lower())
     if java_runner or any(segment == r or segment.startswith(f"{r} ") for r in _TEST_RUNNERS):
         return True
-    # `<interpreter> -m pytest|unittest` regardless of the interpreter token, so a variable
-    # or unresolved-path exe still counts. Guarded so `echo -m pytest` doesn't.
+    # `<interpreter> -m pytest`, guarded so `echo -m pytest` doesn't count.
     parts = segment.split()
     if (
         len(parts) >= 3
@@ -145,8 +130,7 @@ def _is_runner(segment: str) -> bool:
         and _looks_like_interpreter(parts[0])
     ):
         return True
-    # An ephemeral-env wrapper (`uv run …`) with a multi-word runner phrase further along
-    # counts as a runner even though the flags in between defeat the plain prefix match.
+    # `uv run …` with a multi-word runner phrase further along — see `_RUN_WRAPPERS`.
     if any(segment == w or segment.startswith(f"{w} ") for w in _RUN_WRAPPERS):
         padded = f" {segment} "
         return any(f" {r} " in padded for r in _PHRASE_RUNNERS)
@@ -154,13 +138,8 @@ def _is_runner(segment: str) -> bool:
 
 
 def _unwrap(segment: str) -> str | None:
-    """If `segment` wraps the real command inside an argument, return that inner command
-    (quotes intact) to recurse into; else None. Runs on the RAW segment, not a normalized
-    one, so a quoted `-c '<cmd>'` stays a single token instead of splitting apart.
-
-    Peels one layer; `_runner_segment` recurses, so `wsl -- bash -c 'pytest'` unwinds
-    `wsl -- …` → `bash -c 'pytest'` → `pytest`.
-    """
+    """The inner command a wrapper carries in an argument, else None. Peels one layer; callers
+    recurse. Takes the RAW segment so a quoted `-c '<cmd>'` stays a single token."""
     try:
         parts = shlex.split(segment)
     except ValueError:
@@ -169,42 +148,37 @@ def _unwrap(segment: str) -> str | None:
         return None
     head = _EXE_SUFFIX.sub("", parts[0].rsplit("/", 1)[-1]).lower()
 
-    # Our opt-in escape hatches: `tycho run|exec [--] <cmd>` both exec <cmd> and forward its
-    # real exit code, so the runner inside is visible here and trustworthy at runtime
-    #. `exec` additionally logs what it saw — see `_exec_run_for`.
+    # `tycho run|exec [--] <cmd>` — both forward <cmd>'s real exit code; `exec` also logs it.
     if head == "tycho" and len(parts) >= 2 and parts[1] in ("run", "exec"):
         rest = parts[2:]
         if rest and rest[0] == "--":
             rest = rest[1:]
         return shlex.join(rest) if rest else None
 
-    # `<wrapper> ... -- <cmd...>` : the command is everything past the first `--`
-    # (`wsl.exe -d Ubuntu -- <cmd>`, `env FOO=bar -- <cmd>`).
+    # `<wrapper> ... -- <cmd...>` (`wsl.exe -d Ubuntu -- <cmd>`, `env FOO=bar -- <cmd>`).
     if head in _DASHDASH_WRAPPERS and "--" in parts:
         rest = parts[parts.index("--") + 1 :]
         return shlex.join(rest) if rest else None
 
-    # `<shell> ... -c '<cmd>'` : the command is the single arg after a -c-family flag.
+    # `<shell> ... -c '<cmd>'`
     if head in _C_SHELLS:
         for i in range(1, len(parts) - 1):
             flag = parts[i]
             if flag.startswith("-") and "c" in flag.lstrip("-").lower():
                 return parts[i + 1]
 
-    # `ssh <host> <cmd...>` : the remote command trails the host. Conservative — only the
-    # no-option form, so an option value is never mistaken for the host.
+    # `ssh <host> <cmd...>` — no-option form only, so an option value can't be read as the host.
     if head == "ssh" and len(parts) >= 3 and not parts[1].startswith("-"):
         return shlex.join(parts[2:])
 
-    # `docker run <img> <cmd>` is not unwrapped — unlike the shells above it needs the
-    # image and its flags skipped first; add when a docker test workflow needs it.
+    # `docker run` isn't unwrapped: the image and its flags need skipping first. Add when a
+    # docker test workflow needs it.
     return None
 
 
 def _runner_segment(cmd: str) -> str | None:
-    """The command segment that is a test/build runner, or None. Splitting on shell
-    separators keeps a runner name quoted inside an echo/grep from counting; unwrapping
-    descends into wrappers (wsl/ssh/`bash -c`/`tycho run`) that hide it."""
+    """The command segment that is a test/build runner, or None. Splitting on shell separators
+    keeps a runner name quoted inside an echo/grep from counting."""
     for segment in _SEGMENT_SEP.split(cmd):
         norm = _normalize_segment(segment)
         if _is_runner(norm):
@@ -218,13 +192,8 @@ def _runner_segment(cmd: str) -> str | None:
 
 
 def _exec_argv(cmd: str) -> list[str] | None:
-    """The argv `tycho exec` was given inside `cmd`, or None if it wasn't used.
-
-    Recurses through the same wrappers `_unwrap` knows, so `bash -c 'tycho exec -- pytest'`
-    still yields `["pytest"]`. This is the join between the two evidence streams: the
-    transcript says *what the turn ran*, the exec log says *what Tycho observed*, and the
-    inner argv is the only thing both of them independently know.
-    """
+    """The argv `tycho exec` was given inside `cmd`, or None. This argv is the join between the
+    two evidence streams — the only thing the transcript and the exec log both know."""
     for segment in _SEGMENT_SEP.split(cmd):
         try:
             parts = shlex.split(segment)
@@ -250,18 +219,12 @@ def _exec_argv(cmd: str) -> list[str] | None:
 def _exec_run_for(event, commands) -> "CommandRun | None":  # noqa: F821 — model.CommandRun
     """The `tycho exec` evidence for this transcript event, or None.
 
-    Matched on the inner argv, not on timestamps: harness clocks vary (Cursor stamps
-    nothing at all), while the argv is written independently by both sides and has to agree.
-    `commands` is already floored to this turn/session by `verify.gather`, so an old run of
-    the same command is not in the running — that is where staleness is prevented, and it is
-    prevented by construction rather than by a heuristic here.
+    Matched on the inner argv, not timestamps: harness clocks vary (Cursor stamps nothing).
+    `commands` is already floored to this turn by `verify.gather`, so staleness can't creep in.
+    Latest match wins — a turn that ran the suite twice rests on the last.
 
-    The **latest** match wins, the same rule `command_execution` already applies to events:
-    when a turn ran the suite twice, the claim rests on the last one.
-
-    ponytail: an exact argv match. A command whose *string* was altered by redaction
-    (`TOKEN=x pytest`) simply won't match, and the check falls back to its pre-exec
-    behaviour — losing evidence, never inventing it, which is the safe side of that trade.
+    ponytail: exact argv match. A redacted command string (`TOKEN=x pytest`) won't match and the
+    check falls back to its pre-exec behaviour — losing evidence, never inventing it.
     """
     if not commands:
         return None
@@ -281,25 +244,17 @@ def _exec_run_for(event, commands) -> "CommandRun | None":  # noqa: F821 — mod
 def _status_is_masked(cmd: str) -> bool:
     """True when the exit status the harness recorded is *not* the runner's own.
 
-    The shell reports one status for the whole command: the last thing it ran. So a
-    runner's failure only reaches us if nothing overwrote it, and there are three ways it
-    gets overwritten — all of them real commands agents write:
+    The shell reports one status — the last thing it ran — so three shapes overwrite it:
 
         pytest | tail -1      the pipeline's status is tail's (no pipefail here)
         pytest; echo done     the status is echo's; `;` discards what came before
         pytest || true        `||` swallows the failure by construction
 
-    `&&` is the one shape that is *safe* and must not be flagged: `pytest && echo ok`
-    fails the whole command when pytest fails, so a recorded success really does mean the
-    runner succeeded. Flagging it would cost us the most common honest invocation there is.
+    `&&` is safe and must NOT be flagged: `pytest && echo ok` fails when pytest fails, and it's
+    the most common honest invocation there is. A wrapper is masked when its inner command is.
 
-    A runner reached through a wrapper (`wsl -- bash -c 'pytest | tail'`) is masked when its
-    *inner* command is — the wrapper can only forward as clean a status as it was given — so
-    the wrapper's inner command is checked too.
-
-    Trusting a masked status is how a red suite gets reported VERIFIED, which is the
-    single worst thing this program can do — so when in doubt, say masked and let
-    `_outcome` fall back to what the runner said in its own output.
+    Trusting a masked status is how a red suite gets reported VERIFIED — so when in doubt say
+    masked and let `_outcome` fall back to the runner's own output.
     """
     parts = _SEGMENT_TOKENS.split(cmd)  # [segment, sep, segment, sep, ..., segment]
     for i in range(0, len(parts), 2):
@@ -307,11 +262,10 @@ def _status_is_masked(cmd: str) -> bool:
         if not _is_runner(_normalize_segment(seg)):
             inner = _unwrap(seg)
             if inner is None or _runner_segment(inner) is None:
-                continue  # not the runner segment, wrapped or otherwise — keep looking
+                continue  # not the runner segment, wrapped or otherwise
             if _status_is_masked(inner):
-                return True  # a masking operator inside the wrapper hides the runner's status
-        # Walk what follows this runner (or its wrapper): the first separator that redirects,
-        # swallows, or supersedes the status is the one that masks it.
+                return True  # a masking operator inside the wrapper hides the status
+        # The first separator that redirects, swallows, or supersedes the status masks it.
         for j in range(i + 1, len(parts), 2):
             sep = parts[j]
             rest = parts[j + 1] if j + 1 < len(parts) else ""
@@ -326,12 +280,10 @@ def _status_is_masked(cmd: str) -> bool:
 def _captured_output(event) -> str:
     """The runner's own words, tail-first — or "" when the harness kept none.
 
-    Only the tail, and that is the point. Claude Code caps `toolUseResult.stdout` at 30k
-    characters and keeps the *head* (verified against 2356 real payloads — see
-    docs/harness-support.md), while pytest prints its summary *last*. So on a long run the
-    verdict is exactly what got cut, and reading the tail means a truncated capture finds
-    no summary and honestly reports nothing — where scanning the whole blob could match a
-    stray "5 passed" from the middle of a run that ended red.
+    Tail only: Claude Code caps `toolUseResult.stdout` at 30k chars and keeps the *head*
+    (verified against 2356 real payloads — see docs/harness-support.md) while pytest prints its
+    summary last, so a truncated capture honestly reports nothing rather than matching a stray
+    "5 passed" from a red run.
     """
     result = event.result or {}
     text = "\n".join(str(result.get(key) or "") for key in ("stdout", "stderr")).strip()
@@ -341,30 +293,17 @@ def _captured_output(event) -> str:
 def _outcome(event, commands=()) -> bool | None:
     """Did this runner invocation fail? True = failed, False = passed, None = can't tell.
 
-    One predicate for every caller, so `command_execution` and `_last_green_run_ts` can
-    never disagree about what "green" means — a split brain there is how a run gets
-    reported green by one check and stale-against-nothing by the other.
+    One predicate for every caller, so no two checks can disagree about what "green" means.
+    Evidence ladder, strongest first:
 
-    **The evidence ladder, strongest first:**
+    1. *A status Tycho captured itself* (`tycho exec`) — Tycho was the parent and read `wait()`:
+       no shell to mask it, no harness to drop or truncate it.
+    2. *The transcript's exit code*, when nothing masked it. Real, but the harness had to choose
+       to keep it, and three of the four often don't.
+    3. *The runner's own summary line* — weakest, and the one a 30k head-truncation destroys.
 
-    1. *A status Tycho captured itself* (`tycho exec`). Tycho was the parent process and
-       read `wait()`. There is no shell in between to mask it, no harness in between to
-       drop or truncate it, and no way to run the command without producing it. Strictly
-       stronger than anything the transcript can offer, which is the entire point of §9.6.
-    2. *The transcript's exit code*, when it is genuinely the runner's — i.e. nothing in
-       the command line masked it (`_status_is_masked`). Real, but the harness had to
-       choose to keep it, and three of the four often don't.
-    3. *The runner's own summary line*, read back out of whatever output survived. Still
-       evidence — the runner reporting on itself — but the weakest kind, and the one a
-       30k head-truncation silently destroys. Callers say so in their output.
-
-    **When 1 and 2 disagree**, failure wins: Tycho's status decides whether the *runner*
-    failed, and a trustworthy transcript status may add a failure it can never remove.
-    Asymmetric on purpose. `tycho exec -- pytest && ./deploy.sh` can fail for a reason
-    Tycho's capture cannot see, and reading that as "the runner passed, all good" would be
-    a fabricated green — the one failure this program must never have. The reverse (the
-    transcript is green because a `;` swallowed the status, Tycho saw exit 1) is exactly the
-    lie `tycho exec` exists to catch, and rung 1 catches it.
+    When 1 and 2 disagree, failure wins, asymmetrically: `tycho exec -- pytest && ./deploy.sh`
+    can fail for a reason the capture can't see, and calling that green would be fabricated.
     """
     run = _exec_run_for(event, commands)
     if run is not None:
@@ -400,8 +339,7 @@ def command_execution(session: Session) -> CheckResult:
             f"`{cmd}` ran but {why}, and its output carries no summary — Tycho can't confirm it passed"
             " (prefix it with `tycho exec --` to put its real status on the record)",
         )
-    # Say where the verdict came from. A status recovered from output is real evidence but
-    # weaker than an exit code, and a reader who can't tell which they got can't judge it.
+    # Say where the verdict came from: output-recovered evidence is weaker than an exit code.
     if run is not None:
         via = f" (Tycho ran it — exit {run.exit_code})"
     else:
@@ -425,10 +363,8 @@ def test_freshness(session: Session) -> CheckResult:
             stale.append((fe.path, fs.mtime))
     if stale:
         path, mt = max(stale, key=lambda x: x[1])
-        # Session-scoped by design: staleness is a fact about the tree *now*, so an
-        # uncovered source from an earlier turn still counts. But don't *imply* a this-turn edit:
-        # reserve the "edited Ns after" phrasing for turn edits, and word an earlier-turn
-        # staleness as the live condition it is.
+        # Session-scoped: staleness is a fact about the tree *now*, so an uncovered source from
+        # an earlier turn still counts — but word it so it doesn't imply a this-turn edit.
         if path in {fe.path for fe in session.turn_edits}:
             evidence = f"{path} edited {int(mt - green_ts)}s after the last passing test run"
         else:
@@ -497,9 +433,8 @@ def git_state(session: Session) -> CheckResult:
             CheckStatus.UNSUPPORTED,
             f"no edits this {_scope(session)} to reconcile against git",
         )
-    # Only in-repo paths are git's to speak to. `_relpath` keeps an out-of-repo edit
-    # absolute; judging one against this repo's diff would pass on file_state's evidence
-    # (the file exists on disk), not git's, and report it "reconciled".
+    # Judging an out-of-repo edit against this repo's diff would report it "reconciled" on
+    # file_state's evidence (it exists on disk), not git's.
     in_repo = {p for p in edited if _is_in_repo(p)}
     outside = edited - in_repo
     if not in_repo:
@@ -509,8 +444,7 @@ def git_state(session: Session) -> CheckResult:
             f"{len(outside)} path(s) edited outside the repo — nothing here for git to reconcile",
         )
     changed = set(session.git.changed_paths)
-    # light git check — a phantom is an edit that's neither in the working diff
-    # nor on disk. Richer commit-claim verification arrives with manual --claim/--since.
+    # A phantom is an edit that's neither in the working diff nor on disk.
     phantom = [
         p for p in sorted(in_repo)
         if p not in changed and not (session.files.get(p) and session.files[p].exists)
@@ -530,9 +464,7 @@ def scope_drift(session: Session) -> CheckResult:
     globs = session.config.scope_include
     excludes = session.config.scope_exclude
     if not globs:
-        # Point the reader at the fix — a bare "zero-config" is a dead end in the Stop output
-        #. `tycho scope add` is the concrete action; `tycho scope`/`tycho help`
-        # cover the rest, so no dedicated scope-help command is needed.
+        # Point the reader at the fix — a bare "zero-config" is a dead end in the Stop output.
         return _r("scope_drift", CheckStatus.UNSUPPORTED,
                   "no [scope] set — run `tycho scope add '<glob>'` to bound edits (zero-config)")
     edited = {fe.path for fe in session.turn_edits}
@@ -553,26 +485,20 @@ def scope_drift(session: Session) -> CheckResult:
     return _r("scope_drift", CheckStatus.PASS, f"{within} (excluding {list(excludes)})" if excludes else within)
 
 
-# tool_call_provenance families. Each is (label, claim pattern, tool-name
-# substrings). BROAD by design: a claim of a family requires *some* tool call of that family
-# in the turn — not a content match, which no generalizable tool schema supports and which
-# would risk a false FAIL. The claim patterns
-# are first-person, past-tense assertions of a *completed* action (never future/hypothetical),
-# anchored on unambiguous cues (a web verb, or a ticket KEY next to a ticket verb) so an honest
-# turn is never failed; a claim we can't classify is simply not counted. This table is the
-# calibration knob — widen coverage by adding rows.
+# tool_call_provenance families: (label, claim pattern, tool-name substrings). BROAD by design —
+# a claim requires *some* tool call of that family, not a content match, which no generalizable
+# tool schema supports and which would risk a false FAIL. Patterns match only first-person
+# past-tense claims of a *completed* action; an unclassifiable claim is simply not counted.
 _PROV_WEB = re.compile(
     r"\b(?:searched (?:the web|online)|web[- ]?searched|googled|"
     r"browsed to|fetched the (?:page|url|web ?site|site))\b",
     re.IGNORECASE,
 )
-# An issue-tracker action is claimed when a ticket anchor (a KEY like ACME-123, or "Jira
-# ticket/issue/card") sits within a short window of an action cue — in *either* order, since
-# real prose says both "moved ACME-123 to In Progress" and "ACME-123 moved to Done".
-# Two cue kinds, both conservative enough to never false-FAIL an honest/future turn:
-#   - a *past-tense* action verb (a future "I'll move ACME-123" uses base "move", never "moved");
-#   - a *two-status arrow* ("Hold → In Review"), which only ever reports a transition that
-#     happened — a plan is written "I'll move it to In Review", never "Hold → In Review".
+# A ticket anchor (KEY like ACME-123, or "Jira ticket/issue/card") near an action cue, in either
+# order — prose says both "moved ACME-123 to In Progress" and "ACME-123 moved to Done". Two cue
+# kinds, both too conservative to false-FAIL an honest or future turn:
+#   - a *past-tense* verb (a future "I'll move ACME-123" uses base "move", never "moved");
+#   - a *two-status arrow* ("Hold → In Review"), only ever written of what happened.
 _ISSUE_ANCHOR = r"(?:\b[A-Z][A-Z0-9]+-\d+\b|\b[Jj]ira (?:ticket|issue|card)\b)"
 _ISSUE_STATUS = r"(?:To ?Do|In Progress|In Review|Backlog|Blocked|Hold|Done)"
 _ISSUE_CUE = (
@@ -587,16 +513,11 @@ _PROVENANCE_FAMILIES = (
     ("an issue-tracker action", _PROV_ISSUE, ("jira", "atlassian", "issue", "linear")),
 )
 
-# A cue whose subject is a third party, or that reports a pre-existing state, is the agent
-# *narrating* — not claiming it just acted. "Dan closed ACME-123", "the operator moved it",
-# "ACME-123 was already closed", "Dan searched the web" all describe someone else's or an
-# already-true action, and firing on them is a false FAIL (the exact live miss: reporting that
-# a ticket the agent looked up is already Done). Neutralize these
-# clauses before matching, so provenance judges only the agent's own claims — subject-dropped
-# ("ACME-123 closed") and first-person ("I closed") survive untouched. Recall loss (a genuine
-# fabrication sitting right after a name is missed) is accepted over any false FAIL, exactly as
-# the rest of the check is tuned. The name branch is case-sensitive so a lowercase word ("and
-# moved") is never mistaken for a subject; the verbs stay case-insensitive.
+# A cue with a third-party subject or a pre-existing state is the agent *narrating* — "Dan closed
+# ACME-123", "ACME-123 was already closed" — and firing on it is a false FAIL. Neutralize those
+# clauses before matching; subject-dropped ("ACME-123 closed") and first-person survive. Recall
+# loss is accepted over any false FAIL. The name branch is case-sensitive so a lowercase word
+# ("and moved") is never mistaken for a subject; the verbs are not.
 _REPORTED_SUBJECT = (
     r"(?:he|she|they|"
     r"[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?|"                        # a name: "Dan", "Dan Mano"
@@ -611,16 +532,12 @@ _REPORTED = re.compile(
     rf"\b{_REPORTED_SUBJECT}\s+(?:already |just |then |recently |now )?{_REPORTED_VERB}"
 )
 
-# An *observed* ticket state — "ACME-123 already sits at In Review → Done", "it's now at Hold →
-# Done", "the board shows In Review → Done" — reports where a ticket already is, not a transition
-# the agent performed. The status-arrow branch of _ISSUE_CUE otherwise reads any arrow as a
-# self-made transition and false-FAILs the observation (the live miss: narrating board state Tycho
-# never changed). Neutralize the stative clause *through its arrow* so nothing downstream fires; a
-# real self-claim keeps an action verb ("moved") or completion noun ("Round-trip complete on … :")
-# and is untouched. Recall loss on a purely verbless observed arrow is accepted, as the rest of the
-# check is tuned. The subject is a KEY, "it", or "the ticket/card/board/issue" — the things prose
-# points a stative verb at; the verb list is case-insensitive, the anchor stays case-sensitive so a
-# lowercase word is never mistaken for a KEY.
+# An *observed* ticket state — "ACME-123 already sits at In Review → Done", "the board shows In
+# Review → Done" — reports where a ticket is, not a transition the agent made; without this the
+# arrow branch of _ISSUE_CUE false-FAILs it. Neutralize the stative clause *through its arrow*;
+# a real self-claim keeps an action verb ("moved") and is untouched. Recall loss on a verbless
+# observed arrow is accepted. The anchor stays case-sensitive so a lowercase word is never
+# mistaken for a KEY.
 _STATE_VERB = r"(?i:sits?|stands?|shows?|reads?|remains?|stays?|is|are|'s|was|were)"
 _REPORTED_STATE = re.compile(
     rf"(?:{_ISSUE_ANCHOR}|\bit\b|\b[Tt]he\s+(?:ticket|card|board|issue))\s+"
@@ -641,10 +558,8 @@ def _claimed_families(session: Session) -> list[tuple[str, tuple[str, ...]]]:
 def tool_call_provenance(session: Session) -> CheckResult:
     """Did the agent's prose claim a tool action that never happened?
 
-    Deterministic and broad, never an LLM judge: a claim of a family (web search, issue-tracker
-    action) must be backed by *some* tool call of that family in the turn. An unbacked claim is
-    a fabricated action — the thing a user can't see in the chat — so it FAILs. No prose to read
-    (a harness we don't mine yet) or no recognized claim is UNSUPPORTED, never a false FAIL.
+    Deterministic, never an LLM judge: a claimed family must be backed by *some* tool call of
+    that family. No prose captured, or no recognized claim, is UNSUPPORTED — never a false FAIL.
     """
     if not session.turn_messages:
         return _r("tool_call_provenance", CheckStatus.UNSUPPORTED, "no assistant prose captured to check")
@@ -691,14 +606,9 @@ def run_checks(session: Session) -> list[CheckResult]:
 def has_verifiable_activity(session: Session) -> bool:
     """Whether an automatic Stop verdict would have meaningful work to report.
 
-    Turn-scoped, and that is the whole of ACME-123: session-scoped, a read-only turn
-    in a session that edited anything earlier still looked like "activity", so every
-    later Stop re-reported long-committed work as though it were this turn's. A turn
-    that did nothing verifiable earns silence, not a stale green tick.
-
-    A tool-action *claim* in the prose counts too: an MCP-only turn ("I created
-    the ticket") has no edits or runners, but its claim is exactly what tool_call_provenance
-    exists to check — so the hook must speak rather than stay silent on it.
+    Turn-scoped, not session-scoped: otherwise a read-only turn re-reports long-committed work
+    as this turn's. A tool-action *claim* counts too — an MCP-only turn ("I created the ticket")
+    has no edits or runners, but its claim is what tool_call_provenance exists to check.
     """
     return bool(
         session.turn_edits or _runner_events(session.turn_events) or _claimed_families(session)
@@ -712,12 +622,8 @@ def _r(name: str, status: CheckStatus, evidence: str) -> CheckResult:
 
 
 def _scope(session: Session) -> str:
-    """What the turn-scoped checks should *call* their scope in the evidence line.
-
-    A 0.0 boundary means nothing narrowed the view — `tycho verify` auditing a whole
-    session, or a harness that can't mark turns — so the honest word is "session".
-    Saying "turn" there would re-tell the exact lie ACME-123 is about.
-    """
+    """What the turn-scoped checks should *call* their scope in the evidence line. No turn
+    boundary means nothing narrowed the view, so the honest word is "session", not "turn"."""
     return "turn" if session.turn_start else "session"
 
 
@@ -731,17 +637,15 @@ def _runner_events(events) -> list:
 
 
 def _last_green_run_ts(session: Session) -> float | None:
-    # Session-scoped on purpose: a run three turns back still covers a source that
-    # hasn't changed since, and test_freshness/test_provenance are exactly the checks
-    # whose job is to reason across turns.
+    # Session-scoped on purpose: a run three turns back still covers a source that hasn't
+    # changed since, and freshness/provenance are the checks whose job is to reason across turns.
     greens = [e.ts for e in _runner_events(session.events) if _outcome(e, session.commands) is False]
     return max(greens) if greens else None
 
 
-# Prose and pictures. A green test run can't be invalidated by editing them, so
-# test_freshness must not count them as sources — a doc edit after a passing run is
-# not staleness, and STALE sinks the whole verdict. Kept deliberately narrow: config
-# and lockfiles stay sources, because changing a dependency really can break tests.
+# Prose and pictures: editing them can't invalidate a green run, and STALE sinks the whole
+# verdict. Narrow on purpose — config and lockfiles stay sources, a dependency change can break
+# tests.
 _PROSE_SUFFIXES = frozenset({
     ".md", ".rst", ".txt", ".adoc",
     ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".ico", ".pdf",
@@ -776,9 +680,8 @@ def _is_test_path(path: str) -> bool:
 
 
 def _is_in_repo(path: str) -> bool:
-    """True for a path `_relpath` left repo-relative. An out-of-repo edit is kept
-    absolute (native *or* POSIX flavor — the host can't judge the other), so those are
-    not ours to reconcile against this repo's git."""
+    """True for a path `_relpath` left repo-relative. Out-of-repo edits stay absolute in native
+    *or* POSIX flavor — the host can't judge the other — so both are tested."""
     return not Path(path).is_absolute() and not PurePosixPath(path).is_absolute()
 
 
@@ -792,9 +695,8 @@ def _ast_check(session: Session, name: str, differ, clean_msg: str) -> CheckResu
         if fe.original is not None:
             firsts.setdefault(fe.path, fe.original)
     if not firsts:
-        # Test files WERE edited but no pre-session baseline is available — the harness
-        # omitted `originalFile` and git couldn't supply it (untracked). A capability gap,
-        # not an all-clear: say so distinctly so `•` doesn't read as "tests untouched".
+        # Tests WERE edited but no pre-session baseline exists (harness omitted `originalFile`,
+        # git couldn't supply it). A capability gap, not an all-clear — say so distinctly.
         missing = ", ".join(sorted({fe.path for fe in test_edits}))
         return _r(name, CheckStatus.UNSUPPORTED, f"edited test file(s) with no pre-session baseline to diff: {missing}")
     findings = []

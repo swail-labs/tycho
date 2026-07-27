@@ -1,28 +1,12 @@
 """`tycho doctor` — is Tycho actually wired, current, and still firing here?
 
-A silently dead hook is the worst failure a verifier has. Every other bug is loud: a
-wrong verdict argues with you. A dead hook says nothing at all, and silence is exactly
-what "everything passed" looks like — you believe you're covered while nothing runs.
-(the OpenCode export truncation, was this class of failure.)
-
-**The hard part is that a dead hook cannot report its own death.** Nothing Tycho does at
-Stop time can help, because a hook that doesn't fire runs no code. So liveness can only
-come from something the hook *already did*: `state.record_run` writes a heartbeat on
-every invocation, and `doctor` — a manual command, run by a human who is present — reads
-it back. That's the whole trick, and its limits are worth stating plainly:
-
-- A heartbeat proves the hook fired at least once, at that time. Proof of life, never
-  proof of current health.
-- **No heartbeat is not proof of death.** A fresh install hasn't fired yet; neither has
-  a repo you haven't run an agent in. Reporting BROKEN there would be crying wolf, and a
-  diagnostic that cries wolf gets ignored exactly when it's finally right.
-- Nothing here polls or runs in the background — Tycho stays a thing that runs when
-  called. The cost is that a hook which died five minutes ago goes undiagnosed until
-  someone asks. That's the honest trade, documented rather than hidden.
-
-So doctor reports what it can prove from disk and says "unknown" where it can't. It
-never edits anything: diagnosis and repair stay separate, and `tycho init` is already
-the repair (it's self-healing).
+A dead hook cannot report its own death: it runs no code. So liveness comes from the
+heartbeat `state.record_run` writes on every invocation, which `doctor` reads back. Limits:
+a heartbeat proves the hook fired at that time, never current health; **no heartbeat is not
+proof of death** (a fresh install hasn't fired yet, and a diagnostic that cries wolf gets
+ignored); nothing polls, so a hook that died five minutes ago goes undiagnosed until asked.
+Doctor reports what it can prove from disk, says "unknown" where it can't, and never edits
+anything — `tycho init` is the (self-healing) repair.
 """
 
 from __future__ import annotations
@@ -42,17 +26,13 @@ from . import state
 from . import version as version_mod
 from .review import _ago
 
-# Severities. BROKEN and OUTDATED are the two that mean "Tycho is not doing its job";
-# the rest is context for whoever is reading.
+# Severities. BROKEN and OUTDATED mean "Tycho is not doing its job"; the rest is context.
 OK = "OK"
 BROKEN = "HOOK BROKEN"
 OUTDATED = "HOOK OUTDATED"
 INFO = "INFO"
-# Advisory only: the harness moved past the version Tycho's output contract was verified
-# against. "Re-verify", not "broken" — a bump usually changes nothing, so it never sinks
-# the verdict (not in _ADVERSE). But louder than a bare INFO bullet, because it's the one
-# thing doctor structurally can't check for itself: whether the harness still reads our
-# output.
+# Advisory only (not in _ADVERSE), but louder than INFO: whether the harness still reads
+# our output is the one thing doctor structurally can't check for itself.
 DRIFT = "HARNESS DRIFT"
 
 _ADVERSE = (BROKEN, OUTDATED)
@@ -60,11 +40,8 @@ _ADVERSE = (BROKEN, OUTDATED)
 
 @dataclass(frozen=True)
 class Finding:
-    """One diagnosis.
-
-    `fix` is mandatory for adverse levels: a complaint without a remedy is noise, and
-    the user is reading this *because* something is off.
-    """
+    """One diagnosis. `fix` is mandatory for adverse levels — a complaint without a
+    remedy is noise."""
 
     level: str
     text: str
@@ -74,10 +51,7 @@ class Finding:
 def hook_health(repo: Path) -> list[Finding]:
     """Only the adverse wiring findings: is what's installed runnable, and current?
 
-    No discovery, no heartbeat — cheap enough to run on *every* manual command. That's
-    the point: a broken hook has to be surfaced by the command people actually run, not
-    only by the one they'd run if they already suspected something was wrong.
-    """
+    No discovery, no heartbeat — cheap enough to run on *every* manual command."""
     findings: list[Finding] = []
     _wired_harnesses(repo, findings)
     return adverse(findings)
@@ -95,9 +69,8 @@ def _wired_harnesses(repo: Path, findings: list[Finding]) -> list[str]:
 def diagnose(repo: Path) -> list[Finding]:
     """Everything we can establish about this repo's wiring, without touching it."""
     findings: list[Finding] = []
-    # A new version is worth surfacing where someone is already looking; doctor is manual,
-    # so the (once-a-day, fail-open) network check is fine here.
-    note = version_mod.notice(refresh_first=True, force=True)  # explicit command — bypass the daily cache
+    # doctor is manual, so the fail-open network check is fine here.
+    note = version_mod.notice(refresh_first=True, force=True)  # explicit command — no cache
     if note:
         findings.append(Finding(INFO, note, "run `tycho update`"))
     wired = _wired_harnesses(repo, findings)
@@ -120,12 +93,8 @@ def adverse(findings: list[Finding]) -> list[Finding]:
 
 
 def liveness(repo: Path) -> str:
-    """One line answering "is it on here?" — the payoff line of `tycho help`.
-
-    The same reads `diagnose` does, collapsed to a sentence and never raised: help is the
-    command a confused user reaches for, so it degrades to an honest "unknown" rather than
-    dying on a repo where nothing is installed. `tycho doctor` stays the full answer.
-    """
+    """One line answering "is it on here?", for `tycho help`. Never raises — it degrades to
+    an honest "unknown"; `tycho doctor` stays the full answer."""
     try:
         findings: list[Finding] = []
         wired = _wired_harnesses(repo, findings)
@@ -140,8 +109,8 @@ def liveness(repo: Path) -> str:
 
 
 def _is_wired(repo: Path, name: str, recorded: dict, findings: list[Finding]) -> bool:
-    """Diagnose one harness against its *own config* — the only thing that decides
-    whether Tycho fires. install.json is a claim; the harness's config is the truth."""
+    """Diagnose one harness against its *own config*: install.json is a claim, the
+    harness's config is what decides whether Tycho fires."""
     try:
         command = init_mod.installed_command(repo, name)
     except init_mod.ConfigRefused as exc:
@@ -150,9 +119,8 @@ def _is_wired(repo: Path, name: str, recorded: dict, findings: list[Finding]) ->
 
     if command is None:
         if name in recorded:
-            # We installed it and it's gone: an upgrade rewrote the config, someone
-            # hand-edited it, or a teammate's settings landed on top. Loud, because this
-            # is precisely the case where the user believes they're covered and isn't.
+            # We installed it and it's gone (an upgrade or a hand-edit rewrote the config).
+            # Loud, because the user believes they're covered and isn't.
             findings.append(Finding(
                 BROKEN,
                 f"{name}: Tycho installed a hook here, but it's gone from {init_mod.config_path(repo, name)}",
@@ -161,9 +129,8 @@ def _is_wired(repo: Path, name: str, recorded: dict, findings: list[Finding]) ->
         return False
 
     if not _resolves(command):
-        # The entry is there, so the harness dutifully runs it — into a missing
-        # interpreter. The config looks installed and nothing has ever run: the exact
-        # silent death this command exists to surface.
+        # The config looks installed but the harness runs it into a missing interpreter —
+        # the exact silent death this command exists to surface.
         findings.append(Finding(
             BROKEN,
             f"{name}: hook command doesn't resolve to a runnable program — {command}",
@@ -171,12 +138,9 @@ def _is_wired(repo: Path, name: str, recorded: dict, findings: list[Finding]) ->
         ))
         return True  # wired (the entry exists), just not working
 
-    # Deliberately *not* compared against `init.hook_command()`. That returns a console
-    # script or `<python> -m` depending on whether the venv happens to be on PATH right
-    # now, so the same healthy install reads as two different "current" answers — and
-    # flagging a hook that resolves and runs would be crying wolf (see module docstring).
-    # A command that resolves and is one of ours does the job; that's the bar. A stale
-    # path to a deleted venv doesn't resolve, and is caught above.
+    # Deliberately *not* compared against `init.hook_command()`: that returns a console
+    # script or `<python> -m` depending on whether the venv is on PATH right now, so the
+    # same healthy install would read as two different "current" answers.
     findings.append(Finding(OK, f"{name}: hook installed and runnable — {command}"))
     return True
 
@@ -184,12 +148,8 @@ def _is_wired(repo: Path, name: str, recorded: dict, findings: list[Finding]) ->
 def _resolves(command: str) -> bool:
     """Would the host shell find something to execute here?
 
-    The hook fires without a venv, so this is the question that actually matters — and
-    the one a config-shape check can't answer. Split the way the *host* shell would
-    (Windows keeps backslashes; POSIX treats them as escapes), then: a path must exist
-    on disk, a bare name must be on PATH. The executable bit is a POSIX concept — on
-    Windows, existence (with ``which`` honouring PATHEXT) is the runnable test.
-    """
+    Split the way the *host* shell would (Windows keeps backslashes; POSIX escapes them).
+    The executable bit is POSIX-only — on Windows, existence is the runnable test."""
     try:
         argv = shlex.split(command, posix=(os.name != "nt"))
     except ValueError:
@@ -219,7 +179,7 @@ def _schema_finding(repo: Path) -> Finding | None:
 
 
 def _heartbeat_finding(repo: Path, wired: list[str]) -> Finding:
-    """The liveness answer, with the hedging the module docstring argues for."""
+    """The liveness answer, hedged as the module docstring requires."""
     beat = state.last_run(repo)
     at = beat.get("at") if beat else None
     if not isinstance(at, (int, float)):
@@ -247,12 +207,8 @@ def _transcript_finding(repo: Path) -> Finding:
 def _harness_drift(wired: list[str]) -> list[Finding]:
     """Has a wired harness moved past the version its hook contract was verified against?
 
-    Offline `--version` probe per harness. Doctor proves the hook *fires*; it can't prove
-    the harness still *reads* our output — version drift is the best available proxy for
-    that blind spot. Fails open in both directions: a harness with no pinned contract, a
-    missing/unparseable `--version`, or a matching version all stay silent — only a real
-    mismatch speaks, and it says "re-verify", not "broken".
-    """
+    Offline `--version` probe — the best available proxy for "does the harness still read
+    our output". Fails open: no pinned contract or an unreadable `--version` stays silent."""
     findings: list[Finding] = []
     for name in wired:
         pinned = harness_mod.VERIFIED_AGAINST.get(name)
@@ -270,10 +226,8 @@ def _harness_drift(wired: list[str]) -> list[Finding]:
 
 
 def _probe_version(probe: tuple[str, ...]) -> str | None:
-    """The harness's own `--version`, first line — or None if it can't be read.
-
-    Never raises: a missing binary, a timeout, or a non-zero exit is "can't tell", which
-    doctor treats as silence. Same fail-open rule as the Stop hook."""
+    """The harness's own `--version`, first line, or None. Never raises: a missing binary,
+    timeout or non-zero exit is "can't tell", i.e. silence."""
     try:
         proc = subprocess.run(probe, capture_output=True, text=True, timeout=5)
     except (OSError, subprocess.SubprocessError):

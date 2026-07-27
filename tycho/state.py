@@ -5,14 +5,12 @@ Two files under ``<repo>/.tycho/``, both entirely ours (no user content, ever):
 - ``install.json``  — written by `tycho init`: schema version + what we wired, per harness.
 - ``last-run.json`` — rewritten by the Stop hook on *every* invocation: the heartbeat.
 
-Separate files on purpose: init and the hook write on different schedules from
-different processes, so one shared file would mean read-modify-write races and a lost
-update — exactly the kind of silent corruption this split exists to prevent.
+Separate because init and the hook write from different processes on different schedules;
+one shared file would mean read-modify-write races and lost updates.
 
-**Nothing here may raise into a caller.** The hook must never break the agent's Stop
-(see hook.py), so a heartbeat we can't write is simply not written: a missing beat makes
-`tycho doctor` say "unknown", which is honest, whereas an exception here would break the
-one thing Tycho promises never to touch.
+**Nothing here may raise into a caller.** The hook must never break the agent's Stop (see
+hook.py), so a heartbeat we can't write is simply not written and `tycho doctor` says
+"unknown", which is honest.
 """
 
 from __future__ import annotations
@@ -22,34 +20,25 @@ import os
 import time
 from pathlib import Path
 
-# Bump when the shape of what init installs changes such that an already-installed
-# entry no longer satisfies it. `tycho doctor` compares this against the stamp in
-# install.json and reports HOOK OUTDATED when they diverge; `tycho init` re-stamps.
+# Bump when an already-installed entry no longer satisfies what init now writes. `tycho
+# doctor` compares this against install.json's stamp and reports HOOK OUTDATED on divergence.
 SCHEMA = 1
 
 _DIR = ".tycho"
 _INSTALL = "install.json"
 _LAST_RUN = "last-run.json"
 
-# `.tycho.toml` is config.py's file, but it marks the same root as `.tycho/` and can exist
-# without it (configured, never inited), so root_for() looks for either. Spelled out here
-# rather than imported to keep state.py free of a config import it otherwise has no use for.
+# config.py's file, but it marks the same root as `.tycho/` and can exist without it
+# (configured, never inited), so root_for() looks for either.
 _CONFIG_MARKER = ".tycho.toml"
 _GIT = ".git"
 
 
 def root_for(repo: Path) -> Path:
     """Where this repo's Tycho state lives: `repo` itself, or the nearest ancestor holding it.
-
-    Every entry point hands us a cwd, and a cwd follows the user into subdirectories. Without
-    the walk, `<cwd>/.tycho` misses from anywhere but the repo root, and every reader here
-    reports that as "not installed" — the badge goes blank and `doctor` says unknown, both of
-    which read as "Tycho isn't here" rather than "you're one directory down".
-
-    Stops at the git root: our state belongs to *this* repo, and an unrelated parent's `.tycho/`
-    is not ours to adopt. No marker anywhere means `repo` — so `init` still creates state where
-    it was run, and a first write lands exactly where it does today.
-    """
+    The walk exists because a cwd follows the user into subdirectories and every reader would
+    otherwise report "not installed" from anywhere but the repo root. Stops at the git root so
+    an unrelated parent's `.tycho/` is never adopted; no marker anywhere means `repo`."""
     for d in (repo, *repo.parents):
         if (d / _DIR).is_dir() or (d / _CONFIG_MARKER).is_file():
             return d
@@ -63,7 +52,7 @@ def dir_for(repo: Path) -> Path:
 
 
 def _read_json(path: Path) -> dict | None:
-    """Our own state, so unreadable or corrupt means "unknown" — never an error."""
+    """Our own state, so unreadable or corrupt means "unknown", never an error."""
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -72,7 +61,6 @@ def _read_json(path: Path) -> dict | None:
 
 
 def _write_json(path: Path, data: dict) -> None:
-    """Atomic, like every other write in this package: temp sibling, then rename."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
@@ -80,14 +68,13 @@ def _write_json(path: Path, data: dict) -> None:
 
 
 def write_install(repo: Path, harness: str, command: str) -> None:
-    """Record that we wired `harness` to `command`. Merges — other harnesses survive."""
+    """Record that we wired `harness` to `command`. Merges: other harnesses survive."""
     installed = dict(read_install(repo))
     installed[harness] = {"command": command, "at": time.time()}
     _write_json(dir_for(repo) / _INSTALL, {"schema": SCHEMA, "installed": installed})
 
 
 def drop_install(repo: Path, harness: str) -> None:
-    """Forget one harness; drop the file (and dir) once there's nothing left to remember."""
     path = dir_for(repo) / _INSTALL
     installed = {k: v for k, v in read_install(repo).items() if k != harness}
     if installed:
@@ -109,26 +96,16 @@ def read_install(repo: Path) -> dict:
 
 
 def installed_schema(repo: Path) -> int | None:
-    """The schema stamp on disk, or None if we've never installed here."""
     data = _read_json(dir_for(repo) / _INSTALL)
     return data.get("schema") if data else None
 
 
 def record_run(repo: Path, harness: str, verdict: str | None = None, pending: bool = False) -> None:
-    """The heartbeat. Called on every hook invocation — a dead hook can't call this.
-
-    Recorded even when the hook finds nothing to verify: the question this answers is
-    "did the wiring fire?", not "was there a verdict?". Swallows everything, per the
-    module docstring.
-
-    The hook calls this at least twice: once on entry with ``pending=True`` (the beat must
-    land even if everything downstream fails — and the badge shows "verifying"), then again
-    at every terminal path — with a `verdict` when there is one, or plain (no verdict, no
-    pending) when there was nothing to verify. So the three shapes are distinct and drive
-    the badge colour: `pending` = mid-run (yellow), `verdict` = the result
-    (green/red), neither = fired-but-nothing-to-report (grey). Re-recording is what stops a
-    stale verdict — or a stuck "verifying" — outliving the run that produced it.
-    """
+    """The heartbeat, written on every hook invocation — a dead hook can't call this, so it is
+    recorded even with nothing to verify. Three shapes drive the badge colour: `pending` =
+    mid-run (yellow), `verdict` = the result (green/red), neither = nothing-to-report (grey).
+    The hook calls this on entry and again at every terminal path, so a stale verdict or a
+    stuck "verifying" can't outlive its run."""
     beat: dict = {"at": time.time(), "harness": harness}
     if verdict is not None:
         beat["verdict"] = verdict
@@ -142,14 +119,10 @@ def record_run(repo: Path, harness: str, verdict: str | None = None, pending: bo
 
 # --- the catch record --------------------------------------------
 #
-# What Tycho caught — with the evidence, not just a number. Two files, same fail-open rule
-# as everything here (a record we can't write is simply not written):
-#   repo   <repo>/.tycho/catches.json : {tally, catches: [entry, … newest first]}
-#   machine <user_dir>/catches.json   : {tally}   — running total across every repo
-# An entry is one adverse (FAILED/STALE) or intermediate (INDETERMINATE) run plus the
-# checks that failed or couldn't pass. The last *verdict* is not stored here — that lives
-# in last-run.json — so there is no transition dedup: every adverse/intermediate run is
-# recorded (a standing failure re-reported each turn counts each turn).
+#   repo    <repo>/.tycho/catches.json : {tally, catches: [entry, … newest first]}
+#   machine <user_dir>/catches.json    : {tally}   — running total across every repo
+# An entry is one adverse (FAILED/STALE) or intermediate (INDETERMINATE) run plus the checks
+# that failed or couldn't pass. No transition dedup: a standing failure counts each turn.
 
 _CATCHES = "catches.json"
 _LEGACY_COUNTS = "counts.json"  # legacy tally; migrated on first read/write, then dropped
@@ -159,12 +132,8 @@ _CATCH_LIST_CAP = 100  # the repo evidence trail keeps the most recent N; the ta
 
 
 def user_dir() -> Path:
-    """Root of Tycho's *machine-level* state — outside every repo, by definition.
-
-    ``TYCHO_HOME`` wins, then ``XDG_DATA_HOME``, then the ``~/.local/share`` default:
-    the same override chain the harness roots use (``harness.home``), spelled
-    out here because this root is an XDG data dir rather than a ``~/.<name>`` dotdir.
-    """
+    """Root of Tycho's machine-level state, outside every repo. ``TYCHO_HOME``, then
+    ``XDG_DATA_HOME``, then ``~/.local/share`` — the same chain as ``harness.home``."""
     override = os.environ.get("TYCHO_HOME")
     if override:
         return Path(override).expanduser()
@@ -173,14 +142,14 @@ def user_dir() -> Path:
 
 
 def _count_of(data: dict, key: str) -> int:
-    """A counter off disk, coerced. Anything else on that key means "no count yet"."""
+    """A counter off disk, coerced; anything else on that key means "no count yet"."""
     value = data.get(key)
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
 
 
 def _read_catches(path: Path) -> dict:
-    """catches.json as {tally, catches}. Falls back to a legacy counts.json tally so the
-    numbers carry across the rename, until the next write re-homes them."""
+    """catches.json as {tally, catches}, falling back to a legacy counts.json tally until the
+    next write re-homes it."""
     data = _read_json(path)
     if data is not None:
         return data
@@ -196,16 +165,11 @@ def _tally_of(data: dict) -> dict:
 
 
 def record_catch(repo: Path, harness: str, verdict: str, results) -> None:
-    """Record one verdict: bump the running tally (repo + machine) and, when the verdict is
-    adverse/intermediate, append it to the repo's evidence trail. *Every* verdict counts
-    toward the `runs` denominator — VERIFIED/UNSUPPORTED are runs, not catches, so
-    they add no evidence entry. Never raises: this runs inside the Stop hook, so a record we
-    can't write is simply not written.
-    """
+    """Bump the running tally (repo + machine) and, when adverse or intermediate, append to
+    the repo's evidence trail. Every verdict counts toward the `runs` denominator —
+    VERIFIED/UNSUPPORTED are runs, not catches."""
     entry = None
     if verdict in _TALLIED:
-        # The evidence trail: what failed or couldn't pass. Every non-PASS check, with its
-        # status and the same evidence string the report shows.
         trail = [
             {"check": r.name, "status": r.status.name, "evidence": r.evidence}
             for r in results if r.status.name != "PASS"
@@ -216,9 +180,8 @@ def record_catch(repo: Path, harness: str, verdict: str, results) -> None:
 
 
 def _bump(path: Path, verdict: str, entry: dict | None) -> None:
-    # read-modify-write with no lock — two repos catching something in the same
-    # instant can lose one machine-tally increment. It's a tally, not a ledger; add locking
-    # only if a slightly-low all-time number ever actually matters to someone.
+    # Read-modify-write with no lock: two repos catching in the same instant can lose one
+    # machine-tally increment. A tally, not a ledger; add locking only if that ever matters.
     try:
         data = _read_catches(path)
         tally = _tally_of(data)
@@ -241,21 +204,18 @@ def counts(repo: Path) -> dict:
 
 
 def all_time_counts() -> dict:
-    """The same running tally across every repo on this machine."""
     tally = _tally_of(_read_catches(user_dir() / _CATCHES))
     return {v: _count_of(tally, v) for v in _TALLIED}
 
 
 def totals(repo: Path) -> dict:
-    """{"runs": n, "blind": n} for `repo`: every verdict recorded — the denominator
-    the catch counts are read against — and how many of those were blind (INDETERMINATE or
-    UNSUPPORTED, i.e. Tycho had nothing to say). `runs` is 0 for a legacy tally migrated from
-    `counts.json`, which had no denominator; it fills in as new runs land."""
+    """{"runs": n, "blind": n} for `repo`: every verdict recorded (the denominator for the
+    catch counts) and how many were blind. `runs` is 0 for a tally migrated from
+    `counts.json`, which had no denominator."""
     return _totals(_read_catches(dir_for(repo) / _CATCHES))
 
 
 def all_time_totals() -> dict:
-    """The same runs/blind totals across every repo on this machine."""
     return _totals(_read_catches(user_dir() / _CATCHES))
 
 
@@ -271,53 +231,27 @@ def catches(repo: Path) -> list:
 
 
 def last_run(repo: Path) -> dict | None:
-    """The last recorded heartbeat, or None if the hook has never fired here."""
     return _read_json(dir_for(repo) / _LAST_RUN)
 
 
 # --- the decay ledger (strategy §7/§9.5) --------------------------
 #
-# Five of the nine checks are competence-bound and will stop firing as agents get better
-# (§7). That is a maintenance problem only if you can *see* it, so this is the instrument:
-# per-check, per-model catch rate over time, from which a check that reads zero across
-# three model generations gets retired publicly, with evidence, instead of by guess.
+# Per-check, per-model catch rate over time, so a competence-bound check that reads zero
+# across three model generations gets retired with evidence rather than by guess.
 #
-# **Source of truth: `turns.jsonl`, not `catches.json`.** The tally in catches.json is a
-# bag of counters — it has no per-check breakdown and no place to hang attribution without
-# multiplying into (model × check × status) counters that would then be a second, drifting
-# copy of what the turn record already holds exactly. `record.py` already stamps `model`,
-# `agent_version`, `harness` and every per-check status on every line, so the ledger reads
-# that and catches.json keeps doing the one thing it does well: an exact, unbounded,
-# machine-wide *tally*. The two answer different questions and the ledger says so out loud
-# (`turns` is the retained record; `runs` in `count` is all-time), rather than pretending a
-# capped file and an uncapped counter are the same number.
+# Source of truth is `turns.jsonl`, not `catches.json` (a bag of counters with no per-check
+# breakdown or attribution), so the ledger's window is `record.max_records()` turns and a
+# legacy install with a tally but no turn record has an empty ledger — honest, and visible
+# in the header the CLI prints.
 #
-# Consequence, stated rather than hidden: the ledger's window is `record.max_records()`
-# turns (default 5000), and a legacy install with a tally but no turn record has an empty
-# ledger. Both are honest — "we don't have that evidence" is the same posture as
-# INDETERMINATE — and both are visible in the header the CLI prints.
-#
-# **Denominators.** Two rates, never one without the other, because they answer different
-# questions and only one of them is a competence signal:
-#
-#   catch rate = caught / spoke   — of the turns where the check had enough evidence to
-#                                   reach a verdict (PASS/FAIL/STALE), how often did it
-#                                   find something. Excludes turns the check couldn't
-#                                   speak to, because counting those as "didn't catch"
-#                                   flatters a check that is merely never applicable.
-#   blind rate = blind / seen     — of every turn the check ran in, how often it had
-#                                   nothing to say (UNSUPPORTED/INDETERMINATE). This is
-#                                   the harness/evidence metric §7 promotes: it does not
-#                                   improve with model capability.
-#
-# `seen = spoke + blind`, so the two denominators are stated, not inferred, and a check
-# that is UNSUPPORTED on 90% of turns shows a small `spoke` next to a 90% blind rate —
-# you cannot read one rate without the other being on the same line.
-#
-# Run level uses the same words for the same things: a turn is `caught` when its verdict
-# is FAILED/STALE and `blind` when it is INDETERMINATE/UNSUPPORTED, over all recorded
-# turns. Deliberately the same definitions `counts`/`totals` use above, so `tycho count`
-# and the ledger never disagree about what a catch is — only about the window.
+# Two denominators, always reported together (`seen = spoke + blind`):
+#   catch rate = caught / spoke — over turns where the check reached a verdict; excluding
+#                                 ones it couldn't speak to stops a never-applicable check
+#                                 looking good.
+#   blind rate = blind / seen   — how often it had nothing to say; doesn't improve with model
+#                                 capability, so it is the metric §7 wants.
+# Run level reuses `counts`/`totals`' definitions, so `tycho count` and the ledger disagree
+# only about the window, never about what a catch is.
 
 _CHECK_CAUGHT = ("FAIL", "STALE")  # per-check statuses that caught something
 _CHECK_BLIND = ("UNSUPPORTED", "INDETERMINATE")  # per-check statuses with nothing to say
@@ -325,9 +259,7 @@ _RUN_CAUGHT = ("FAILED", "STALE")  # verdicts that count as a catch (matches `_c
 
 
 def ledger(repo: Path) -> dict:
-    """Per-check and per-model catch/blind rates over `repo`'s retained turn record.
-
-    Returns (all counts are turns)::
+    """Per-check and per-model catch/blind rates over `repo`'s retained turn record::
 
         {"turns": int, "first": float|None, "last": float|None,
          "caught": int, "blind": int,
@@ -335,14 +267,9 @@ def ledger(repo: Path) -> dict:
          "checks": [{"name", "spoke", "caught", "blind",
                      "models": [{"model", "spoke", "caught"}, …]}, …]}
 
-    `model`/`agent_version` are None when the harness didn't expose them — never guessed,
-    never backfilled (see `model.Attribution`); a null model is its own bucket rather than
-    being folded into a neighbour, because "we don't know which model did this" is a fact
-    about the evidence and merging it would corrupt exactly the measurement this exists for.
-
-    Sorted for a stable render: models by turn count then id, checks by name. Never raises
-    and never opens a socket — this reads one local file, like everything else here.
-    """
+    `model`/`agent_version` are None when the harness didn't expose them, never guessed, and
+    a null model is its own bucket — merging it would corrupt this measurement. Sorted for a
+    stable render: models by turn count then id, checks by name."""
     from . import record  # lazy: record imports state, so a module-level import would cycle
 
     turns = caught = blind = 0
@@ -352,7 +279,7 @@ def ledger(repo: Path) -> dict:
     for row in record.iter_records(repo):
         verdict = row.get("verdict")
         if not isinstance(verdict, str):
-            continue  # not a turn record we can read — skip it, same rule as a corrupt line
+            continue  # not a turn record we can read
         turns += 1
         is_caught = verdict in _RUN_CAUGHT
         is_blind = verdict in _BLIND
@@ -400,9 +327,9 @@ def ledger(repo: Path) -> dict:
 
 # --- update check cache ------------------------------------------
 #
-# Machine-wide (one check serves every repo): the newest version we saw, when we last
-# looked, which version the user waved off, and how many times they've dismissed a notice.
-# Fail-open like the rest — an unreadable/​unwritable cache just means "check again".
+# Machine-wide (one check serves every repo): newest version seen, when we last looked, which
+# version the user waved off, how many notices they've dismissed. An unusable cache just
+# means "check again".
 
 _UPDATE = "update-check.json"
 
@@ -412,7 +339,6 @@ def read_update_cache() -> dict:
 
 
 def write_update_cache(**fields) -> None:
-    """Merge `fields` into the update cache. Never raises."""
     try:
         data = read_update_cache()
         data.update(fields)
@@ -422,20 +348,17 @@ def write_update_cache(**fields) -> None:
 
 
 def dismiss_update(version: str) -> None:
-    """Record that the user waved off the notice for `version`, counting the dismissal."""
     write_update_cache(dismissed_version=version, dismissed=_count_of(read_update_cache(), "dismissed") + 1)
 
 
 def update_dismissed_count() -> int:
-    """How many update notices the user has dismissed."""
     return _count_of(read_update_cache(), "dismissed")
 
 
 # --- first-run offer bookkeeping ---------------------------------
 #
-# Machine-level, keyed by repo path: which repos we've already made the "set up Tycho here?"
-# offer in, so a declined offer is never re-nagged — and nothing is written into a repo the
-# user said no to (the marker lives outside it).
+# Machine-level, keyed by repo path, so a declined offer is never re-nagged and nothing is
+# written into a repo the user said no to.
 
 _OFFERED = "offered.json"
 
@@ -468,16 +391,12 @@ _STATUS_OFF = "status-off"
 
 
 def status_enabled(repo: Path) -> bool:
-    """Whether the status-bar indicator should render here. Default on; a sentinel hides it.
-
-    Hiding the badge is not uninstalling: the Stop hook keeps verifying every turn, the
-    heartbeat keeps landing — only the passive indicator goes quiet.
-    """
+    """Whether the status-bar indicator renders here. Default on; a sentinel file hides it.
+    Hiding the badge is not uninstalling — the Stop hook keeps verifying every turn."""
     return not (dir_for(repo) / _STATUS_OFF).exists()
 
 
 def set_status_enabled(repo: Path, enabled: bool) -> None:
-    """Toggle the indicator on/off for `repo`. Never raises (same fail-open rule as above)."""
     path = dir_for(repo) / _STATUS_OFF
     try:
         if enabled:
@@ -491,31 +410,24 @@ def set_status_enabled(repo: Path, enabled: bool) -> None:
 
 # --- verdict relay to the agent (opt-in, default OFF) --------------
 #
-# Off by default: Tycho never feeds the agent its own context — and never spends the extra
-# generations doing so — unless the user opts in. When ON, the Stop hook hands a non-VERIFIED
-# verdict back to Claude as additionalContext or Codex as a blocked Stop with a continuation
-# reason, which makes the agent address what Tycho caught, "until VERIFIED".
+# When ON, the Stop hook hands a non-VERIFIED verdict back to Claude as additionalContext, or
+# to Codex as a blocked Stop with a continuation reason, so the agent works "until VERIFIED".
+# Off by default: Tycho never feeds the agent its own context, or spends the extra
+# generations, unless the user opts in.
 #
-# The on/off flag lives in `.tycho.toml` (`[relay] enabled`) so it's hand-editable
-# and versionable; these functions just delegate to `config`. Only the transient per-turn leash
-# (`relay-streak`) stays a runtime file here — it's ephemeral state, not user configuration.
-#
-# That auto-continuation is *bounded* by the streak counter: one user turn can only be re-entered
-# a fixed number of times (relay_max) before Tycho goes quiet and hands control back — so a
-# verdict Tycho can never satisfy cannot cycle forever (the operator's explicit requirement).
-# The streak resets on every real user prompt (UserPromptSubmit) and on a VERIFIED verdict.
+# The flag lives in `.tycho.toml` ([relay] enabled); only the transient per-turn leash
+# (`relay-streak`) is a runtime file here. That streak bounds auto-continuation to relay_max
+# re-entries per user turn, so a verdict Tycho can never satisfy cannot cycle forever. It
+# resets on every real user prompt and on VERIFIED.
 
 _RELAY_STREAK = "relay-streak"
 _RELAY_MAX_DEFAULT = 3
 
 
 def relay_max() -> int:
-    """How many times the relay may auto-continue one user turn before going quiet.
-
-    Default 3; ``TYCHO_RELAY_MAX`` overrides it for a longer or shorter leash. Floored at 0
-    (0 = never force a continuation — the relay becomes a pure, single-shot notice). A junk
-    value falls back to the default rather than raising: this is read inside the Stop hook.
-    """
+    """How many times the relay may auto-continue one user turn. Default 3,
+    ``TYCHO_RELAY_MAX`` overrides, floored at 0 (= a single-shot notice). Junk falls back to
+    the default: this is read inside the Stop hook."""
     try:
         return max(0, int(os.environ.get("TYCHO_RELAY_MAX", _RELAY_MAX_DEFAULT)))
     except (TypeError, ValueError):
@@ -523,16 +435,14 @@ def relay_max() -> int:
 
 
 def relay_enabled(repo: Path) -> bool:
-    """Whether the Stop hook should feed the verdict back to the agent here. Reads
-    `.tycho.toml` ([relay] enabled), default off. Lazy import of `config` avoids an import
-    cycle (config imports state for its path resolution)."""
+    """Whether the Stop hook feeds the verdict back to the agent here — `.tycho.toml`
+    ([relay] enabled), default off. Lazy import: config imports state."""
     from . import config
     return config.load(repo).relay_enabled
 
 
 def set_relay_enabled(repo: Path, enabled: bool) -> None:
-    """Toggle the verdict relay for `repo` in `.tycho.toml`. Resets the streak either way (a
-    toggle starts a fresh leash). Never raises — same fail-open rule as every write here."""
+    """Toggle the verdict relay for `repo` in `.tycho.toml`, resetting the streak either way."""
     from . import config
     try:
         config.set_relay(repo, enabled)
@@ -542,8 +452,8 @@ def set_relay_enabled(repo: Path, enabled: bool) -> None:
 
 
 def relay_streak(repo: Path) -> int:
-    """How many times the current user turn has already been auto-continued by the relay.
-    Absent/unreadable/garbage counts as 0 — the honest floor for "nothing recorded yet"."""
+    """How many times the relay has already auto-continued the current user turn;
+    absent/unreadable/garbage counts as 0."""
     try:
         return max(0, int((dir_for(repo) / _RELAY_STREAK).read_text(encoding="utf-8").strip()))
     except (OSError, ValueError):
@@ -551,7 +461,6 @@ def relay_streak(repo: Path) -> int:
 
 
 def bump_relay_streak(repo: Path) -> int:
-    """Record one more relay auto-continuation; return the new count. Never raises."""
     n = relay_streak(repo) + 1
     try:
         path = dir_for(repo) / _RELAY_STREAK
@@ -563,7 +472,6 @@ def bump_relay_streak(repo: Path) -> int:
 
 
 def reset_relay_streak(repo: Path) -> None:
-    """Clear the auto-continuation count — a fresh user prompt, a VERIFIED verdict, or a toggle."""
     try:
         (dir_for(repo) / _RELAY_STREAK).unlink(missing_ok=True)
     except OSError:
@@ -574,17 +482,13 @@ _STATUSLINE = "statusline.json"
 
 
 def write_statusline_wrap(repo: Path, command: str, origin: str) -> None:
-    """Record a status command Tycho should compose with.
-
-    `origin` is "repo" (a foreign statusLine in this repo's own settings that we replaced —
-    restore it on uninstall) or "user" (a user-level line we never touched — it resurfaces
-    on its own when ours is removed). `tycho status` runs `command` and prepends its output.
-    """
+    """Record a status command Tycho composes with — `tycho status` runs it and prepends its
+    output. `origin` "repo" is a foreign statusLine we replaced (restore it on uninstall);
+    "user" is one we never touched, which resurfaces on its own."""
     _write_json(dir_for(repo) / _STATUSLINE, {"command": command, "origin": origin})
 
 
 def read_statusline_wrap(repo: Path) -> dict | None:
-    """The recorded compose target, or None. Our own state, so unreadable means "none"."""
     return _read_json(dir_for(repo) / _STATUSLINE)
 
 
@@ -594,11 +498,10 @@ def clear_statusline_wrap(repo: Path) -> None:
 
 # --- agent verdict override (opt-in, default OFF) ------------------
 #
-# Two artifacts, both fail-open like everything here:
-#   turn-marker  <repo>/.tycho/override        : the checks the agent disputes THIS turn,
-#                                                 cleared on UserPromptSubmit (a fresh turn).
-#   audit log    <repo>/.tycho/overrides.json  : {overrides: [{at, check, reason}, … newest first]},
-#                                                 written at record time — the permanent record.
+#   turn-marker <repo>/.tycho/override       : checks the agent disputes THIS turn, cleared
+#                                              on UserPromptSubmit.
+#   audit log   <repo>/.tycho/overrides.json : {overrides: [{at, check, reason}, …]}, the
+#                                              permanent record.
 # The on/off capability flag lives in `.tycho.toml` ([override] enabled), like [relay].
 
 _OVERRIDE_MARKER = "override"
@@ -608,15 +511,14 @@ _VETOES = "vetoes.json"
 
 
 def override_enabled(repo: Path) -> bool:
-    """Whether the agent may record verdict overrides here. Reads `.tycho.toml`
-    ([override] enabled), default off. Lazy import of config avoids the import cycle."""
+    """Whether the agent may record verdict overrides here — `.tycho.toml`
+    ([override] enabled), default off. Lazy import: config imports state."""
     from . import config
     return config.load(repo).override_enabled
 
 
 def set_override_enabled(repo: Path, enabled: bool) -> None:
-    """Toggle the override capability in `.tycho.toml`. Clears any active marker either way
-    (a toggle starts clean). Never raises — same fail-open rule as every write here."""
+    """Toggle the override capability in `.tycho.toml`, clearing any active marker either way."""
     from . import config
     try:
         config.set_override(repo, enabled)
@@ -630,16 +532,14 @@ def set_override_enabled(repo: Path, enabled: bool) -> None:
 
 
 def overrides(repo: Path) -> list:
-    """The checks the agent has overridden this turn: [{"check": str, "reason": str}].
-    Absent/unreadable/garbage → [] (the honest floor)."""
+    """The checks the agent has overridden this turn: [{"check": str, "reason": str}]."""
     data = _read_json(dir_for(repo) / _OVERRIDE_MARKER)
     entries = data.get("entries") if isinstance(data, dict) else None
     return entries if isinstance(entries, list) else []
 
 
 def record_override(repo: Path, check: str, reason: str) -> None:
-    """Record one per-check override: add it to this turn's marker AND append it to the audit
-    log. Never raises — this is called from a deliberate CLI action, but stays fail-open."""
+    """Record one per-check override in this turn's marker and in the audit log."""
     entry = {"at": time.time(), "check": check, "reason": reason}
     try:
         existing = overrides(repo)
@@ -658,7 +558,7 @@ def record_override(repo: Path, check: str, reason: str) -> None:
 
 
 def clear_overrides(repo: Path) -> None:
-    """Drop this turn's override marker — a fresh user prompt or a toggle. The audit log stays."""
+    """Drop this turn's override marker. The audit log stays."""
     try:
         (dir_for(repo) / _OVERRIDE_MARKER).unlink(missing_ok=True)
     except OSError:
@@ -673,16 +573,16 @@ def override_log(repo: Path) -> list:
 
 
 def vetoed(repo: Path) -> list:
-    """Checks the user has vetoed — an override for any of these is refused/ignored. Persists
-    across turns (unlike the marker) until unvetoed or the capability is toggled. [] when none."""
+    """Checks the user has vetoed — an override for any is refused. Unlike the marker, these
+    persist across turns until unvetoed or the capability is toggled."""
     data = _read_json(dir_for(repo) / _VETOES)
     checks = data.get("checks") if isinstance(data, dict) else None
     return checks if isinstance(checks, list) else []
 
 
 def veto_override(repo: Path, check: str) -> None:
-    """User countermands an override of `check`: drop it from this turn's marker, add it to the
-    persistent veto set (so it can't be re-applied), and log the veto. Never raises."""
+    """User countermands an override of `check`: drop it from this turn's marker, add it to
+    the persistent veto set, log the veto."""
     try:
         remaining = [m for m in overrides(repo) if m.get("check") != check]
         marker = dir_for(repo) / _OVERRIDE_MARKER
@@ -709,7 +609,6 @@ def veto_override(repo: Path, check: str) -> None:
 
 
 def unveto_override(repo: Path, check: str) -> None:
-    """Lift a veto so `check` may be overridden again. Never raises."""
     try:
         current = set(vetoed(repo))
         current.discard(check)

@@ -1,8 +1,6 @@
 """The engine: gather a session, run the checks, reduce their results to a verdict.
 
-`gather()` is the only I/O boundary — everything downstream is pure over a frozen
-`Session`. `run_checks`/`has_verifiable_activity` delegate to `checks`, keeping this module
-a single facade over that boundary.
+`gather()` is the only I/O boundary — everything downstream is pure over a frozen `Session`.
 """
 
 from __future__ import annotations
@@ -42,19 +40,12 @@ def gather(
 ) -> Session:
     """Read the transcript + config + file/git state into the immutable Session.
 
-    This is the only I/O boundary on the way in; everything downstream is pure.
-    ``parse`` selects the harness transcript reader (default: Claude Code).
-    ``turn_start`` locates the boundary of the turn under review; omit it
-    to scope the whole transcript, which is what a manual ``tycho verify`` audit wants.
-    ``attribution`` reads who produced the turn (model/agent version/session id) for the
-    per-turn record; it belongs here rather than in the caller precisely because it is
-    transcript data, and this is the only I/O boundary on the way in.
-    """
+    ``parse`` selects the harness transcript reader (default: Claude Code). Omit
+    ``turn_start`` to scope the whole transcript, which is what a manual audit wants."""
     events = (parse or events_mod.parse)(transcript)
     msgs = (messages or events_mod.assistant_messages)(transcript)
-    # Harness transcripts record absolute file paths; git and scope globs speak
-    # repo-relative. Normalize once here so git_state / scope_drift compare like
-    # with like (an edit outside the repo stays absolute — scope_drift flags it).
+    # Harness transcripts record absolute paths; git and scope globs speak repo-relative.
+    # Normalize once here (an edit outside the repo stays absolute — scope_drift flags it).
     edits = tuple(
         _with_baseline(replace(fe, path=_relpath(fe.path, repo)), repo, since)
         for fe in events_mod.file_edits(events)
@@ -79,20 +70,11 @@ def gather(
 def _evidence_floor(events, edits, turn_start: float) -> float:
     """The earliest moment a `tycho exec` run may still count as evidence for this session.
 
-    `.tycho/commands.jsonl` is repo-scoped and long-lived — it knows nothing about turns,
-    sessions or harnesses. Read unbounded, it would happily offer a green `pytest` from
-    yesterday as proof of a claim made today, which is a fabricated green. So the floor is:
-
-    - the turn boundary when we have one (the Stop hook always does); else
-    - the first thing this session did, for a whole-session `tycho verify` audit; else
-    - **0.0, meaning admit nothing.** No timestamps anywhere (a transcript with no events,
-      or a harness that stamps none) is not a licence to trust the whole log — it is the
-      absence of the anchor that makes trusting it safe. `command.read` returns () for 0.0.
-
-    Deliberately *not* an "ignore anything older than N hours" rule: a wall-clock heuristic
-    would make the verdict depend on when you ran the verifier, and a long agent turn would
-    quietly lose its own evidence.
-    """
+    `.tycho/commands.jsonl` is repo-scoped and long-lived, so read unbounded it would offer
+    yesterday's green `pytest` as proof of today's claim. The floor is the turn boundary,
+    else the session's first timestamp, else **0.0 meaning admit nothing** (`command.read`
+    returns () for 0.0). Deliberately *not* an "older than N hours" rule: that would make
+    the verdict depend on when you ran the verifier."""
     if turn_start:
         return turn_start
     stamps = [e.ts for e in events if e.ts] + [fe.ts for fe in edits if fe.ts]
@@ -134,14 +116,9 @@ def _has_tests(repo: Path) -> bool:
 
 
 def _with_baseline(fe: FileEdit, repo: Path, since: str) -> FileEdit:
-    """Recover the pre-edit baseline from git when the harness omitted it.
-
-    Claude Code sends ``originalFile: null`` on a file's *repeat* edits, which would leave
-    the AST tamper checks (`assertion_weakening`/`skip_mock_injection`) with no "before"
-    and silently UNSUPPORTED while still appearing to run. ``git show <since>:<path>``
-    is a truthful pre-session baseline for a tracked file, independent of any harness field.
-    Only for in-repo paths; an untracked path returns None and stays a genuine create.
-    """
+    """Recover the pre-edit baseline from git when the harness omitted it: Claude Code sends
+    ``originalFile: null`` on a file's *repeat* edits, which would leave the AST tamper
+    checks with no "before" and silently UNSUPPORTED while appearing to run."""
     if fe.original is not None or not checks_mod._is_in_repo(fe.path):
         return fe
     blob = gitstate.blob_at(repo, since, fe.path)
@@ -153,15 +130,11 @@ def _with_baseline(fe: FileEdit, repo: Path, since: str) -> FileEdit:
 def _relpath(path: str, repo: Path) -> str:
     """Make an absolute in-repo path repo-relative, always with forward slashes.
 
-    Git (`git diff --name-only`) and the `[scope]` globs both speak POSIX separators, so a
-    Windows backslash here would never reconcile against either — `git_state` would count
-    zero uncommitted and `scope_drift` would miss `src/**`. `as_posix()` equals
-    `str()` on *nix, so this is a no-op there.
-    """
+    Git and the `[scope]` globs both speak POSIX separators, so a Windows backslash here
+    would reconcile against neither — `git_state` would count zero uncommitted and
+    `scope_drift` would miss `src/**`."""
     # `is_absolute()` only knows the *host* flavor: on Windows a POSIX path like
-    # `/repo/old.md` (no drive) reads as relative and never normalizes, while a forward-
-    # slash-normalizing harness or WSL emits exactly that. Try the native flavor first,
-    # then POSIX, so an absolute path is recognized regardless of the OS it's read on.
+    # `/repo/old.md` (no drive) reads as relative, and WSL emits exactly that.
     p = Path(path)
     if p.is_absolute():
         try:
@@ -203,23 +176,18 @@ def _git_snapshot(repo: Path, since: str) -> GitSnapshot:
     )
 
 
-# file_state/git_state only establish that the edited files exist and are in the
-# repo. That's true of essentially any session that touched a file, and stays true
-# on every later Stop once the work is committed — so on their own they'd turn "I
-# couldn't check anything" into a green VERIFIED. They corroborate a claim; they
-# can't carry one.
+# file_state/git_state only establish that the edited files exist and are in the repo,
+# which is true of any session that touched a file — alone they'd turn "I couldn't check
+# anything" into a green VERIFIED. They corroborate a claim; they can't carry one.
 _WEAK_CHECKS = frozenset({"file_state", "git_state"})
 
 
 def verdict_of(results: Sequence[CheckResult]) -> Verdict:
     """Reduce per-check statuses to one run verdict.
 
-    Any FAIL sinks the run; else any STALE; else one *substantive* PASS is enough
-    to VERIFY (an UNSUPPORTED/INDETERMINATE check does not sink an otherwise-clean
-    run, and a `_WEAK_CHECKS` pass alone is not enough to lift one). With nothing
-    conclusive: all-UNSUPPORTED -> UNSUPPORTED, otherwise INDETERMINATE (including
-    the empty case).
-    """
+    Any FAIL sinks the run; else any STALE; else one *substantive* PASS verifies (a
+    `_WEAK_CHECKS` pass alone does not). Nothing conclusive: all-UNSUPPORTED ->
+    UNSUPPORTED, otherwise INDETERMINATE (including the empty case)."""
     statuses = {r.status for r in results}
     if CheckStatus.FAIL in statuses:
         return Verdict.FAILED

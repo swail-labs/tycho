@@ -1,9 +1,8 @@
 """The durable per-turn record: ``<repo>/.tycho/turns.jsonl`` (strategy §9.2).
 
-One JSON object per line, append-only, **newest last**. This is the substrate the turn
-digest, ``tycho blame``/``log``, the commit trailer, and the decay ledger all read; it is
-deliberately a flat file rather than a database, because greppable + stdlib + no index is
-the whole reason a local verifier can promise zero dependencies and zero daemons.
+One JSON object per line, append-only, **newest last**. The substrate the turn digest,
+``tycho blame``/``log``, the commit trailer, and the decay ledger all read. A flat file
+rather than a database: greppable + stdlib + no index is what buys zero dependencies.
 
 Schema (``schema: 1``; the key is written **first on every line** so a migration can read
 the version without parsing the rest, and so `head -c 20` on the file tells you what it is)::
@@ -23,26 +22,19 @@ the version without parsing the rest, and so `head -c 20` on the file tells you 
     commands      list    [{"cmd": str, "runner": bool, "outcome": "passed"|"failed"|"unknown"}]
     claims        list    [str] — the agent's own prose from this turn
 
-**Purity seam.** ``build()`` is pure: a gathered ``Session`` + check results + verdict in,
-a dict out. All I/O is in ``append()``/``read()``/``touching()``/``iter_records()``.
-``verify.gather()`` stays the only I/O boundary on the way in — attribution rides in on
-``Session.attribution``, which gather reads through the harness adapter.
+**Purity seam.** ``build()`` is pure; all I/O is in
+``append()``/``read()``/``touching()``/``iter_records()``, with ``verify.gather()`` the only
+I/O boundary on the way in.
 
-**Never raises.** This is written from the Stop hook, which must never break the agent's
-turn (see ``hook.py``), so every function here follows ``state.py``'s fail-open rule: a
-record we can't write is simply not written, and a file we can't read reads as empty.
+**Never raises.** Written from the Stop hook, which must never break the agent's turn (see
+``hook.py``): a record we can't write is simply not written, a file we can't read is empty.
 
-**Redaction.** Transcripts contain secrets. Making a transcript durable and greppable is
-exactly the moment to strip them, so command strings, check evidence and prose all go
-through ``redact()`` before they hit disk — see ``_REDACTIONS``, a single table that is a
-calibration knob, not a finished list. Secrets are replaced with a visible ``[REDACTED]``
-so a reader knows something was removed rather than silently reading a hole.
+**Redaction.** Command strings, check evidence and prose go through ``redact()`` before
+disk. Secrets become a visible ``[REDACTED]`` so a reader knows something was removed.
 
-**Retention.** The file is capped at ``max_records()`` turns (default 5000, override with
-``TYCHO_TURNS_MAX``, same idiom as ``TYCHO_RELAY_MAX``). Pruning happens on append, and
-only once the file has drifted ``_PRUNE_SLACK`` lines past the cap, so the common append is
-one ``write()`` and never a rewrite. Individual fields are truncated too, so one pathological
-turn can't write a megabyte line.
+**Retention.** Capped at ``max_records()`` turns, pruned on append only once the file has
+drifted ``_PRUNE_SLACK`` lines past the cap, so the common append is one ``write()``. Fields
+are truncated too, so one pathological turn can't write a megabyte line.
 """
 
 from __future__ import annotations
@@ -63,9 +55,8 @@ from .model import CheckResult, Session, Stage, Verdict
 SCHEMA = 1
 FILE = "turns.jsonl"
 
-# Bounds on what one record may write. Generous enough that a claim is still readable
-# months later (the point of `tycho blame`), small enough that a runaway turn can't
-# produce a line no reader will load.
+# Bounds on what one record may write: a claim stays readable months later, a runaway turn
+# can't produce a line no reader will load.
 _MAX_CLAIM_CHARS = 2000
 _MAX_CLAIMS = 20
 _MAX_CMD_CHARS = 500
@@ -74,19 +65,15 @@ _MAX_EVIDENCE_CHARS = 500
 _TRUNCATED = "…[truncated]"
 
 _MAX_DEFAULT = 5000
-# Slack before a prune: rewriting the whole file on every append once it reaches the cap
-# would make every Stop O(cap). With slack, a rewrite happens once per `_PRUNE_SLACK`
-# turns instead. ponytail: amortized rewrite; switch to a ring/segment file only if a
-# 5000-line rewrite every 250 turns ever shows up in a profile.
+# Slack before a prune, so a rewrite happens once per `_PRUNE_SLACK` turns instead of making
+# every Stop O(cap). ponytail: amortized rewrite; switch to a ring/segment file only if a
+# 5000-line rewrite every 250 turns shows up in a profile.
 _PRUNE_SLACK = 250
 
 
 def _env_cap(var: str, default: int) -> int:
-    """A retention cap from `var`, floored at 1, falling back to `default` on junk.
-
-    "Keep nothing" is not a retention policy, it's a broken config; and this is read inside
-    the Stop hook, so a junk value must not raise.
-    """
+    """A retention cap from `var`, floored at 1 ("keep nothing" is a broken config) and
+    falling back to `default` on junk — read inside the Stop hook, so it must not raise."""
     try:
         return max(1, int(os.environ.get(var, default)))
     except (TypeError, ValueError):
@@ -99,22 +86,16 @@ def max_records() -> int:
 
 
 def path_for(repo: Path) -> Path:
-    """``<repo>/.tycho/turns.jsonl``, resolved the same way as the rest of Tycho's state."""
     return state.dir_for(repo) / FILE
 
 
 # --- redaction ---------------------------------------------------------------
 #
-# One table, ordered: the specific, high-confidence shapes first (a named secret, a
-# credentialed URL, a known key prefix), the generic high-entropy blob last, so a token we
-# can name is redacted by the rule that names it. Each row is (pattern, replacement); the
-# replacement keeps whatever identifies *what* was removed (the variable name, the header,
-# the scheme) and drops only the value, because "AWS_SECRET_ACCESS_KEY=[REDACTED]" is
-# evidence and a blank line is not.
-#
-# This is a calibration knob, not a finished list — add rows as real secrets show up. It is
-# tuned to over-redact rather than under-redact: a false [REDACTED] costs a reader a little
-# context, a miss puts a live credential in a durable, greppable, long-lived file.
+# Ordered: specific high-confidence shapes first, the generic high-entropy blob last, so a
+# token we can name is redacted by the rule that names it. Each replacement keeps what
+# identifies *what* was removed — "AWS_SECRET_ACCESS_KEY=[REDACTED]" is evidence, a blank is
+# not. A calibration knob, not a finished list, tuned to over-redact: a false [REDACTED]
+# costs a reader context, a miss puts a live credential in a durable, greppable file.
 
 _SECRET_NAME = (
     r"[A-Za-z0-9_]*(?:SECRET|TOKEN|PASSWORD|PASSWD|PASSPHRASE|CREDENTIAL|"
@@ -122,10 +103,8 @@ _SECRET_NAME = (
 )
 
 _REDACTIONS: tuple[tuple[re.Pattern[str], str], ...] = (
-    # FOO_TOKEN=value / "api_key": "value" — an env assignment or JSON field whose *name*
-    # says secret. Quoted values are consumed whole so the closing quote isn't left dangling;
-    # an unquoted value stops at a shell separator so `KEY=x && pytest` keeps its `&& pytest`
-    # (eating the separator would turn a two-command line into a misleading one-command line).
+    # FOO_TOKEN=value / "api_key": "value". Quoted values go whole (no dangling quote);
+    # unquoted ones stop at a shell separator, so `KEY=x && pytest` keeps its `&& pytest`.
     (re.compile(rf"(?i)\b({_SECRET_NAME})(\s*[=:]\s*)(\"[^\"]*\"|'[^']*'|[^\s;&|)]+)"),
      r"\1\2[REDACTED]"),
     # Authorization: Bearer xxx — the header, in a curl command or a pasted request.
@@ -133,11 +112,9 @@ _REDACTIONS: tuple[tuple[re.Pattern[str], str], ...] = (
      r"\1[REDACTED]"),
     # Long-form credential flags: --password=x, --token x, --api-key x.
     (re.compile(r"(?i)(--(?:password|passwd|token|api[-_]?key|secret)(?:[= ]))\S+"), r"\1[REDACTED]"),
-    # Short mysql-style `-pSECRET` (value attached, ≥6 chars, and not all-lowercase so
-    # `find -printf` survives). ponytail: the space-separated `-p x` form is deliberately
-    # NOT matched — `mkdir -p dir`, `docker -p 8080:80`, `cp -p src` are overwhelmingly the
-    # common case, and gutting those would make the record unreadable to buy a shape almost
-    # nothing writes. Add a row here if a real one shows up.
+    # Short mysql-style `-pSECRET` (attached, ≥6 chars, not all-lowercase so `find -printf`
+    # survives). ponytail: the spaced `-p x` form is deliberately NOT matched — `mkdir -p dir`,
+    # `docker -p 8080:80`, `cp -p src` dominate; add a row if a real one shows up.
     (re.compile(r"(?<![\w-])-p(?=\S*[^a-z\s])\S{6,}"), "-p[REDACTED]"),
     # scheme://user:password@host — inline credentials in a URL (git remotes, curl, psql).
     (re.compile(r"\b([a-zA-Z][a-zA-Z0-9+.-]*://)[^\s/:@]+:[^\s/@]+@"), r"\1[REDACTED]@"),
@@ -146,14 +123,11 @@ _REDACTIONS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{16,}"), "[REDACTED]"),
     (re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{12,}\b"), "[REDACTED]"),
     (re.compile(r"\bxox[abposr]-[A-Za-z0-9-]{10,}"), "[REDACTED]"),
-    # Long high-entropy hex — a raw key or hash-shaped secret. Exactly 40 hex chars is
-    # exempt: that is a git object id, which is the single most useful identifier a turn
-    # record can carry and is not a secret. ponytail: length heuristic, not entropy; a
-    # 64-char sha256 in prose is redacted, which is the safe side of that trade.
+    # Long high-entropy hex, except exactly 40 chars: that is a git object id, not a secret.
+    # ponytail: length heuristic, not entropy, so a 64-char sha256 in prose is redacted too.
     (re.compile(r"\b(?![0-9a-fA-F]{40}\b)[0-9a-fA-F]{32,}\b"), "[REDACTED]"),
-    # Long base64-ish blob (JWT segments, encoded keys). Requires *mixed case*, which is
-    # what separates an encoded blob from a long lowercase identifier — and, crucially,
-    # from the 40-char lowercase git sha the rule above just went out of its way to keep.
+    # Long base64-ish blob (JWT segments, encoded keys). *Mixed case* is required: it separates
+    # an encoded blob from a long lowercase identifier, and from the git sha kept above.
     (re.compile(r"\b(?=[A-Za-z0-9+/]*[a-z])(?=[A-Za-z0-9+/]*[A-Z])[A-Za-z0-9+/]{40,}={0,2}"),
      "[REDACTED]"),
 )
@@ -161,10 +135,7 @@ _REDACTIONS: tuple[tuple[re.Pattern[str], str], ...] = (
 
 def redact(text: str) -> str:
     """Strip obvious secrets from `text`, replacing each with a visible ``[REDACTED]``.
-
-    Applied to every free-text field before it is written (commands, check evidence, prose).
-    Best-effort by construction — see ``_REDACTIONS``. Never raises.
-    """
+    Applied to every free-text field before it is written. Best-effort — see ``_REDACTIONS``."""
     if not text:
         return text
     for pattern, replacement in _REDACTIONS:
@@ -173,8 +144,8 @@ def redact(text: str) -> str:
 
 
 def _clean(text: str, limit: int) -> str:
-    """Redact, then bound. In that order: truncating first could cut a secret in half and
-    leave the front of it on disk with nothing matching the pattern any more."""
+    """Redact, then bound — truncating first could cut a secret in half and leave its front
+    on disk matching no pattern."""
     text = redact(str(text or ""))
     return text if len(text) <= limit else text[:limit] + _TRUNCATED
 
@@ -184,18 +155,14 @@ def _clean(text: str, limit: int) -> str:
 
 def stage_of(session: Session, results: list[CheckResult] | tuple[CheckResult, ...]) -> Stage:
     """The highest rung of the acceptance ladder this turn reached (strategy §6.4). Pure.
-
     Descending, first match wins:
 
-    - ``claim_supported`` — a *substantive* check PASSed. Deliberately the same bar
-      ``verify.verdict_of`` uses to reach VERIFIED (``verify._WEAK_CHECKS``), reused rather
-      than restated: a second definition of "substantive" would drift from the verdict's,
-      which is the exact split-brain ``checks._outcome`` exists to prevent.
-    - ``artifact_changed`` — a file this turn created/edited is actually on disk. "Claimed
-      an edit" is not a rung; the file being there is.
-    - ``executed`` — a recognized test/build runner ran this turn (``checks._runner_events``,
-      which already reads through pipes, wrappers and nested shells).
-    - ``attempted`` — the floor: the turn did something, but nothing above held.
+    - ``claim_supported`` — a *substantive* check PASSed, reusing ``verify._WEAK_CHECKS`` so
+      this can't drift from the bar VERIFIED uses.
+    - ``artifact_changed`` — a file this turn edited is on disk. Claiming an edit is not a
+      rung; the file being there is.
+    - ``executed`` — a recognized test/build runner ran (``checks._runner_events``).
+    - ``attempted`` — the floor.
     """
     if any(r.status.name == "PASS" and r.name not in engine._WEAK_CHECKS for r in results):
         return Stage.CLAIM_SUPPORTED
@@ -219,13 +186,9 @@ def build(
     harness: str,
     ended_at: float,
 ) -> dict:
-    """One gathered turn + its results + its verdict → the record dict. **Pure**: no I/O,
-    no clock, no randomness — ``ended_at`` is passed in so the same inputs always produce
-    the same record (and therefore the same ``digest``).
-
-    Redaction and truncation happen here, not in ``append``, so nothing downstream of this
-    function has ever held the unredacted text.
-    """
+    """One gathered turn + its results + its verdict → the record dict. **Pure**: ``ended_at``
+    is passed in so the same inputs give the same record and the same ``digest``. Redaction
+    and truncation happen here, so nothing downstream ever holds the unredacted text."""
     turn_events = session.turn_events
     started_at = session.turn_start or min(
         (e.ts for e in (*turn_events, *session.turn_edits) if e.ts), default=ended_at
@@ -251,8 +214,8 @@ def build(
             }
             for r in results
         ],
-        # Repo-relative POSIX paths — `gather` already normalized them, so `blame` can
-        # compare against what a developer types without knowing the harness's flavor.
+        # Repo-relative POSIX paths (normalized by `gather`), so `blame` can compare against
+        # what a developer types without knowing the harness's flavor.
         "files": [
             {"path": fe.path, "kind": fe.kind, "ts": fe.ts} for fe in session.turn_edits
         ],
@@ -264,27 +227,19 @@ def build(
 
 
 def _turn_id(session_id: str | None, started_at: float, ended_at: float) -> str:
-    """A stable id for this turn: 16 hex of sha256 over (session, bounds).
-
-    Content-derived rather than random so rebuilding the same turn yields the same id, and
-    so two processes can't mint different ids for one turn. 64 bits is far more than enough
-    to keep 5000 records apart.
-    """
+    """A stable id for this turn: 16 hex of sha256 over (session, bounds). Content-derived
+    rather than random so rebuilding a turn yields the same id and two processes can't mint
+    different ids for one turn."""
     seed = f"{session_id or ''}|{started_at!r}|{ended_at!r}"
     return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
 
 
 def _commands(turn_events, exec_runs=()) -> list[dict]:
-    """Every shell command this turn ran: the string, whether it was a recognized
-    test/build runner, and what it returned.
-
-    The runner predicate and the outcome both come from ``checks`` — ``_runner_segment``
-    and ``_outcome`` encode which wrappers hide a runner and when the shell masked its exit
-    status, and a second copy of that reasoning here would eventually disagree with the
+    """Every shell command this turn ran: the string, whether it was a recognized test/build
+    runner, and what it returned. The runner predicate and the outcome both come from
+    ``checks``; a second copy of that reasoning here would eventually disagree with the
     verdict about what "passed" means. ``exec_runs`` is ``Session.commands``, so a command
-    put on the record by ``tycho exec`` reports the status Tycho itself observed — the
-    receipt and the verdict read the same evidence, by construction.
-    """
+    recorded by ``tycho exec`` reports the status Tycho itself observed."""
     out = []
     for e in turn_events:
         if e.tool not in checks_mod._SHELL_TOOLS:
@@ -311,20 +266,17 @@ def _commands(turn_events, exec_runs=()) -> list[dict]:
 
 # --- safe accessors ----------------------------------------------------------
 #
-# A record read back off disk may have been written by an older schema, by a crashed
-# append, or hand-edited. These coerce rather than validate: a malformed row yields less,
-# never a traceback in the Stop hook. They live here because this is where the schema is
-# defined — `digest`, `archaeology`, `attest` and `review` all read through them.
+# A record read back off disk may come from an older schema, a crashed append, or a hand
+# edit. These coerce rather than validate: a malformed row yields less, never a traceback in
+# the Stop hook.
 
 
 def _rows(record: dict, key: str) -> list[dict]:
-    """The list-of-dicts under `key`, with anything else dropped."""
     value = record.get(key)
     return [r for r in value if isinstance(r, dict)] if isinstance(value, list) else []
 
 
 def _claims(record: dict) -> list[str]:
-    """The agent's own prose for this turn, blanks dropped."""
     value = record.get("claims")
     if not isinstance(value, list):
         return []
@@ -337,14 +289,9 @@ def _claims(record: dict) -> list[str]:
 def digest(record: dict) -> str:
     """``"sha256:<hex>"`` over a canonical serialization of `record` — the attestation.
 
-    Canonical means sorted keys, no whitespace, UTF-8: two dicts with the same content hash
-    the same regardless of key order, so a record read back off disk digests identically to
-    the one that was built. (The *on-disk* line is deliberately not sorted — ``schema`` leads
-    it — which is why this canonicalizes rather than hashing the raw line.)
-
-    Reproducible: ``Tycho-Attestation: {record.digest(r)}`` yields the same trailer on any
-    machine, for any process, forever, given the same record.
-    """
+    Canonical (sorted keys, no whitespace, UTF-8) so a record read back off disk digests
+    identically to the one built; the on-disk line is deliberately *not* sorted (``schema``
+    leads it), which is why this hashes a re-serialization rather than the raw line."""
     canonical = json.dumps(record, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -353,14 +300,11 @@ def digest(record: dict) -> str:
 
 
 def append(repo: Path, record: dict) -> bool:
-    """Append one record to ``<repo>/.tycho/turns.jsonl``; True if it landed.
+    """Append one record to ``<repo>/.tycho/turns.jsonl``; True if it landed. Never raises.
 
-    Never raises (Stop-hook rule). One ``write()`` of one line in append mode: a short line
-    appended to a file opened ``"a"`` does not interleave with a concurrent appender on any
-    platform Tycho supports, which is why the field bounds in ``build`` matter — they are
-    what keeps the line short. ponytail: no lockfile; add one only if records ever grow past
-    a page.
-    """
+    One ``write()`` of one short line in append mode does not interleave with a concurrent
+    appender on any platform Tycho supports — which is what the field bounds in ``build``
+    buy. ponytail: no lockfile; add one only if records grow past a page."""
     try:
         path = path_for(repo)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -374,12 +318,9 @@ def append(repo: Path, record: dict) -> bool:
 
 
 def _prune(path: Path, cap: int, slack: int | None = None) -> None:
-    """Trim the file to its newest `cap` records, once it has drifted past cap+slack.
-
-    `slack` is a parameter because the same amortization suits different write rates:
-    turns are appended once per agent turn, `command.py`'s evidence log once per command.
-    Read at call time, not bound as a default, so ``_PRUNE_SLACK`` stays patchable.
-    """
+    """Trim the file to its newest `cap` records, once it has drifted past cap+slack. `slack`
+    is a parameter because turns and `command.py`'s evidence log are written at different
+    rates, and read at call time so ``_PRUNE_SLACK`` stays patchable."""
     slack = _PRUNE_SLACK if slack is None else slack
     kept: deque[str] = deque(maxlen=cap)
     total = 0
@@ -390,7 +331,7 @@ def _prune(path: Path, cap: int, slack: int | None = None) -> None:
                 kept.append(line)
         if total <= cap + slack:
             return
-        # Atomic, like every other write in this package: temp sibling, then rename.
+        # Atomic: temp sibling, then rename.
         tmp = path.with_name(path.name + ".tmp")
         with tmp.open("w", encoding="utf-8") as fh:
             fh.writelines(line if line.endswith("\n") else line + "\n" for line in kept)
@@ -400,12 +341,9 @@ def _prune(path: Path, cap: int, slack: int | None = None) -> None:
 
 
 def iter_jsonl(path: Path) -> Iterator[dict]:
-    """Stream the JSON objects in a JSONL file, oldest first, skipping corrupt lines.
-
-    Streaming and never-raising: a truncated final line (a crashed append), a line of
-    garbage, or an unreadable file yields fewer rows — never an exception. Shared with
-    ``command.py``'s evidence log, which has the same durability problem.
-    """
+    """Stream the JSON objects in a JSONL file, oldest first. A truncated final line (a
+    crashed append), garbage, or an unreadable file yields fewer rows — never an exception.
+    Shared with ``command.py``'s evidence log."""
     try:
         with path.open(encoding="utf-8", errors="replace") as fh:
             for line in fh:
@@ -415,7 +353,7 @@ def iter_jsonl(path: Path) -> Iterator[dict]:
                 try:
                     row = json.loads(line)
                 except ValueError:
-                    continue  # corrupt line — skip it, never fail the whole read
+                    continue  # corrupt line, never fail the whole read
                 if isinstance(row, dict):
                     yield row
     except OSError:
@@ -423,18 +361,12 @@ def iter_jsonl(path: Path) -> Iterator[dict]:
 
 
 def iter_records(repo: Path) -> Iterator[dict]:
-    """Stream every turn record for `repo`, **oldest first**. The primitive the decay
-    ledger groups by ``model`` over."""
     yield from iter_jsonl(path_for(repo))
 
 
 def read(repo: Path, limit: int | None = None) -> list[dict]:
-    """The last `limit` records for `repo`, **newest first** (all of them when limit is None).
-
-    Bounded: the file is streamed and only `limit` lines are ever held, so answering "the
-    last 20" costs 20 records of memory whatever the file's size. This is what ``tycho log``
-    reads.
-    """
+    """The last `limit` records for `repo`, **newest first** (all when limit is None).
+    Streamed, so only `limit` records are ever held whatever the file's size."""
     if limit is not None and limit <= 0:
         return []
     rows: deque[dict] = deque(iter_records(repo), maxlen=limit)
@@ -443,18 +375,12 @@ def read(repo: Path, limit: int | None = None) -> list[dict]:
 
 def touching(repo: Path, path: str, limit: int | None = None) -> list[dict]:
     """Records whose `files` include `path`, **newest first** — the ``tycho blame`` query.
-
-    `path` is a repo-relative POSIX path, as stored (``src/app.py``). A bare basename also
-    matches the records that touched it in any directory, because that is what someone
-    types mid-debug; an exact repo-relative path is the unambiguous form. Same bounded
-    streaming as ``read``.
-    """
+    `path` is repo-relative POSIX as stored (``src/app.py``); a bare basename also matches it
+    in any directory, because that is what someone types mid-debug."""
     if limit is not None and limit <= 0:
         return []
-    # `removeprefix`, never `lstrip("./")`: lstrip strips a character *set*, so it eats the
-    # leading dot of every dotfile — `.github/workflows/ci.yml` became `github/workflows/…`
-    # and matched nothing, making dotfiles silently unblameable. A false "no turn touched
-    # this" is the one answer a tool built on not lying must never give.
+    # `removeprefix`, never `lstrip("./")`: lstrip strips a character *set*, so it ate the
+    # leading dot of every dotfile and made them silently unblameable.
     needle = str(path or "").replace("\\", "/").removeprefix("./")
     if not needle:
         return []

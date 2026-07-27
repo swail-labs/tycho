@@ -1,14 +1,11 @@
 """The Stop-hook entrypoint: stdin JSON → verify → print, never block.
 
-Wired by ``tycho init`` (next milestone) into the harness's Stop hook. Reads the
-hook payload on stdin, locates the transcript + repo, runs the engine, records the
-turn, and emits — *when the turn is worth mentioning* — the digest as the harness's
-JSON output. Most turns emit nothing: see ``_digest_output`` and ``digest.speaks``.
+Reads the hook payload on stdin, locates the transcript + repo, runs the engine, records the
+turn, and emits the digest only when the turn is worth mentioning (see ``digest.speaks``).
 
-A verifier must never break the agent: any bad input, missing transcript, or
-internal error exits 0 with no output. Unlike ``tycho verify`` (which exits 1 on
-FAILED so CI can gate), the *hook* always exits 0 — it annotates the Stop, it
-never blocks it. That is a design invariant: Tycho never blocks.
+Design invariant: Tycho never blocks. Any bad input, missing transcript, or internal error
+exits 0 with no output. Unlike ``tycho verify`` (exit 1 on FAILED so CI can gate), the hook
+always exits 0 — it annotates the Stop.
 """
 
 from __future__ import annotations
@@ -28,11 +25,7 @@ from .report import render
 
 
 def run(stdin_text: str) -> dict | None:
-    """Pure-ish core: hook payload text → output dict (or None for "say nothing").
-
-    Split from stdin/stdout so it's testable without patching the process.
-    Returns None whenever there is nothing to report or anything goes wrong.
-    """
+    """Hook payload text → output dict, or None for "say nothing" / anything went wrong."""
     try:
         payload = json.loads(stdin_text)
     except (json.JSONDecodeError, TypeError):
@@ -42,10 +35,9 @@ def run(stdin_text: str) -> dict | None:
 
     harness = harness_mod.detect(payload)
     repo = harness.repo_root(payload)
-    # Heartbeat, up front on every path: it answers "did the wiring fire?" — the basis of
-    # `tycho doctor` — so it must land even when there's nothing to verify.
-    # `pending=True` shows the badge "verifying"; every path below re-beats a terminal state
-    # so it never sticks. Never raises.
+    # Heartbeat up front on every path: it answers "did the wiring fire?" (`tycho doctor`), so it
+    # must land even with nothing to verify. Every path below re-beats a terminal state so the
+    # "verifying" badge never sticks. Never raises.
     state.record_run(repo, harness.name, pending=True)
 
     transcript = harness.transcript_of(payload)
@@ -64,30 +56,20 @@ def run(stdin_text: str) -> dict | None:
         results = engine.run_checks(session)
         verdict = engine.verdict_of(results)
         verdict = _apply_overrides(repo, results, verdict)
-        # Re-beat with the verdict, for `tycho status` to render passively.
-        # Only here, where a verdict exists: the entry beat above already proved liveness,
-        # and claiming a verdict we never reached would be the one lie Tycho can't tell.
+        # Re-beat with the verdict, only here where a verdict exists — claiming one we never
+        # reached is the one lie Tycho can't tell.
         state.record_run(repo, harness.name, verdict=verdict.name)
-        # And log it to the catch record with its evidence trail, if adverse/intermediate
-        #. No-op for VERIFIED/UNSUPPORTED; never raises.
         state.record_catch(repo, harness.name, verdict.name, results)
-        # And the durable per-turn record (strategy §9.2) — the substrate `tycho blame`,
-        # the turn digest, the attestation trailer and the decay ledger all read. Written
-        # ONLY here, on the one path that reached a real verdict: every earlier return
-        # above (nothing to verify, no transcript, unreadable session) writes no record, so
-        # the file can never claim a turn was verified when it wasn't. `append` never
-        # raises; `build` is pure, so the clock is read here and passed in.
-        # Read the repo's prior turns *before* appending this one: the digest's signals are
-        # relative to what this repo normally does, and a history containing the turn being
-        # judged would compare it against itself (a wide turn would raise its own norm, a
-        # standing failure would decay itself into silence on its first occurrence).
+        # The durable per-turn record, written ONLY on this path: every earlier return writes no
+        # record, so the file can never claim a turn was verified when it wasn't.
+        # Read prior turns *before* appending this one — the digest's signals are relative to this
+        # repo's norms, and including the turn being judged would compare it against itself.
         history = record.read(repo, limit=digest_mod.HISTORY)
         turn = record.build(session, results, verdict.name, harness.name, time.time())
         record.append(repo, turn)
     except Exception:
-        # broad catch is the correct behavior here — fail open, never
-        # break the agent's Stop over an unreadable transcript or git hiccup. Clear the
-        # pending beat so the badge doesn't sit on "verifying" forever.
+        # Broad catch is correct here: fail open, never break the agent's Stop over an unreadable
+        # transcript or git hiccup. Clear the pending beat so the badge doesn't sit on "verifying".
         state.record_run(repo, harness.name)
         return None
     finally:
@@ -95,30 +77,23 @@ def run(stdin_text: str) -> dict | None:
         if harness.name == "opencode":
             Path(transcript).unlink(missing_ok=True)
     report = render(verdict, results)
-    # The model-facing relay copy carries only the adverse checks: the harness renders
-    # `additionalContext` verbatim as "Stop hook feedback", so a full copy there would reshow
-    # the whole verdict the human already reads on `systemMessage` (point-1 duplication).
+    # Adverse checks only: the harness renders `additionalContext` verbatim, so a full copy would
+    # reshow the whole verdict the human already reads on `systemMessage`.
     agent_report = render(verdict, results, only_adverse=True)
-    # A human-only "newer Tycho available" line, appended to the verdict the user is already
-    # reading. Cache-only — never a network call on the hot Stop path.
     update = _update_suffix(harness)
     override_notice = _override_notice(repo, harness, verdict, results)
-    # THE SEAM (strategy §9.1 vs §11.1). Two channels, two different questions:
-    #
-    #   model channel  — "should the agent fix this?"     → `_relay_output`, verdict-driven.
-    #   human channel  — "should we interrupt a person?"  → `_digest_output`, anomaly-driven.
-    #
-    # They are computed independently and on purpose. The relay is the *first* branch and is
-    # untouched by selectivity: it still fires on every non-VERIFIED verdict, so a turn whose
-    # digest stays silent (an INDETERMINATE that isn't news, a failure that has been standing
-    # for three turns) still pushes the agent to fix it. The digest never writes into
-    # `additionalContext` / `reason`; the relay never consults `digest.speaks`.
+    # THE SEAM. Two channels, two questions, computed independently on purpose:
+    #   model  — "should the agent fix this?"    → `_relay_output`, verdict-driven.
+    #   human  — "should we interrupt a person?" → `_digest_output`, anomaly-driven.
+    # The relay is first and untouched by selectivity, so a turn whose digest stays silent still
+    # pushes the agent to fix it. The digest never writes `additionalContext`/`reason`; the relay
+    # never consults `digest.speaks`.
     relayed = _relay_output(repo, harness, verdict, report, agent_report, update)
     if relayed is not None:
         return relayed
     body = _digest_output(repo, turn, history, report, verdict)
     if not body and not update:
-        return None  # routine turn — say nothing at all (§11.1: talk less, be read)
+        return None  # routine turn — say nothing at all
     # `lstrip` because `update`/`override_notice` lead with blank lines to separate them from a
     # body that, on a silent turn, isn't there.
     return harness.format_output((body + override_notice + update).lstrip("\n"))
@@ -127,22 +102,15 @@ def run(stdin_text: str) -> dict | None:
 def _digest_output(
     repo: Path, turn: dict, history: list[dict], report: str, verdict: Verdict
 ) -> str:
-    """The human-facing Stop output: a four-line digest, or "" for silence (strategy §11.1).
+    """The human-facing Stop output: a four-line digest, or "" for silence.
 
-    Selectivity lives in `digest.speaks`, which reads this repo's own recent turns — so the
-    hook stays quiet on turns that are normal *here* and speaks on the ones that aren't.
+    The relay opt-in suppresses novelty decay on unproven verdicts: turning the relay on is the
+    human electing out of the filter, so they get told every time — including the turn where the
+    leash runs out and a standing failure would otherwise end with nobody informed.
 
-    **The relay opt-in overrides the silence, and only for unproven verdicts.** Turning the
-    relay on is an operator saying "keep the agent working until this is VERIFIED", so on a
-    non-VERIFIED turn they get told every time — including the turn where the relay itself goes
-    quiet because the leash ran out, which is precisely when a standing failure would otherwise
-    end the turn with nobody informed. Novelty decay is the *human's* filter; the relay opt-in
-    is the human electing out of it. With the relay off (the default) nothing changes.
-
-    Never raises, and fails toward the old behaviour rather than toward silence: a digest bug on
-    an unproven turn falls back to the full verdict block, because losing an adverse verdict to
-    a rendering error is the one outcome worse than being noisy. A routine turn stays silent
-    either way — there was nothing to lose.
+    Never raises, and fails toward noise rather than silence: a digest bug on an unproven turn
+    falls back to the full verdict block, because losing an adverse verdict to a rendering error
+    is worse than being noisy.
     """
     try:
         insistent = verdict is not Verdict.VERIFIED and state.relay_enabled(repo)
@@ -155,16 +123,11 @@ def _digest_output(
 
 
 def _update_suffix(harness) -> str:
-    """The Stop-hook update notice as a human-only suffix (leading blank line), or "".
+    """The update notice as a human-only suffix (leading blank line), or "".
 
-    Only on harnesses with a human-only Stop channel: there, `format_output` writes the same field
-    `notice_output` does (systemMessage / message), so appending here stays human-facing. On Cursor
-    `format_output` is model-facing (`followup_message`) and `notice_output is None`, so a notice
-    would reach the model and could commission a self-update — suppress it, as the bootup notice does.
-
-    Cache-only (`refresh_first=False`): the Stop path must never hit the network — the once-a-day
-    fetch is the doctor/init/bootup job. Respects opt-out + dismissal via `version.notice`. Never
-    raises: an update line is never worth breaking a Stop over."""
+    Gated on `notice_output`: where it is None (Cursor) `format_output` is model-facing, and a
+    notice there could commission a self-update. Cache-only — the Stop path must never hit the
+    network. Never raises: an update line is not worth breaking a Stop over."""
     if harness.notice_output is None:
         return ""
     try:
@@ -177,13 +140,12 @@ def _update_suffix(harness) -> str:
 
 
 def _override_notice(repo: Path, harness, verdict, results) -> str:
-    """Human-only line on an OVERRIDDEN verdict: name the checks the agent set aside and
-    tell the user how to veto (relay fires again) or turn override off. Same human-only gate
-    as `_update_suffix` — never emitted on a model-facing channel. Never raises.
+    """Human-only line on an OVERRIDDEN verdict: name the checks set aside, and how to veto or
+    turn override off. Same human-only gate as `_update_suffix`. Never raises.
 
-    Names only the checks that were *actually* set aside — the same `disputed & non-PASS`
-    intersection `_apply_overrides` applies — so an override recorded against a check that
-    happened to PASS (a no-op for the verdict) is never listed as though it changed it."""
+    Names only the checks *actually* set aside (the same `disputed & non-PASS` intersection
+    `_apply_overrides` applies), so an override against a check that happened to PASS isn't
+    listed as though it changed the verdict."""
     if verdict is not Verdict.OVERRIDDEN or harness.notice_output is None:
         return ""
     try:
@@ -205,18 +167,14 @@ def _apply_overrides(repo: Path, results, verdict: Verdict) -> Verdict:
     """Relabel `verdict` to OVERRIDDEN when the agent has overridden every adverse check.
 
     Only when the relay is on AND the capability is on — the override exists to break a relay
-    loop, so with the relay off there is nothing to break and the real verdict stands. Drops each
-    overridden check that is currently non-PASS (a PASS/absent name is a no-op), recomputes from
-    the rest, and returns OVERRIDDEN iff no adverse (FAILED/STALE) check survives. A surviving
-    FAIL/STALE keeps its verdict so the relay keeps firing — an override can never hide a real
-    failure. Never raises."""
+    loop, so with the relay off there is nothing to break. A surviving FAIL/STALE keeps its own
+    verdict so the relay keeps firing: an override can never hide a real failure. Never raises."""
     try:
         if not (state.relay_enabled(repo) and state.override_enabled(repo)):
             return verdict
         if verdict is Verdict.VERIFIED:
-            # A proven-green turn has no adverse (FAIL/STALE) check to override, so an override
-            # here could only downgrade a real VERIFIED to OVERRIDDEN. Leave it. Non-VERIFIED verdicts
-            # (including INDETERMINATE) still reach OVERRIDDEN below — the escape hatch is unchanged.
+            # A green turn has no adverse check to override, so an override here could only
+            # downgrade a real VERIFIED. Non-VERIFIED verdicts still reach OVERRIDDEN below.
             return verdict
         disputed = {m.get("check") for m in state.overrides(repo)} - set(state.vetoed(repo))
         if not disputed:
@@ -236,14 +194,10 @@ def _apply_overrides(repo: Path, results, verdict: Verdict) -> Verdict:
 
 # --- verdict relay (opt-in, default OFF) --------------------------
 #
-# When the operator turns the relay on, feed a non-VERIFIED verdict back to Claude or Codex.
-# Claude continues from Stop-hook additionalContext; Codex continues from decision:block + reason.
-# Both transports keep the full verdict human-facing and send only adverse checks to the model.
-#
-# It is *bounded* by state.relay_streak: at most relay_max() auto-continuations per user turn,
-# after which Tycho goes quiet and the turn ends normally — an unsatisfiable verdict can't cycle
-# forever. Off by default, so every other harness and the un-opted-in path emit
-# exactly the human-only output they always did (no agent context used, no extra generations).
+# Feeds a non-VERIFIED verdict back to Claude (Stop-hook additionalContext) or Codex
+# (decision:block + reason). Both keep the full verdict human-facing and send only adverse
+# checks to the model. Bounded by state.relay_streak: at most relay_max() auto-continuations per
+# user turn, so an unsatisfiable verdict can't cycle forever.
 
 
 def _relay_output(
@@ -251,15 +205,9 @@ def _relay_output(
 ) -> dict | None:
     """The relay output dict, or None to fall through to the normal human-only output.
 
-    Returns None (unchanged behaviour) unless the relay is enabled here, the harness is Claude
-    or Codex, and the verdict is worth acting on. VERIFIED clears the streak and ends the turn
-    (nothing to fix); once the streak reaches relay_max() the relay goes quiet.
-
-    `report` is the full verdict (every check) for the human-facing `systemMessage`; `agent_report`
-    is the adverse-only copy for the model-facing continuation context.
-
-    `update` is the human-only update line: it rides the human-facing `systemMessage`
-    only, never the continuation context — the model must not be told to go update Tycho.
+    `report` is the full verdict for the human-facing `systemMessage`; `agent_report` is the
+    adverse-only copy for the model-facing continuation context. `update` rides `systemMessage`
+    only — the model must not be told to go update Tycho.
     """
     if harness.name not in ("claude", "codex") or not state.relay_enabled(repo):
         return None
@@ -267,15 +215,12 @@ def _relay_output(
         state.reset_relay_streak(repo)
         return None
     if state.relay_streak(repo) >= state.relay_max():
-        # Leash spent for this user turn — go quiet and let the turn end. Deliberately do NOT
-        # reset here: resetting would re-arm the relay on the very next Stop and oscillate
-        # (inject N, rest 1, inject N…) instead of stopping. The streak stays maxed until a real
-        # user prompt (prompt_submit) resets it — that is what scopes the bound to one user turn.
+        # Leash spent for this user turn. Deliberately do NOT reset here: that would re-arm the
+        # relay on the next Stop and oscillate (inject N, rest 1, inject N…) instead of stopping.
+        # Only a real user prompt (prompt_submit) resets it.
         return None
     attempt = state.bump_relay_streak(repo)
     guard = _relay_guard(attempt, state.relay_max(), override_on=state.override_enabled(repo))
-    # systemMessage keeps the human seeing the verdict, now with a pointer to manage/turn off the
-    # relay; additionalContext is the model-facing copy that also drives the continuation.
     manage = "[TYCHO] Relay is on — the agent keeps working until VERIFIED. Manage or turn it off: `tycho relay` (/tycho-relay)."
     system_message = f"{report}\n\n{manage}{update}"
     context = f"{agent_report}\n\n{guard}"
@@ -288,10 +233,9 @@ def _relay_output(
 
 
 def _relay_guard(attempt: int, cap: int, override_on: bool = False) -> str:
-    """The instruction appended to the model-facing verdict. Frames it as a report, points at
-    fixing the root cause, and — crucially — offers the escape hatch of stopping to tell the
-    user, so a verdict the agent can't satisfy converges on a conversation rather than a loop.
-    Names the attempt count so the model knows the leash is finite."""
+    """The instruction appended to the model-facing verdict. The escape hatch (stop and tell the
+    user) and the attempt count are load-bearing: a verdict the agent can't satisfy must converge
+    on a conversation rather than a loop."""
     if attempt >= cap:
         tail = (" This is the final automatic re-check — after this the turn ends and control "
                 "returns to the user regardless of the verdict.")
@@ -315,23 +259,17 @@ def _relay_guard(attempt: int, cap: int, override_on: bool = False) -> str:
 
 
 def session_start() -> int:
-    """SessionStart / bootup hook: surface a *user-facing* update notice at agent bootup.
+    """SessionStart hook: surface a user-facing update notice at agent bootup.
 
-    The output shape is the harness's
-    `notice_output` — a human-only channel (`systemMessage` on Claude/Codex, `message` toasted
-    by the OpenCode plugin). A harness with no such channel (Cursor: `notice_output is None`)
-    gets nothing, so the notice can never reach the model and commission a self-update.
-    We parse the payload only to pick that shape; the update check itself is
-    machine-global, not per-repo.
-
-    Same invariants as the Stop hook: never raises, always exit 0, prints nothing when
-    offline / opted out / already current. A bootup hook must never break the session.
+    Emitted on the harness's `notice_output` (human-only). A harness with no such channel
+    (Cursor) gets nothing, so the notice can never reach the model and commission a self-update.
+    Never raises, always exit 0 — a bootup hook must never break the session.
     """
     try:
         payload = json.loads(sys.stdin.read() or "{}")
         harness = harness_mod.detect(payload) if isinstance(payload, dict) else harness_mod.CLAUDE
-        # Codex's SessionStart payload isn't Stop-shaped so `detect` reads it as Claude — which
-        # is harmless here: both emit `systemMessage`, so the notice shape is identical either way.
+        # Codex's SessionStart payload isn't Stop-shaped so `detect` reads it as Claude — harmless
+        # here: both emit `systemMessage`.
         if harness.notice_output is None:
             return 0  # no user-facing bootup channel on this harness (e.g. Cursor)
         from . import version as version_mod
@@ -345,13 +283,11 @@ def session_start() -> int:
 
 
 def prompt_submit() -> int:
-    """UserPromptSubmit hook (Claude Code): the user just submitted a prompt, so a turn is
-    starting. Record a `pending` beat so the status badge shows frost-blue "verifying" for the
-    whole run; the Stop hook clears it to the verdict when the turn ends.
+    """UserPromptSubmit hook: a turn is starting — record a `pending` beat, which the Stop hook
+    clears to the verdict.
 
-    Prints nothing — a UserPromptSubmit hook's stdout is injected into the agent's context, and
-    Tycho must never put words in the user's prompt. Same invariants as every hook: never
-    raises, always exit 0, touches only the heartbeat.
+    Prints nothing: a UserPromptSubmit hook's stdout is injected into the agent's context, and
+    Tycho must never put words in the user's prompt. Never raises, always exit 0.
     """
     try:
         payload = json.loads(sys.stdin.read() or "{}")
@@ -359,10 +295,8 @@ def prompt_submit() -> int:
             harness = harness_mod.detect(payload)
             repo = harness.repo_root(payload)
             state.record_run(repo, harness.name, pending=True)
-            # A real user prompt opens a fresh turn, so the verdict-relay leash resets here: the
-            # bound counts auto-continuations *within* one user turn, not across them.
-            # Auto-continuations don't re-fire UserPromptSubmit, so this only ever runs for the
-            # human's own prompts — exactly the boundary the bound is scoped to.
+            # The relay leash resets here: the bound counts auto-continuations *within* one user
+            # turn, and auto-continuations don't re-fire UserPromptSubmit.
             state.reset_relay_streak(repo)
             state.clear_overrides(repo)  # a fresh turn drops any override from the last one
     except Exception:
