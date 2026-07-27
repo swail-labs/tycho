@@ -451,12 +451,15 @@ def _count(cwd: Path, show_ledger: bool = False) -> int:
     """
     from . import state
 
-    here = _caught(state.counts(cwd), state.totals(cwd))
+    totals = state.totals(cwd)
+    here = _caught(state.counts(cwd), totals)
     everywhere = _caught(state.all_time_counts(), state.all_time_totals())
     print(f"this repo: {here} · all-time: {everywhere}")
     if show_ledger:
         print()
-        for line in _ledger_lines(state.ledger(cwd)):  # resolves the root itself, like counts()
+        # `ledger` resolves the root itself, like counts(); `totals` is passed in so the view
+        # can explain its own denominator against the tally printed directly above it.
+        for line in _ledger_lines(state.ledger(cwd), repo_runs=totals.get("runs")):
             print(line)
     return ExitCode.OK
 
@@ -491,7 +494,7 @@ def _rate(n: int, denominator: int) -> str:
     return f"{n} ({_pct(n, denominator)})"
 
 
-def _ledger_lines(data: dict) -> list[str]:
+def _ledger_lines(data: dict, repo_runs: int | None = None) -> list[str]:
     """Render `state.ledger` — per-model and per-check catch/blind rates (strategy §7).
 
     Both denominators are printed in the header rather than left to the reader, because the
@@ -519,8 +522,21 @@ def _ledger_lines(data: dict) -> list[str]:
         f"{data['blind']} blind ({_pct(data['blind'], turns)}), "
         f"{data['caught']} caught ({_pct(data['caught'], turns)})",
         "  (the retained turn record — `count` above is the all-time tally)",
-        "",
     ]
+    # The two numbers legitimately differ, and a reader who can't see why will assume one of
+    # them is broken. Name the two real causes rather than quietly printing both (TYCHO-131).
+    # We do NOT close the gap by writing a record from `tycho verify`: a manual verify audits a
+    # whole *session*, so recording it as a turn would invent a turn boundary that never
+    # existed — and then double-count, in the one view whose job is measuring check decay.
+    if repo_runs is not None and repo_runs > turns:
+        from .record import max_records
+
+        out.append(
+            f"  ({repo_runs - turns} of this repo's {repo_runs} runs aren't turns here: "
+            f"`tycho verify` audits a whole session, and the record keeps the last "
+            f"{max_records()})"
+        )
+    out.append("")
     width = max([24, *(len(_model_label(m)) + 2 for m in data["models"])])
     out.append(f"  {'model':<{width}}{'turns':>6}  {'caught':<11}{'blind':<11}")
     for m in data["models"]:
