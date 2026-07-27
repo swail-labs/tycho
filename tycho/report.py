@@ -1,4 +1,15 @@
-"""Render a verdict + its check results as the terminal block."""
+"""Render a verdict + its check results as the terminal block.
+
+Since the turn digest took over the Stop hook's human channel (strategy §9.1), this is no
+longer the unprompted output. It has two remaining callers, and both *want* every line:
+
+- ``tycho verify`` — the human explicitly asked, so selectivity doesn't apply. Verbose stays.
+- the relay (``hook._relay_output``) — the adverse-only copy for the model, and the full copy
+  on the `systemMessage` that accompanies it.
+
+Not deprecated, and deliberately unchanged: "what did all nine checks say?" is a real question,
+just not one worth answering after every turn unasked.
+"""
 
 from __future__ import annotations
 
