@@ -1,4 +1,4 @@
-"""`tycho status` — the one-line "am I on?" indicator, for a harness status bar (TYCHO-39).
+"""`tycho status` — the one-line "am I on?" indicator, for a harness status bar.
 
 `doctor` answers the same question, but only when asked. A verifier nobody can see is a
 verifier that gets silently trusted while dead, so this is the passive form: the harness
@@ -35,7 +35,7 @@ def _rgb(r: int, g: int, b: int) -> str:
     return f"\033[38;2;{r};{g};{b}m"
 
 
-# Subdued, readable-on-black palette (TYCHO-94). Truecolor: the frost-blue mid-run beat is its
+# Subdued, readable-on-black palette. Truecolor: the frost-blue mid-run beat is its
 # exact shade, and the verdict colours are desaturated from pure ANSI — Claude Code renders the
 # status line dark and dimmed, where full-saturation ANSI glares and is hard to read. Grey stays
 # the terminal's own bright-black: the honest "no signal", deliberately left as-is.
@@ -46,7 +46,7 @@ _FROST = _rgb(172, 213, 243)   # verifying now   — frost blue #ACD5F3 (transie
 _TEAL = _rgb(111, 201, 192)    # OVERRIDDEN      — teal (agent-authorized, not proven)
 _GREY = "\033[90m"             # no signal       — never fired / UNSUPPORTED / nothing to verify
 
-# Five honest states for the `[TYCHO]` badge (TYCHO-47/59/94). The text never changes; the
+# Five honest states for the `[TYCHO]` badge. The text never changes; the
 # colour carries the status:
 #   green  = VERIFIED            — proven good
 #   red    = FAILED / STALE      — adverse, something to look at
@@ -123,7 +123,7 @@ def _parse(text: str) -> dict:
 
 
 def _wrapped_output(repo: Path, stdin_text: str) -> str:
-    """Run the status command Tycho is composing with, and return its line (TYCHO-47).
+    """Run the status command Tycho is composing with, and return its line.
 
     Claude Code's statusLine holds one slot, so to coexist with another status line (a
     third-party badge, a shell prompt) Tycho *becomes* the slot and runs the other command
@@ -156,7 +156,7 @@ def main(off: bool = False, on: bool = False) -> int:
     raw = _stdin_text()
     repo = repo_of(_parse(raw))
     if off or on:
-        # A human toggling from the terminal (TYCHO-47) — repo is our cwd, not a payload.
+        # A human toggling from the terminal — repo is our cwd, not a payload.
         state.set_status_enabled(repo, enabled=on)
         print(f"tycho: status indicator {'shown' if on else 'hidden'} for {repo}"
               f"{'' if on else ' — the hook keeps verifying; run `tycho status --on` to show it'}")

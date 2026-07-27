@@ -1,4 +1,4 @@
-"""Is a newer Tycho published? A best-effort, offline-safe update check (TYCHO-53).
+"""Is a newer Tycho published? A best-effort, offline-safe update check.
 
 **Never runs in the Stop hook and never blocks.** The check is a single stdlib HTTPS GET to
 the package index with a short timeout; anything that goes wrong — offline, slow, blocked,
@@ -20,7 +20,7 @@ import urllib.request
 from . import __version__, state
 
 # PyPI distribution name. `tycho` is taken on PyPI by an unrelated project, so we publish and
-# check as `tycho-cli` (TYCHO-73). The import package and CLI command stay `tycho`. (Set to
+# check as `tycho-cli`. The import package and CLI command stay `tycho`. (Set to
 # None to make the check inert — it queries no index and never notifies.)
 _DIST_NAME: str | None = "tycho-cli"
 _CHECK_TTL = 86400  # re-hit the index at most once a day
@@ -61,7 +61,7 @@ def refresh(force: bool = False) -> str | None:
     `force=True` ignores the daily cache and re-hits the index now — for the explicit,
     interactive paths (`tycho update`, `tycho doctor`), where a same-day release must be
     seen immediately. The passive paths (status bar, per-session bootup) leave it False so
-    they never add a network round-trip (TYCHO-53)."""
+    they never add a network round-trip."""
     if _env_opted_out():
         return None
     cache = state.read_update_cache()

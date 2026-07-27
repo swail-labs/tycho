@@ -160,7 +160,7 @@ def test_log_without_filters_still_works(repo, capsys):
 
 
 def test_exit_codes_are_not_renumbered():
-    """CI gates depend on these; a renumbering is a breaking change (TYCHO-38)."""
+    """CI gates depend on these; a renumbering is a breaking change."""
     assert (ExitCode.OK, ExitCode.FAILED, ExitCode.USAGE, ExitCode.STALE) == (0, 1, 2, 3)
     assert (ExitCode.INTERNAL, ExitCode.UNHEALTHY) == (4, 5)
     assert (ExitCode.UNEXERCISED, ExitCode.MISMATCH) == (6, 7)

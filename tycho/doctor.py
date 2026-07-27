@@ -3,7 +3,7 @@
 A silently dead hook is the worst failure a verifier has. Every other bug is loud: a
 wrong verdict argues with you. A dead hook says nothing at all, and silence is exactly
 what "everything passed" looks like — you believe you're covered while nothing runs.
-(TYCHO-3, the OpenCode export truncation, was this class of failure.)
+(the OpenCode export truncation, was this class of failure.)
 
 **The hard part is that a dead hook cannot report its own death.** Nothing Tycho does at
 Stop time can help, because a hook that doesn't fire runs no code. So liveness can only
@@ -51,7 +51,7 @@ INFO = "INFO"
 # against. "Re-verify", not "broken" — a bump usually changes nothing, so it never sinks
 # the verdict (not in _ADVERSE). But louder than a bare INFO bullet, because it's the one
 # thing doctor structurally can't check for itself: whether the harness still reads our
-# output (TYCHO-34).
+# output.
 DRIFT = "HARNESS DRIFT"
 
 _ADVERSE = (BROKEN, OUTDATED)
@@ -95,7 +95,7 @@ def diagnose(repo: Path) -> list[Finding]:
     """Everything we can establish about this repo's wiring, without touching it."""
     findings: list[Finding] = []
     # A new version is worth surfacing where someone is already looking; doctor is manual,
-    # so the (once-a-day, fail-open) network check is fine here (TYCHO-53).
+    # so the (once-a-day, fail-open) network check is fine here.
     note = version_mod.notice(refresh_first=True, force=True)  # explicit command — bypass the daily cache
     if note:
         findings.append(Finding(INFO, note, "run `tycho update`"))
@@ -119,7 +119,7 @@ def adverse(findings: list[Finding]) -> list[Finding]:
 
 
 def liveness(repo: Path) -> str:
-    """One line answering "is it on here?" — the payoff line of `tycho help` (TYCHO-38).
+    """One line answering "is it on here?" — the payoff line of `tycho help`.
 
     The same reads `diagnose` does, collapsed to a sentence and never raised: help is the
     command a confused user reaches for, so it degrades to an honest "unknown" rather than
@@ -257,7 +257,7 @@ def _harness_drift(wired: list[str]) -> list[Finding]:
     the harness still *reads* our output — version drift is the best available proxy for
     that blind spot. Fails open in both directions: a harness with no pinned contract, a
     missing/unparseable `--version`, or a matching version all stay silent — only a real
-    mismatch speaks, and it says "re-verify", not "broken" (TYCHO-34).
+    mismatch speaks, and it says "re-verify", not "broken".
     """
     findings: list[Finding] = []
     for name in wired:
@@ -293,7 +293,7 @@ def healthy(findings: list[Finding]) -> bool:
 
 
 def render(findings: list[Finding]) -> str:
-    # `diagnose` already ran the forced check, so the cache now holds the true latest (TYCHO-53).
+    # `diagnose` already ran the forced check, so the cache now holds the true latest.
     latest = version_mod.cached_latest()
     if latest and version_mod.is_newer(latest, __version__):
         head = f"tycho doctor (v{__version__} · latest {latest} — run `tycho update`)"

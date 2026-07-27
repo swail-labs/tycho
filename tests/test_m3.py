@@ -112,14 +112,14 @@ def test_command_execution_matches_virtualenv_pytest():
 
 
 def test_command_execution_matches_windows_venv_python_exe():
-    # Windows venv interpreter carries a `.exe` suffix; must still count as a runner (TYCHO-52)
+    # Windows venv interpreter carries a `.exe` suffix; must still count as a runner
     s = make_session(events=[bash("./.venv/Scripts/python.exe -m pytest -q", 100.0, is_error=False)])
     assert checks.command_execution(s).status == CheckStatus.PASS
 
 
 def test_command_execution_masked_by_pipe_is_unsupported():
     # `pytest | tail` exits with tail's status (no pipefail), so is_error=False is a
-    # phantom green. Must degrade to UNSUPPORTED, never PASS (TYCHO-26/31). No output was
+    # phantom green. Must degrade to UNSUPPORTED, never PASS. No output was
     # captured here, so there is nothing to fall back to and it stays UNSUPPORTED.
     s = make_session(events=[bash("pytest -q 2>&1 | tail -20", 100.0, is_error=False)])
     r = checks.command_execution(s)
@@ -135,20 +135,20 @@ def test_command_execution_masked_by_semicolon_is_not_a_green(  # TYCHO-61
 
 
 def test_command_execution_masked_by_or_true_is_not_a_green():
-    # `pytest || true` swallows the failure by construction (TYCHO-61).
+    # `pytest || true` swallows the failure by construction.
     s = make_session(events=[bash("pytest -q || true", 100.0, is_error=False)])
     assert checks.command_execution(s).status != CheckStatus.PASS
 
 
 def test_command_execution_trusts_and_chained_runner():
     # `&&` is the safe shape and must NOT be flagged: a red pytest fails the whole
-    # command, so a recorded success really is the runner's (TYCHO-61).
+    # command, so a recorded success really is the runner's.
     s = make_session(events=[bash("pytest -q && echo ok", 100.0, is_error=False)])
     assert checks.command_execution(s).status == CheckStatus.PASS
 
 
 def test_command_execution_recovers_a_red_suite_from_masked_output():
-    # The exit code is gone, but the runner said so itself — read it back (TYCHO-60).
+    # The exit code is gone, but the runner said so itself — read it back.
     s = make_session(
         events=[
             bash(
@@ -177,7 +177,7 @@ def _tool(name, ts=100.0):
     return Event(ts=ts, tool=name, input={}, is_error=False)
 
 
-# --- tool_call_provenance (TYCHO-91) ----------------------------------------
+# --- tool_call_provenance ----------------------------------------
 
 def test_provenance_web_claim_backed_by_search_passes():
     s = make_session(messages=[_msg("I searched the web for the API docs.")], events=[_tool("WebSearch")])
@@ -299,7 +299,7 @@ def test_provenance_future_status_change_does_not_false_fail():
 
 
 def test_provenance_claim_flips_has_verifiable_activity():
-    # an MCP-only turn (a claim, no edits/runners) must make the hook speak (TYCHO-91)
+    # an MCP-only turn (a claim, no edits/runners) must make the hook speak
     claim = make_session(messages=[_msg("I created TYCHO-91.")], events=[_tool("Bash")])
     assert checks.has_verifiable_activity(claim)
     quiet = make_session(messages=[_msg("Looks good to me.")], events=[_tool("Bash")])
@@ -371,7 +371,7 @@ def test_command_execution_sees_a_powershell_runner():
 
 def test_runner_segment_matches_uv_run_with_flags_between():
     # `uv run --python 3.12 --with pytest python -m pytest -q` — flags sit between the
-    # wrapper and the runner, so the plain prefix match misses it (TYCHO-27).
+    # wrapper and the runner, so the plain prefix match misses it.
     assert checks._runner_segment("uv run --python 3.12 --with pytest python -m pytest -q") is not None
     assert checks._runner_segment("uvx --from build pyproject-build") is None  # not a test runner
 
@@ -586,7 +586,7 @@ def test_scope_drift_unsupported_without_config_points_at_the_command():
     s = make_session(edits=[FileEdit("src/a.py", 1.0, "x", "edit")])
     r = checks.scope_drift(s)
     assert r.status == CheckStatus.UNSUPPORTED
-    assert "tycho scope add" in r.evidence  # actionable, not a dead end (TYCHO-74)
+    assert "tycho scope add" in r.evidence  # actionable, not a dead end
 
 
 # --- end-to-end -------------------------------------------------------------

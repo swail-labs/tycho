@@ -222,7 +222,7 @@ def test_an_uninstalled_harness_is_not_diagnosed(tmp_path: Path):
     assert "claude" in text and "cursor:" not in text
 
 
-# --- harness version drift (TYCHO-34) ----------------------------------------
+# --- harness version drift ----------------------------------------
 
 def test_drift_reports_when_the_harness_moved_past_the_verified_version(monkeypatch):
     monkeypatch.setattr(doctor, "_probe_version", lambda probe: "2.9.9 (Claude Code)")
@@ -353,14 +353,14 @@ def test_verify_stays_quiet_when_the_hook_is_fine(tmp_path: Path, monkeypatch, c
 
 
 def test_bare_tycho_defaults_to_verify(tmp_path: Path, monkeypatch, capsys):
-    # `tycho` with no subcommand is the one-word on-demand verdict (TYCHO-124). No session
+    # `tycho` with no subcommand is the one-word on-demand verdict. No session
     # here, so it renders the same INDETERMINATE "no recent session" note `verify` does.
     monkeypatch.chdir(tmp_path)
     assert cli.main([]) == cli.ExitCode.OK
     assert "no recent session found" in capsys.readouterr().out
 
 
-# --- `tycho help`: what it is, and whether it's on here (TYCHO-38) -----------
+# --- `tycho help`: what it is, and whether it's on here -----------
 
 def _boom(*a, **k):
     raise RuntimeError("disk gone")

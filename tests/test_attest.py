@@ -583,7 +583,7 @@ def test_uninstall_stops_the_trailer_and_a_commit_still_works(wired: Path):
 
 def test_the_installed_hook_uses_a_path_git_bash_can_resolve():
     """Git runs hooks through its own bundled shell on Windows, which eats unquoted
-    backslashes — the same trap `_command_for` exists for (TYCHO-43)."""
+    backslashes — the same trap `_command_for` exists for."""
     command = init_mod.attest_command()
     assert "\\" not in command
     assert command.startswith('"') or " -m tycho.attest" in command or " attest --write" in command

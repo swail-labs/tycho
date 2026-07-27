@@ -1,4 +1,4 @@
-"""Update check + `tycho update` (TYCHO-53/10).
+"""Update check + `tycho update`.
 
 The check is best-effort and offline-safe: it never raises, never blocks, hits the network at
 most once a day (cached machine-wide), and stays silent when it can't tell. Every test opts the
@@ -39,7 +39,7 @@ def test_is_newer_compares_release_tuples():
 # --- the distribution name we check against ----------------------------------
 
 def test_checks_the_tycho_cli_distribution_not_the_taken_tycho_name():
-    # `tycho` is taken on PyPI by an unrelated project; we publish/check as `tycho-cli` (TYCHO-73).
+    # `tycho` is taken on PyPI by an unrelated project; we publish/check as `tycho-cli`.
     assert version_mod._DIST_NAME == "tycho-cli"
     assert version_mod._index_url() == "https://pypi.org/pypi/tycho-cli/json"
 
@@ -96,7 +96,7 @@ def test_stale_cache_triggers_a_refetch(_online, monkeypatch):
 
 def test_force_bypasses_a_fresh_cache(_online, monkeypatch):
     # The bug: a same-day release is invisible because the ≤24h cache short-circuits refresh().
-    # `tycho update`/`doctor` pass force=True to re-hit the index now (TYCHO-53).
+    # `tycho update`/`doctor` pass force=True to re-hit the index now.
     state.write_update_cache(latest="0.0.2", checked_at=time.time())  # fresh, but stale content
     _fetches(monkeypatch, "0.0.3")
     assert version_mod.refresh() == "0.0.2"            # cached path still honors the day
@@ -189,7 +189,7 @@ def test_update_on_windows_defers_the_upgrade_past_process_exit(_online, monkeyp
 def test_upgrade_command_names_the_distribution_not_the_taken_tycho(monkeypatch, prefix):
     # Must upgrade `tycho-cli`, never `tycho` — the bare name is an unrelated PyPI project, so
     # `pip install --upgrade tycho` would pull that and `pipx/uv upgrade tycho` wouldn't resolve
-    # the installed tool (TYCHO-96).
+    # the installed tool.
     monkeypatch.setattr(cli.sys, "prefix", prefix)
     cmd = cli._upgrade_command()
     assert "tycho-cli" in " ".join(cmd)
@@ -200,7 +200,7 @@ def test_upgrade_command_npm_channel_overrides_prefix(monkeypatch):
     # The npm wrapper sets TYCHO_INSTALL=npm before exec'ing the frozen binary. That binary has no
     # pipx/uv/pip prefix, so without this it falls through to a `pip install` it can't run (no
     # bundled pip in a PyInstaller build). npm owns its upgrade: reinstall the global package, and
-    # the channel signal must win over any incidental sys.prefix (TYCHO-106).
+    # the channel signal must win over any incidental sys.prefix.
     monkeypatch.setenv("TYCHO_INSTALL", "npm")
     monkeypatch.setattr(cli.sys, "prefix", "/usr")  # would otherwise be the plain-pip branch
     assert cli._upgrade_command() == ["npm", "install", "-g", "@swail-labs/tycho@latest"]
@@ -271,7 +271,7 @@ def test_session_start_emits_systemmessage_when_behind(_online, monkeypatch, cap
 
 def test_session_start_uses_opencode_message_field(_online, monkeypatch, capsys):
     # OpenCode's plugin reads `.message` and toasts it — the notice must match that shape,
-    # not Claude's `systemMessage` (TYCHO-72).
+    # not Claude's `systemMessage`.
     import json
 
     from tycho import hook
@@ -286,7 +286,7 @@ def test_session_start_uses_opencode_message_field(_online, monkeypatch, capsys)
 
 def test_session_start_is_silent_on_cursor_no_human_channel(_online, monkeypatch, capsys):
     # Cursor has no human-only sink (notice_output is None) — a notice there would be
-    # model-facing, which the TYCHO-35 rule forbids, so it emits nothing (TYCHO-72/112).
+    # model-facing, which the TYCHO-35 rule forbids, so it emits nothing.
     from tycho import hook
 
     _fetches(monkeypatch, "9.9.9")
@@ -314,7 +314,7 @@ def test_session_start_never_raises_and_prints_nothing_on_error(monkeypatch, cap
     assert capsys.readouterr().out == ""
 
 
-# --- Stop-hook update notice (TYCHO-116) -------------------------------------
+# --- Stop-hook update notice -------------------------------------
 #
 # The Stop hook appends a human-only "newer Tycho available" line to the verdict the user is
 # already reading — cache-only (no network on the hot path), never in the model-facing
@@ -381,7 +381,7 @@ def test_stop_hook_update_notice_never_hits_the_network(_online, monkeypatch, tm
 
 def test_stop_hook_suffix_suppressed_without_a_human_channel(_online):
     # Cursor: format_output is model-facing and notice_output is None, so a notice would reach the
-    # model — suppress it, exactly as the bootup notice does (TYCHO-35/72).
+    # model — suppress it, exactly as the bootup notice does.
     from types import SimpleNamespace
 
     from tycho import hook

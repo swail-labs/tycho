@@ -44,7 +44,7 @@ def gather(
 
     This is the only I/O boundary on the way in; everything downstream is pure.
     ``parse`` selects the harness transcript reader (default: Claude Code).
-    ``turn_start`` locates the boundary of the turn under review (TYCHO-17); omit it
+    ``turn_start`` locates the boundary of the turn under review; omit it
     to scope the whole transcript, which is what a manual ``tycho verify`` audit wants.
     ``attribution`` reads who produced the turn (model/agent version/session id) for the
     per-turn record; it belongs here rather than in the caller precisely because it is
@@ -83,7 +83,7 @@ def _evidence_floor(events, edits, turn_start: float) -> float:
     sessions or harnesses. Read unbounded, it would happily offer a green `pytest` from
     yesterday as proof of a claim made today, which is a fabricated green. So the floor is:
 
-    - the turn boundary when we have one (the Stop hook always does — TYCHO-17); else
+    - the turn boundary when we have one (the Stop hook always does); else
     - the first thing this session did, for a whole-session `tycho verify` audit; else
     - **0.0, meaning admit nothing.** No timestamps anywhere (a transcript with no events,
       or a harness that stamps none) is not a licence to trust the whole log — it is the
@@ -138,7 +138,7 @@ def _with_baseline(fe: FileEdit, repo: Path, since: str) -> FileEdit:
 
     Claude Code sends ``originalFile: null`` on a file's *repeat* edits, which would leave
     the AST tamper checks (`assertion_weakening`/`skip_mock_injection`) with no "before"
-    and silently UNSUPPORTED while still appearing to run (TYCHO-32). ``git show <since>:<path>``
+    and silently UNSUPPORTED while still appearing to run. ``git show <since>:<path>``
     is a truthful pre-session baseline for a tracked file, independent of any harness field.
     Only for in-repo paths; an untracked path returns None and stays a genuine create.
     """
@@ -155,7 +155,7 @@ def _relpath(path: str, repo: Path) -> str:
 
     Git (`git diff --name-only`) and the `[scope]` globs both speak POSIX separators, so a
     Windows backslash here would never reconcile against either — `git_state` would count
-    zero uncommitted and `scope_drift` would miss `src/**` (TYCHO-25). `as_posix()` equals
+    zero uncommitted and `scope_drift` would miss `src/**`. `as_posix()` equals
     `str()` on *nix, so this is a no-op there.
     """
     # `is_absolute()` only knows the *host* flavor: on Windows a POSIX path like

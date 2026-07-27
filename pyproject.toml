@@ -1,6 +1,6 @@
 [project]
 # Distribution name: `tycho` is taken on PyPI by an unrelated project, so we publish as
-# `tycho-cli` (TYCHO-73). The import package and the console script stay `tycho`.
+# `tycho-cli`. The import package and the console script stay `tycho`.
 name = "tycho-cli"
 dynamic = ["version"]  # single source of truth: tycho/__init__.py:__version__
 description = "Tycho — a free, offline, open-source local verifier that proves an AI agent actually did what it claims, from git, the filesystem, process exit codes, and the harness event stream. No account, no LLM in the trust path."
@@ -26,7 +26,7 @@ Repository = "https://github.com/swail-labs/tycho"
 Issues = "https://github.com/swail-labs/tycho/issues"
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-cov>=5", "ruff>=0.6", "build>=1"]  # build: sdist E2E (TYCHO-37)
+dev = ["pytest>=8", "pytest-cov>=5", "ruff>=0.6", "build>=1"]  # build: sdist E2E
 
 [project.scripts]
 tycho = "tycho.cli:main"

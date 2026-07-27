@@ -4,14 +4,14 @@ Every other test imports ``tycho`` straight from the working tree, which proves 
 about the artifact people ``pip install``: a module left out of the wheel, a broken
 ``[project.scripts]`` entry point, or a version silently desynced from pyproject would
 all sail through the rest of the suite. So this module builds the artifact, installs it
-into a clean venv, and drives the installed ``tycho`` command as a subprocess (TYCHO-9).
+into a clean venv, and drives the installed ``tycho`` command as a subprocess.
 
 Both artifacts are built and both get installed, because ``pip install tycho`` falls back
 to the sdist wherever no wheel matches (and always under ``--no-binary :all:``), and an
 sdist is assembled by *different* Hatchling rules than a wheel — a ``README.md`` excluded
 from the tarball breaks the source install while the wheel stays green. The ``artifact``
 fixture parameterizes over the two, so every console-script test below runs against both
-(TYCHO-37).
+.
 
 Marked ``e2e``: the build+install costs a couple of seconds per artifact, so it is
 session-scoped. Skip with ``-m "not e2e"``. Unlike the rest of the suite these tests need
@@ -163,7 +163,7 @@ def test_sdist_ships_the_sources_and_metadata_files_pyproject_points_at(sdist: P
     assert "pyproject.toml" in shipped  # no build backend config, no install from source
 
     meta = email.message_from_string(pkg_info)
-    assert meta["Name"].replace("_", "-").lower() == "tycho-cli"  # distribution name (TYCHO-73)
+    assert meta["Name"].replace("_", "-").lower() == "tycho-cli"  # distribution name
     # PKG-INFO carries the PEP 440-normalized version (Hatchling normalizes on build, e.g. a
     # prerelease 0.1.0-rc.1 -> 0.1.0rc1), so compare semantically, not by raw string.
     assert Version(meta["Version"]) == Version(tycho.__version__)

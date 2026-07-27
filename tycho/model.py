@@ -172,7 +172,7 @@ class GitSnapshot:
 class Session:
     """The gathered input snapshot the pure checks run against.
 
-    Carries *both* scopes, because the checks genuinely need both (TYCHO-17):
+    Carries *both* scopes, because the checks genuinely need both:
     "did this turn's edits land?" is a question about `turn_edits`, while "is a
     source stale against the last green run?" is a question about the whole
     session — a file edited three turns ago and never retested really is stale.

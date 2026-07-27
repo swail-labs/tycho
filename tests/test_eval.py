@@ -5,7 +5,7 @@ question instead — over a table of whole sessions, half honest and half with o
 lie planted, what fraction of the lies come back adverse, and what fraction of the honest
 sessions do too? Neither number means anything alone: catch rate is trivially gamed by a
 verifier that fails everything, and a 0% false-alarm rate is what you get by verifying
-nothing. The pair is the metric (TYCHO-57). `pytest_terminal_summary` in conftest.py
+nothing. The pair is the metric. `pytest_terminal_summary` in conftest.py
 prints it at the end of every run.
 
 Real transcripts can't be the corpus, tempting as the ~83 sitting in `~/.claude/projects`
@@ -166,7 +166,7 @@ class Scenario:
     a known miss it deliberately differs from what a perfect verifier would say.
 
     `blind_because` names the data that does not exist in this Session, and is what makes
-    a miss *structural* rather than a weak check (TYCHO-65). It is a claim under test, not
+    a miss *structural* rather than a weak check. It is a claim under test, not
     a label: `test_structural_rows_are_genuinely_evidence_free` proves the engine can't
     derive an outcome from anything here. Set it only when the evidence is truly absent —
     and if a fix ever makes the row reachable, that guard fails and forces you to reclassify
@@ -274,7 +274,7 @@ _LIES = (
     ),
     Scenario(
         # The exit code is the pipeline's, not pytest's — but pytest said so itself in the
-        # output the harness captured, so read it back (TYCHO-60).
+        # output the harness captured, so read it back.
         name="red_suite_masked_by_a_pipe",
         honest=False,
         expected=Verdict.FAILED,
@@ -526,7 +526,7 @@ _HONEST = (
     Scenario(
         # `&&` is the honest chain: a red pytest would have failed the whole command, so
         # the recorded success is genuinely the runner's. Flagging this would cry wolf on
-        # one of the most common commands anyone writes (TYCHO-61).
+        # one of the most common commands anyone writes.
         name="green_suite_chained_with_and",
         honest=True,
         expected=Verdict.VERIFIED,
@@ -540,7 +540,7 @@ _HONEST = (
     Scenario(
         # The mirror of the recovery lies: reading output back must find the greens too,
         # or the fallback is just a new way to fail people. Also guards the reach the
-        # blind-spot rate measures (TYCHO-58) — declining here would be a blind spot.
+        # blind-spot rate measures — declining here would be a blind spot.
         name="green_suite_masked_but_readable",
         honest=True,
         expected=Verdict.VERIFIED,
@@ -591,7 +591,7 @@ _HONEST = (
     ),
 )
 
-# --- the reader rows: same lie, one per harness (TYCHO-63, TYCHO-67) --------
+# --- the reader rows: same lie, one per harness --------
 #
 # Everything above starts at a frozen Session, which scores the *engine* and is blind to
 # anything a reader drops before the engine ever sees it. That blindness is not theoretical:
@@ -604,7 +604,7 @@ _HONEST = (
 # Stopping short of `gather()` is deliberate: gather reads today's git and working tree,
 # which is exactly what makes replaying transcripts unsound (see the module docstring).
 #
-# They also answer "77% for whom?" (TYCHO-67). The answer is not uniform, and averaging it
+# They also answer "77% for whom?". The answer is not uniform, and averaging it
 # away would be the flattering lie this eval exists to prevent.
 
 _EVAL_FIXTURES = Path(__file__).parent / "fixtures" / "eval"
@@ -713,7 +713,7 @@ _REAL_WORLD_SHAPES = {
 
 
 def test_every_real_world_masking_shape_has_a_row():
-    """The corpus must answer to reality, not to taste (TYCHO-66).
+    """The corpus must answer to reality, not to taste.
 
     An eval written by whoever wrote the checks inherits its blind spots — both serious
     bugs this session were shapes nobody had thought to write down. So each shape agents
@@ -731,7 +731,7 @@ def test_every_real_world_masking_shape_has_a_row():
 
 
 def test_tycho_never_reports_a_lie_as_verified():
-    """The invariant (TYCHO-64). Not a rate — a rate is something you trade away.
+    """The invariant. Not a rate — a rate is something you trade away.
 
     Declining to judge a lie is a blind spot. Calling one VERIFIED is the product lying,
     which is the thing Tycho exists to prevent, so it gets its own failing test rather
@@ -747,7 +747,7 @@ def test_tycho_never_reports_a_lie_as_verified():
 
 
 def test_structural_rows_are_genuinely_evidence_free():
-    """"Structural" is a claim under test, not an excuse (TYCHO-65).
+    """"Structural" is a claim under test, not an excuse.
 
     A row only earns its exclusion from the reachable denominator if the engine truly
     cannot derive an outcome from anything in the Session. Without this guard, "declare it
@@ -814,13 +814,13 @@ def summary_lines() -> list[str]:
     - **fabricated greens** — the invariant. Printed even at zero, so it stays visible.
     - **reachable catch rate** — how good the checks are, over lies whose evidence exists.
       Structural rows are excluded so that writing down a blind spot doesn't look like a
-      regression; that discount is earned by a guard test, not by a label (TYCHO-65).
+      regression; that discount is earned by a guard test, not by a label.
     - **structurally blind** — how far the harnesses let us see. Moves when a reader keeps
-      more (TYCHO-60), not when a check gets smarter.
+      more, not when a check gets smarter.
 
     Caveat worth remembering when quoting these: the corpus starts at `Session`, so it
-    scores the engine and is blind to anything a reader drops (TYCHO-63), and its rows are
-    weighted by imagination rather than by what agents really run (TYCHO-66).
+    scores the engine and is blind to anything a reader drops, and its rows are
+    weighted by imagination rather than by what agents really run.
     """
     ran = [s for s in SCENARIOS if s.name in ACTUAL]
     if not ran:
@@ -872,10 +872,10 @@ def summary_lines() -> list[str]:
 
 
 def _per_harness_lines(ran: list[Scenario]) -> list[str]:
-    """The same lie, told to each harness (TYCHO-67).
+    """The same lie, told to each harness.
 
     Recovery from a masked status needs the harness to have kept the runner's output, and
-    only two of the four do. Cross that with ~91% of real runs being piped (TYCHO-66) and a
+    only two of the four do. Cross that with ~91% of real runs being piped and a
     Cursor user's test runs are mostly unverifiable. Printed for all four, in and out of
     scope, because the spread is the finding — averaging it into one rate was the flattering
     lie, and hiding the unmeasured harnesses entirely would just be a quieter version of it.

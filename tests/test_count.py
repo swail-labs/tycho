@@ -1,4 +1,4 @@
-"""`tycho count` + the catch record `catches.json` (TYCHO-50/62).
+"""`tycho count` + the catch record `catches.json`.
 
 catches.json holds what Tycho caught — the running tally *and* the evidence trail (which
 checks failed or couldn't pass), newest first. Every adverse/intermediate run is recorded
@@ -168,7 +168,7 @@ def test_count_command_reports_both_scopes(tmp_path, monkeypatch, capsys):
     other = tmp_path / "other"
     other.mkdir()
     # A *separate* repo, so its catch counts toward all-time but not this one. The `.git` is
-    # what makes it separate: state resolution walks up until a git root (TYCHO-79), so without
+    # what makes it separate: state resolution walks up until a git root, so without
     # the marker `other` is just a subdirectory of tmp_path and its catch lands in tmp_path.
     (other / ".git").mkdir()
     state.record_catch(tmp_path, "claude", "FAILED", _results(*FAIL_RUN))

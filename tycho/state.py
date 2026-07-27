@@ -44,7 +44,7 @@ def root_for(repo: Path) -> Path:
     Every entry point hands us a cwd, and a cwd follows the user into subdirectories. Without
     the walk, `<cwd>/.tycho` misses from anywhere but the repo root, and every reader here
     reports that as "not installed" — the badge goes blank and `doctor` says unknown, both of
-    which read as "Tycho isn't here" rather than "you're one directory down" (TYCHO-79).
+    which read as "Tycho isn't here" rather than "you're one directory down".
 
     Stops at the git root: our state belongs to *this* repo, and an unrelated parent's `.tycho/`
     is not ours to adopt. No marker anywhere means `repo` — so `init` still creates state where
@@ -125,7 +125,7 @@ def record_run(repo: Path, harness: str, verdict: str | None = None, pending: bo
     land even if everything downstream fails — and the badge shows "verifying"), then again
     at every terminal path — with a `verdict` when there is one, or plain (no verdict, no
     pending) when there was nothing to verify. So the three shapes are distinct and drive
-    the badge colour (TYCHO-39/59): `pending` = mid-run (yellow), `verdict` = the result
+    the badge colour: `pending` = mid-run (yellow), `verdict` = the result
     (green/red), neither = fired-but-nothing-to-report (grey). Re-recording is what stops a
     stale verdict — or a stuck "verifying" — outliving the run that produced it.
     """
@@ -140,7 +140,7 @@ def record_run(repo: Path, harness: str, verdict: str | None = None, pending: bo
         pass
 
 
-# --- the catch record (TYCHO-62, replaces TYCHO-50's bare tally) -------------
+# --- the catch record (replaces TYCHO-50's bare tally) -------------
 #
 # What Tycho caught — with the evidence, not just a number. Two files, same fail-open rule
 # as everything here (a record we can't write is simply not written):
@@ -154,7 +154,7 @@ def record_run(repo: Path, harness: str, verdict: str | None = None, pending: bo
 _CATCHES = "catches.json"
 _LEGACY_COUNTS = "counts.json"  # pre-TYCHO-62 tally; migrated on first read/write, then dropped
 _TALLIED = ("FAILED", "STALE", "INDETERMINATE")  # verdicts that count as catches (with evidence)
-_BLIND = ("INDETERMINATE", "UNSUPPORTED")  # verdicts where Tycho had nothing to say (TYCHO-58)
+_BLIND = ("INDETERMINATE", "UNSUPPORTED")  # verdicts where Tycho had nothing to say
 _CATCH_LIST_CAP = 100  # the repo evidence trail keeps the most recent N; the tally stays exact
 
 
@@ -180,7 +180,7 @@ def _count_of(data: dict, key: str) -> int:
 
 def _read_catches(path: Path) -> dict:
     """catches.json as {tally, catches}. Falls back to a legacy counts.json tally so the
-    numbers carry across the rename, until the next write re-homes them (TYCHO-62)."""
+    numbers carry across the rename, until the next write re-homes them."""
     data = _read_json(path)
     if data is not None:
         return data
@@ -198,7 +198,7 @@ def _tally_of(data: dict) -> dict:
 def record_catch(repo: Path, harness: str, verdict: str, results) -> None:
     """Record one verdict: bump the running tally (repo + machine) and, when the verdict is
     adverse/intermediate, append it to the repo's evidence trail. *Every* verdict counts
-    toward the `runs` denominator (TYCHO-58) — VERIFIED/UNSUPPORTED are runs, not catches, so
+    toward the `runs` denominator — VERIFIED/UNSUPPORTED are runs, not catches, so
     they add no evidence entry. Never raises: this runs inside the Stop hook, so a record we
     can't write is simply not written.
     """
@@ -222,7 +222,7 @@ def _bump(path: Path, verdict: str, entry: dict | None) -> None:
     try:
         data = _read_catches(path)
         tally = _tally_of(data)
-        tally["runs"] = _count_of(tally, "runs") + 1     # the denominator: every verdict (TYCHO-58)
+        tally["runs"] = _count_of(tally, "runs") + 1     # the denominator: every verdict
         tally[verdict] = _count_of(tally, verdict) + 1   # per-verdict, incl VERIFIED/UNSUPPORTED
         out: dict = {"tally": tally}
         if entry is not None:
@@ -247,7 +247,7 @@ def all_time_counts() -> dict:
 
 
 def totals(repo: Path) -> dict:
-    """{"runs": n, "blind": n} for `repo` (TYCHO-58): every verdict recorded — the denominator
+    """{"runs": n, "blind": n} for `repo`: every verdict recorded — the denominator
     the catch counts are read against — and how many of those were blind (INDETERMINATE or
     UNSUPPORTED, i.e. Tycho had nothing to say). `runs` is 0 for a legacy tally migrated from
     the pre-TYCHO-58 `counts.json`, which had no denominator; it fills in as new runs land."""
@@ -275,7 +275,7 @@ def last_run(repo: Path) -> dict | None:
     return _read_json(dir_for(repo) / _LAST_RUN)
 
 
-# --- the decay ledger (TYCHO-131, strategy §7/§9.5) --------------------------
+# --- the decay ledger (strategy §7/§9.5) --------------------------
 #
 # Five of the nine checks are competence-bound and will stop firing as agents get better
 # (§7). That is a maintenance problem only if you can *see* it, so this is the instrument:
@@ -398,7 +398,7 @@ def ledger(repo: Path) -> dict:
     }
 
 
-# --- update check cache (TYCHO-53) ------------------------------------------
+# --- update check cache ------------------------------------------
 #
 # Machine-wide (one check serves every repo): the newest version we saw, when we last
 # looked, which version the user waved off, and how many times they've dismissed a notice.
@@ -431,7 +431,7 @@ def update_dismissed_count() -> int:
     return _count_of(read_update_cache(), "dismissed")
 
 
-# --- first-run offer bookkeeping (TYCHO-49) ---------------------------------
+# --- first-run offer bookkeeping ---------------------------------
 #
 # Machine-level, keyed by repo path: which repos we've already made the "set up Tycho here?"
 # offer in, so a declined offer is never re-nagged — and nothing is written into a repo the
@@ -471,7 +471,7 @@ def status_enabled(repo: Path) -> bool:
     """Whether the status-bar indicator should render here. Default on; a sentinel hides it.
 
     Hiding the badge is not uninstalling: the Stop hook keeps verifying every turn, the
-    heartbeat keeps landing — only the passive indicator goes quiet (TYCHO-47).
+    heartbeat keeps landing — only the passive indicator goes quiet.
     """
     return not (dir_for(repo) / _STATUS_OFF).exists()
 
@@ -489,7 +489,7 @@ def set_status_enabled(repo: Path, enabled: bool) -> None:
         pass
 
 
-# --- verdict relay to the agent (TYCHO-35, opt-in, default OFF) --------------
+# --- verdict relay to the agent (opt-in, default OFF) --------------
 #
 # Off by default: Tycho never feeds the agent its own context — and never spends the extra
 # generations doing so — unless the user opts in. When ON, the Stop hook hands a non-VERIFIED
@@ -574,7 +574,7 @@ _STATUSLINE = "statusline.json"
 
 
 def write_statusline_wrap(repo: Path, command: str, origin: str) -> None:
-    """Record a status command Tycho should compose with (TYCHO-47).
+    """Record a status command Tycho should compose with.
 
     `origin` is "repo" (a foreign statusLine in this repo's own settings that we replaced —
     restore it on uninstall) or "user" (a user-level line we never touched — it resurfaces
@@ -592,7 +592,7 @@ def clear_statusline_wrap(repo: Path) -> None:
     (dir_for(repo) / _STATUSLINE).unlink(missing_ok=True)
 
 
-# --- agent verdict override (TYCHO-118, opt-in, default OFF) ------------------
+# --- agent verdict override (opt-in, default OFF) ------------------
 #
 # Two artifacts, both fail-open like everything here:
 #   turn-marker  <repo>/.tycho/override        : the checks the agent disputes THIS turn,

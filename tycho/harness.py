@@ -39,7 +39,7 @@ class Harness:
     # unlinks). Returns None when there's nothing to verify.
     transcript_of: Callable[[dict], Path | None]
     # Epoch at which the turn under review began, so the Stop reports *this turn's*
-    # work rather than the whole session's (TYCHO-17). Where the boundary lives is
+    # work rather than the whole session's. Where the boundary lives is
     # harness knowledge, so it belongs here; what to do with it is the engine's.
     # Defaulting to 0.0 means "the whole transcript is the turn" — the honest answer
     # for a harness whose reader already yields one turn, or that can't timestamp.
@@ -54,7 +54,7 @@ class Harness:
     # supplies nothing: a harness whose transcript we can't attribute stores nulls in the
     # record, never a guess (the decay ledger slices catch rate by this field).
     attribution: Callable[[Path], Attribution] = lambda _: Attribution()
-    # How to surface the bootup update-notice (TYCHO-72). This is a *human-only* channel and
+    # How to surface the bootup update-notice. This is a *human-only* channel and
     # is deliberately NOT `format_output`: on Cursor `format_output` is model-facing
     # (`followup_message`), and a notice that reaches the model could commission it to go
     # update Tycho (the TYCHO-35 rule). None — the default — means "no user-facing bootup
@@ -82,7 +82,7 @@ def _cursor_root(payload: dict) -> Path:
 #
 # Each harness keeps its sessions under a root that defaults to a dotdir in
 # $HOME. That default is only a default: dotfiles get relocated, machines get
-# shared, and Windows puts this somewhere else entirely (TYCHO-15). So every
+# shared, and Windows puts this somewhere else entirely. So every
 # root is overridable — Tycho's own env var first, then the harness's native
 # one (the variable the agent itself honors), then the historical default.
 
@@ -108,7 +108,7 @@ def home(name: str) -> Path:
 # path separator and space into "-". Claude keeps the leading dash from the absolute
 # path; Cursor strips it. Verified against real dirs under ~/.claude and ~/.cursor —
 # including on Windows, where str(cwd) carries a drive colon and backslashes:
-# `C:\Users\me\Swail Labs\tycho` -> `C--Users-me-Swail-Labs-tycho` (TYCHO-24). The POSIX
+# `C:\Users\me\Swail Labs\tycho` -> `C--Users-me-Swail-Labs-tycho`. The POSIX
 # set ("/", ".") is a subset of this, so *nix encoding is unchanged.
 _DIR_SEP_CHARS = str.maketrans({c: "-" for c in "\\/:. "})
 
@@ -229,12 +229,12 @@ CODEX = Harness(
     format_output=lambda text: {"systemMessage": text},
     # Codex's SessionStart output wire schema clones Claude's — `systemMessage` is the
     # human-facing field (docs/harness-support.md). Render-path still ⚠️ pending a live
-    # capture (TYCHO-111); worst case the toast is silent, never model-facing.
+    # capture; worst case the toast is silent, never model-facing.
     notice_output=lambda text: {"systemMessage": text},
     discover=_codex_discover,
     transcript_of=_payload_transcript,
     messages=events.assistant_messages_codex,
-    # parse_codex returns every turn (TYCHO-20); turn_start_codex anchors the boundary on
+    # parse_codex returns every turn; turn_start_codex anchors the boundary on
     # the latest turn's task_started, so the engine narrows exactly like Claude. Codex is
     # the only harness with an explicit turn_id, which is why it can do this precisely.
     turn_start=events.turn_start_codex,
@@ -247,7 +247,7 @@ OPENCODE = Harness(
     format_output=lambda text: {"message": text},
     # The plugin reads `.message` and toasts it via client.tui.showToast — a genuinely
     # user-facing sink. The bootup notice reuses the same shape on the session.created
-    # branch (TYCHO-72).
+    # branch.
     notice_output=lambda text: {"message": text},
     # OpenCode has no transcript file — the reader rebuilds it from opencode.db,
     # so discovery and the live plugin both use the same DB-backed materializer.
@@ -255,7 +255,7 @@ OPENCODE = Harness(
     transcript_of=_opencode_transcript,
     # turn_start_opencode anchors on the last user message, which is what opens an
     # OpenCode turn. The boundary looked underivable while session_json flattened every
-    # part into one synthesized assistant message and dropped the user rows (TYCHO-21);
+    # part into one synthesized assistant message and dropped the user rows;
     # the DB carries a per-message `time.created` and always did.
     turn_start=events.turn_start_opencode,
 )
@@ -274,7 +274,7 @@ ENABLED = tuple(h for h in ALL if h.name in ENABLED_NAMES)
 # local `--version` command to read the installed one. This is the machine copy of the
 # "Verified against" row in docs/harness-support.md — keep the two in step (a test pins
 # them together). `probe` stays offline (a local subprocess), so the zero-dep/offline
-# invariant holds; drift is advisory ("re-verify"), never a break (TYCHO-34). OpenCode
+# invariant holds; drift is advisory ("re-verify"), never a break. OpenCode
 # has no CLI version contract (it's read from opencode.db), so it isn't probed.
 VERIFIED_AGAINST = {
     "claude": {"version": "2.1.210", "probe": ("claude", "--version")},

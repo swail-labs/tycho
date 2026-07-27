@@ -16,7 +16,7 @@ That is a fact about the turn record and the diff, and it is checkable. What thi
 refuses to say is "this line never executed" — it cannot know that, because a command it
 never saw (a manual `pytest` in another terminal, CI, a debugger) proves nothing to it
 either way. A review tool that overclaims coverage is worse than no review tool, so every
-finding here is worded as what was *recorded*, not what happened (TYCHO-125).
+finding here is worded as what was *recorded*, not what happened.
 
 **Granularity.** Hunks, not files: "this file wasn't covered" is unactionable on a
 900-line file. The coverage evidence itself is per-file — the record stores which files a

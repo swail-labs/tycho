@@ -88,7 +88,7 @@ def session_json(session_id: str, cwd: Path, db: Path | None = None) -> dict | N
     One message in, one message out — parts grouped by ``part.message_id``. This used
     to flatten every part into a single synthesized ``{"role": "assistant"}`` message
     and never read the ``message`` table at all, which discarded the user messages
-    entirely. That is why OpenCode had no derivable turn boundary (TYCHO-21): the data
+    entirely. That is why OpenCode had no derivable turn boundary: the data
     was in the DB the whole time, Tycho dropped it before the reader ever saw it. A user
     message carries no tool parts, so it lands here with ``parts: []`` — kept, because
     its timestamp is exactly what ``events.turn_start_opencode`` anchors on.

@@ -1,4 +1,4 @@
-"""Scope management (TYCHO-55): `.tycho.toml` create-on-init, `tycho scope` edits, and the
+"""Scope management: `.tycho.toml` create-on-init, `tycho scope` edits, and the
 `/tycho-scope-*` slash commands. Zero-config stays intact: an empty include leaves
 scope_drift UNSUPPORTED, exactly as with no file at all."""
 
@@ -135,7 +135,7 @@ def test_cli_scope_list_when_empty_explains_zero_config(tmp_path: Path, monkeypa
     assert "none set" in capsys.readouterr().out
 
 
-# --- exclude / denylist (TYCHO-78) ------------------------------------------
+# --- exclude / denylist ------------------------------------------
 
 def test_exclude_edits_round_trip_and_preserve_include(tmp_path: Path):
     config_mod.set_scope(tmp_path, ["**"])

@@ -244,7 +244,7 @@ def parse_codex(transcript: Path) -> tuple[Event, ...]:
             # Keep the runner's own words, not just the verdict we distilled from them.
             # `is_error` alone is useless the moment the shell masks the status: the engine
             # then has to re-read the output, and it can only read what the reader kept
-            # (TYCHO-60). Codex is the one harness whose transcript carries this text.
+            #. Codex is the one harness whose transcript carries this text.
             result={"stdout": out} if (out := results.get(call_id, (None, ""))[1]) else {},
         )
         for call_id, (ts, command) in calls.items()
@@ -278,7 +278,7 @@ def assistant_messages_codex(transcript: Path) -> tuple[Message, ...]:
 def turn_start_codex(transcript: Path) -> float:
     """Epoch of the latest Codex turn's ``task_started`` — the boundary its Stop reviews.
 
-    ``parse_codex`` now returns every turn (TYCHO-20), so the engine narrows to the turn
+    ``parse_codex`` now returns every turn, so the engine narrows to the turn
     under review via ``turn_start`` just like Claude. We anchor on the latest turn that
     actually has tool calls or edits: Codex emits empty trailing turns (compaction
     follow-ups), and anchoring on one of those would push the boundary past all real work
@@ -468,7 +468,7 @@ def file_edits(events: tuple[Event, ...]) -> tuple[FileEdit, ...]:
 
     A failed call is not evidence of an edit: one denied by a PreToolUse hook, blocked, or
     errored never touched the disk, and — having no ``toolUseResult`` — would land here as a
-    phantom ``kind=create, original=None`` row (TYCHO-33). ``is_error is None`` means *no
+    phantom ``kind=create, original=None`` row. ``is_error is None`` means *no
     status was recorded*, not failure, so those are still counted; Cursor never records one
     and would otherwise report zero edits.
     """

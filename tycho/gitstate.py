@@ -53,7 +53,7 @@ def untracked(repo: Path) -> tuple[str, ...]:
 
     `git diff` cannot see these, and a brand-new file an agent just wrote is exactly the
     thing a review must not silently omit — so `tycho review` asks for them separately
-    (TYCHO-125). Non-ignored only: reviewing `node_modules` is how a review gets closed.
+   . Non-ignored only: reviewing `node_modules` is how a review gets closed.
     """
     code, out = _git(repo, "ls-files", "--others", "--exclude-standard")
     if code != 0:
@@ -66,7 +66,7 @@ def untracked(repo: Path) -> tuple[str, ...]:
 # File-level granularity is a much weaker statement than it looks: "this file wasn't
 # covered" is unactionable on a 900-line file, where "lines 88-114 weren't" is a place to
 # put your eyes. So `review` needs actual hunks, which means parsing unified diff — git has
-# no plumbing that hands you line ranges directly (TYCHO-125).
+# no plumbing that hands you line ranges directly.
 #
 # Parsed off `git diff`'s own text with the counts in the `@@` header as the authority for
 # where a hunk body ends, rather than "until a line that doesn't start with +/-/space" — a

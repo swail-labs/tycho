@@ -5,5 +5,5 @@ process exit codes, and the harness event stream. Only code renders a verdict â€
 trust path. Free, open source (Apache 2.0), offline, no account needed.
 """
 
-# Alpha. Bumped to 0.1.0 for the first public release (TYCHO-10).
+# Alpha. Bumped to 0.1.0 for the first public release.
 __version__ = "0.1.0"

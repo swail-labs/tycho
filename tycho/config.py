@@ -31,7 +31,7 @@ class Config:
 def path(repo: Path) -> Path:
     """The config for `repo` — resolved the same way as `.tycho/`, its sibling, so that a
     command run from a subdirectory reads the repo's real scope instead of defaulting to
-    "no scope set" (TYCHO-79)."""
+    "no scope set"."""
     return state.root_for(repo) / CONFIG_NAME
 
 
@@ -120,7 +120,7 @@ def _write(repo: Path, text: str) -> None:
 
 def ensure(repo: Path) -> bool:
     """Create `.tycho.toml` with the template if it's absent. Never clobber an existing
-    one (TYCHO-6). Returns True if it created the file."""
+    one. Returns True if it created the file."""
     if path(repo).exists():
         return False
     _write(repo, render())
@@ -135,7 +135,7 @@ def _save(repo: Path, include: tuple[str, ...], exclude: tuple[str, ...]) -> Non
 
 def set_relay(repo: Path, enabled: bool) -> None:
     """Write the verdict-relay flag to `.tycho.toml`, preserving scope + disabled checks. Creates
-    the file if absent, so the setting is always visible and hand-editable (TYCHO-114)."""
+    the file if absent, so the setting is always visible and hand-editable."""
     cur = load(repo)
     _write(repo, render(cur.scope_include, cur.disabled_checks, cur.scope_exclude, enabled, cur.override_enabled))
 

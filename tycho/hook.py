@@ -43,9 +43,9 @@ def run(stdin_text: str) -> dict | None:
     harness = harness_mod.detect(payload)
     repo = harness.repo_root(payload)
     # Heartbeat, up front on every path: it answers "did the wiring fire?" — the basis of
-    # `tycho doctor` (TYCHO-8) — so it must land even when there's nothing to verify.
+    # `tycho doctor` — so it must land even when there's nothing to verify.
     # `pending=True` shows the badge "verifying"; every path below re-beats a terminal state
-    # so it never sticks (TYCHO-59). Never raises.
+    # so it never sticks. Never raises.
     state.record_run(repo, harness.name, pending=True)
 
     transcript = harness.transcript_of(payload)
@@ -64,12 +64,12 @@ def run(stdin_text: str) -> dict | None:
         results = engine.run_checks(session)
         verdict = engine.verdict_of(results)
         verdict = _apply_overrides(repo, results, verdict)
-        # Re-beat with the verdict, for `tycho status` to render passively (TYCHO-39).
+        # Re-beat with the verdict, for `tycho status` to render passively.
         # Only here, where a verdict exists: the entry beat above already proved liveness,
         # and claiming a verdict we never reached would be the one lie Tycho can't tell.
         state.record_run(repo, harness.name, verdict=verdict.name)
         # And log it to the catch record with its evidence trail, if adverse/intermediate
-        # (TYCHO-62). No-op for VERIFIED/UNSUPPORTED; never raises.
+        #. No-op for VERIFIED/UNSUPPORTED; never raises.
         state.record_catch(repo, harness.name, verdict.name, results)
         # And the durable per-turn record (strategy §9.2) — the substrate `tycho blame`,
         # the turn digest, the attestation trailer and the decay ledger all read. Written
@@ -100,7 +100,7 @@ def run(stdin_text: str) -> dict | None:
     # the whole verdict the human already reads on `systemMessage` (point-1 duplication).
     agent_report = render(verdict, results, only_adverse=True)
     # A human-only "newer Tycho available" line, appended to the verdict the user is already
-    # reading (TYCHO-116). Cache-only — never a network call on the hot Stop path.
+    # reading. Cache-only — never a network call on the hot Stop path.
     update = _update_suffix(harness)
     override_notice = _override_notice(repo, harness, verdict, results)
     # THE SEAM (strategy §9.1 vs §11.1). Two channels, two different questions:
@@ -155,7 +155,7 @@ def _digest_output(
 
 
 def _update_suffix(harness) -> str:
-    """The Stop-hook update notice as a human-only suffix (leading blank line), or "" (TYCHO-116).
+    """The Stop-hook update notice as a human-only suffix (leading blank line), or "".
 
     Only on harnesses with a human-only Stop channel: there, `format_output` writes the same field
     `notice_output` does (systemMessage / message), so appending here stays human-facing. On Cursor
@@ -179,7 +179,7 @@ def _update_suffix(harness) -> str:
 def _override_notice(repo: Path, harness, verdict, results) -> str:
     """Human-only line on an OVERRIDDEN verdict: name the checks the agent set aside and
     tell the user how to veto (relay fires again) or turn override off. Same human-only gate
-    as `_update_suffix` — never emitted on a model-facing channel (TYCHO-35). Never raises.
+    as `_update_suffix` — never emitted on a model-facing channel. Never raises.
 
     Names only the checks that were *actually* set aside — the same `disputed & non-PASS`
     intersection `_apply_overrides` applies — so an override recorded against a check that
@@ -234,7 +234,7 @@ def _apply_overrides(repo: Path, results, verdict: Verdict) -> Verdict:
         return verdict  # fail open — an override that errors just leaves the real verdict
 
 
-# --- verdict relay (TYCHO-35, opt-in, default OFF) --------------------------
+# --- verdict relay (opt-in, default OFF) --------------------------
 #
 # When the operator turns the relay on, feed a non-VERIFIED verdict back to Claude or Codex.
 # Claude continues from Stop-hook additionalContext; Codex continues from decision:block + reason.
@@ -258,7 +258,7 @@ def _relay_output(
     `report` is the full verdict (every check) for the human-facing `systemMessage`; `agent_report`
     is the adverse-only copy for the model-facing continuation context.
 
-    `update` is the human-only update line (TYCHO-116): it rides the human-facing `systemMessage`
+    `update` is the human-only update line: it rides the human-facing `systemMessage`
     only, never the continuation context — the model must not be told to go update Tycho.
     """
     if harness.name not in ("claude", "codex") or not state.relay_enabled(repo):
@@ -275,7 +275,7 @@ def _relay_output(
     attempt = state.bump_relay_streak(repo)
     guard = _relay_guard(attempt, state.relay_max(), override_on=state.override_enabled(repo))
     # systemMessage keeps the human seeing the verdict, now with a pointer to manage/turn off the
-    # relay (TYCHO-114); additionalContext is the model-facing copy that also drives the continuation.
+    # relay; additionalContext is the model-facing copy that also drives the continuation.
     manage = "[TYCHO] Relay is on — the agent keeps working until VERIFIED. Manage or turn it off: `tycho relay` (/tycho-relay)."
     system_message = f"{report}\n\n{manage}{update}"
     context = f"{agent_report}\n\n{guard}"
@@ -316,7 +316,7 @@ def _relay_guard(attempt: int, cap: int, override_on: bool = False) -> str:
 
 def session_start() -> int:
     """SessionStart / bootup hook: surface a *user-facing* update notice at agent bootup
-    (TYCHO-53, generalized to Codex/OpenCode in TYCHO-72). The output shape is the harness's
+    (generalized to Codex/OpenCode in TYCHO-72). The output shape is the harness's
     `notice_output` — a human-only channel (`systemMessage` on Claude/Codex, `message` toasted
     by the OpenCode plugin). A harness with no such channel (Cursor: `notice_output is None`)
     gets nothing, so the notice can never reach the model and commission a self-update
@@ -346,7 +346,7 @@ def session_start() -> int:
 def prompt_submit() -> int:
     """UserPromptSubmit hook (Claude Code): the user just submitted a prompt, so a turn is
     starting. Record a `pending` beat so the status badge shows frost-blue "verifying" for the
-    whole run (TYCHO-94); the Stop hook clears it to the verdict when the turn ends.
+    whole run; the Stop hook clears it to the verdict when the turn ends.
 
     Prints nothing — a UserPromptSubmit hook's stdout is injected into the agent's context, and
     Tycho must never put words in the user's prompt. Same invariants as every hook: never
@@ -359,7 +359,7 @@ def prompt_submit() -> int:
             repo = harness.repo_root(payload)
             state.record_run(repo, harness.name, pending=True)
             # A real user prompt opens a fresh turn, so the verdict-relay leash resets here: the
-            # bound (TYCHO-35) counts auto-continuations *within* one user turn, not across them.
+            # bound counts auto-continuations *within* one user turn, not across them.
             # Auto-continuations don't re-fire UserPromptSubmit, so this only ever runs for the
             # human's own prompts — exactly the boundary the bound is scoped to.
             state.reset_relay_streak(repo)

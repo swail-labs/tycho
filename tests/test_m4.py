@@ -51,7 +51,7 @@ def test_output_channels_differ():
 # contract: the payload keys come from executeHookForStep (3143.index.js) plus the
 # stop call sites (1683.index.js); the output key from the stop validator, which
 # accepts exactly one field. If Cursor renames any of these, these tests fail here
-# rather than in a user's dead hook (TYCHO-19).
+# rather than in a user's dead hook.
 
 def test_cursor_stop_payload_is_detected_as_cursor():
     payload = json.loads(CURSOR_STOP_PAYLOAD.read_text())
@@ -175,7 +175,7 @@ def test_codex_turn_scoping_narrows_edits_but_not_the_session():
     """Session sees all turns; the turn-scoped view is just turn-current's edits.
 
     Paths are repo-relative POSIX here, not the reader's absolute ones: `gather()` runs every
-    FileEdit through `verify._relpath` so git and the `[scope]` globs can reconcile (TYCHO-25).
+    FileEdit through `verify._relpath` so git and the `[scope]` globs can reconcile.
     """
     session = engine.gather(
         CODEX_FIXTURE, Path("/repo"), parse=events.parse_codex, turn_start=events.turn_start_codex
@@ -224,7 +224,7 @@ def test_codex_reader_keeps_the_runner_output_not_just_its_verdict():
 
 def test_codex_recovers_a_red_suite_whose_status_the_shell_masked():
     # `; echo done` throws pytest's status away; the recovery is possible only because the
-    # reader normalized the output into `result` for the engine to re-read (TYCHO-60).
+    # reader normalized the output into `result` for the engine to re-read.
     ev = Event(
         ts=100.0,
         tool="Bash",
@@ -408,7 +408,7 @@ def test_hook_stays_silent_when_turn_has_no_verifiable_activity(tmp_path: Path):
 
 # --- tycho init -------------------------------------------------------------
 #
-# init only touches harnesses it detects, and asks before each one (TYCHO-6). These
+# init only touches harnesses it detects, and asks before each one. These
 # tests state both preconditions outright: the dotdirs make every harness "present in
 # this repo", and assume_yes stands in for the human saying yes. Detection and consent
 # are themselves tested in test_init_safety.py.
@@ -436,10 +436,10 @@ def test_init_installs_all_harnesses(tmp_path: Path):
     assert init_mod._is_tycho_hook(claude["hooks"]["Stop"][0]["hooks"][0]["command"])
     assert init_mod._is_tycho_hook(cursor["hooks"]["stop"][0]["command"])
     assert init_mod._is_tycho_hook(codex["hooks"]["Stop"][0]["hooks"][0]["command"])
-    # Codex also gets the SessionStart bootup-notice hook (TYCHO-72).
+    # Codex also gets the SessionStart bootup-notice hook.
     assert init_mod._is_tycho_session_start(codex["hooks"]["SessionStart"][0]["hooks"][0]["command"])
     # OpenCode's plugin drives both the Stop verdict (session.idle) and the bootup notice
-    # (session.created → the session-start entrypoint), toasted via the same channel (TYCHO-72).
+    # (session.created → the session-start entrypoint), toasted via the same channel.
     assert "session.idle" in opencode and 'harness: "opencode"' in opencode
     assert "session.created" in opencode and "noticeCommand" in opencode
     assert cursor["version"] == 1
@@ -631,7 +631,7 @@ def test_encode_maps_windows_separators_and_spaces():
     assert harness._encode(PurePosixPath("/proj/my.app")) == "-proj-my-app"
 
 
-# --- configurable data roots (TYCHO-14) -------------------------------------
+# --- configurable data roots -------------------------------------
 
 
 def test_home_defaults_to_dotdir_under_home(tmp_path, monkeypatch):

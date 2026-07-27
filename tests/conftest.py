@@ -1,10 +1,10 @@
 """Keep the suite off the machine's real Tycho state and off the network, and print the eval metric.
 
-`state.record_run` bumps a machine-level tally (TYCHO-50) that lives outside any repo, so a
+`state.record_run` bumps a machine-level tally that lives outside any repo, so a
 test recording a FAILED verdict would otherwise inflate the developer's own `tycho count`.
 Point TYCHO_HOME at a per-test tmp dir for every test, always.
 
-The update check (TYCHO-53) reaches PyPI; opt every test out by default so nothing makes a
+The update check reaches PyPI; opt every test out by default so nothing makes a
 real network call. Tests that exercise the check delete the env var and monkeypatch the fetch.
 """
 
@@ -29,7 +29,7 @@ def _isolate_tycho_home(tmp_path_factory, monkeypatch):
 
 
 def pytest_terminal_summary(terminalreporter):
-    """Print the eval rates after the run (TYCHO-57).
+    """Print the eval rates after the run.
 
     Lives here because `pytest_terminal_summary` is only collected from conftest and
     plugins, never from a test module. `summary_lines()` returns nothing when no scenario

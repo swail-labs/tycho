@@ -70,13 +70,13 @@ def test_the_line_is_just_bracket_tycho(tmp_path: Path):
 
 def test_colour_tracks_the_verdict(tmp_path: Path, monkeypatch):
     # green = VERIFIED, red = FAILED/STALE (both adverse), frost blue = verifying (pending),
-    # grey = never-fired / no-verdict. The badge lands on green or red (TYCHO-47/59/94).
+    # grey = never-fired / no-verdict. The badge lands on green or red.
     monkeypatch.delenv("NO_COLOR", raising=False)
     _install(tmp_path)
 
     assert status.line(tmp_path).startswith(status._GREY)     # installed, never fired — grey
     state.record_run(tmp_path, "claude", pending=True)
-    assert status.line(tmp_path).startswith(status._FROST)    # verifying now — frost blue (TYCHO-94)
+    assert status.line(tmp_path).startswith(status._FROST)    # verifying now — frost blue
     state.record_run(tmp_path, "claude", verdict="VERIFIED")
     assert status.line(tmp_path).startswith(status._GREEN)
     state.record_run(tmp_path, "claude", verdict="FAILED")
@@ -86,7 +86,7 @@ def test_colour_tracks_the_verdict(tmp_path: Path, monkeypatch):
 
 
 def test_pending_is_frost_not_yellow(tmp_path: Path, monkeypatch):
-    # mid-run and INDETERMINATE must be distinct colours now — frost blue vs yellow (TYCHO-94)
+    # mid-run and INDETERMINATE must be distinct colours now — frost blue vs yellow
     monkeypatch.delenv("NO_COLOR", raising=False)
     _install(tmp_path)
     state.record_run(tmp_path, "claude", pending=True)
@@ -106,7 +106,7 @@ def test_unsupported_and_nothing_to_verify_are_grey(tmp_path: Path, monkeypatch)
 
 
 def test_indeterminate_is_yellow(tmp_path: Path, monkeypatch):
-    # INDETERMINATE ran but couldn't conclude — noteworthy, so yellow, distinct from frost (TYCHO-94)
+    # INDETERMINATE ran but couldn't conclude — noteworthy, so yellow, distinct from frost
     monkeypatch.delenv("NO_COLOR", raising=False)
     _install(tmp_path)
     state.record_run(tmp_path, "claude", verdict="INDETERMINATE")
@@ -124,7 +124,7 @@ def test_a_run_that_verified_nothing_is_not_green(tmp_path: Path, monkeypatch):
     assert status.line(tmp_path).startswith(status._GREY)       # grey — nothing to report
 
 
-# --- refresh cadence so the badge settles on the verdict (TYCHO-59) ----------
+# --- refresh cadence so the badge settles on the verdict ----------
 
 def test_install_sets_a_status_refresh_interval(tmp_path: Path):
     # Without polling the badge lags to the next prompt; the interval makes it re-render a
@@ -200,7 +200,7 @@ def _cp1252_write(text: str) -> int:
     return len(text)
 
 
-# --- toggle on/off (TYCHO-47) ------------------------------------------------
+# --- toggle on/off ------------------------------------------------
 
 def test_toggle_off_hides_the_line_but_keeps_the_install(tmp_path: Path):
     _install(tmp_path)
@@ -237,7 +237,7 @@ def test_cli_status_off_then_on_toggles_the_repo(tmp_path: Path, monkeypatch, ca
 
 def test_verify_records_its_verdict_for_the_status_bar(tmp_path: Path, monkeypatch, capsys):
     # A manual `tycho verify` is a real verification — the badge must reflect it, so a
-    # verify → VERIFIED can turn [TYCHO] green (TYCHO-47), same channel the hook writes.
+    # verify → VERIFIED can turn [TYCHO] green, same channel the hook writes.
     monkeypatch.chdir(tmp_path)
     _install(tmp_path)
     fixture = Path(__file__).parent / "fixtures" / "transcript_sample.jsonl"
@@ -250,7 +250,7 @@ def test_verify_records_its_verdict_for_the_status_bar(tmp_path: Path, monkeypat
     assert beat["verdict"] in out  # the badge shows the same verdict verify just printed
 
 
-# --- /tycho slash command (TYCHO-48) -----------------------------------------
+# --- /tycho slash command -----------------------------------------
 
 def test_init_installs_the_slash_command_and_subcommands(tmp_path: Path):
     _install(tmp_path)
@@ -315,7 +315,7 @@ def test_init_claims_the_slot_when_it_is_free(tmp_path: Path):
 
 def test_init_composes_with_a_repo_level_statusline_and_restores_it(tmp_path: Path):
     # A foreign repo-level statusLine is not clobbered — Tycho takes the slot but records
-    # their command and runs it too, then puts it back on uninstall (TYCHO-47).
+    # their command and runs it too, then puts it back on uninstall.
     (tmp_path / ".claude").mkdir()
     theirs = {"type": "command", "command": "~/.claude/other-statusline.sh"}
     (tmp_path / CLAUDE).write_text(json.dumps({"statusLine": theirs}))
@@ -334,7 +334,7 @@ def test_init_composes_with_a_repo_level_statusline_and_restores_it(tmp_path: Pa
 def test_init_composes_with_a_user_level_statusline(tmp_path: Path, monkeypatch):
     # The real case: a user status line lives in ~/.claude/settings.json (user level), which a
     # repo-level line would shadow. Tycho records it (origin "user") and composes; we never
-    # write the user file, so it resurfaces on its own when ours is removed (TYCHO-47).
+    # write the user file, so it resurfaces on its own when ours is removed.
     home = tmp_path / "home"
     (home / ".claude").mkdir(parents=True)
     (home / ".claude" / "settings.json").write_text(
@@ -378,7 +378,7 @@ def test_uninstall_leaves_someone_elses_statusline_alone(tmp_path: Path):
     assert json.loads((tmp_path / CLAUDE).read_text())["statusLine"] == theirs
 
 
-# --- finding the repo from a subdirectory (TYCHO-79) -------------------------
+# --- finding the repo from a subdirectory -------------------------
 #
 # A shell prompt follows the user into subdirectories and supplies no payload, so `repo`
 # arrives as the cwd rather than the root. Root-only resolution made that read as "not

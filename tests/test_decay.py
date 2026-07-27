@@ -1,4 +1,4 @@
-"""The decay ledger (TYCHO-131, strategy §7/§9.5): per-check, per-model catch and blind rates.
+"""The decay ledger (strategy §7/§9.5): per-check, per-model catch and blind rates.
 
 The point of the ledger is deciding what to *retire*, so these tests pin the denominators
 harder than the formatting: a rate whose denominator drifts is worse than no rate at all.

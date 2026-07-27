@@ -105,7 +105,7 @@ def test_turn_start_anchors_on_a_later_relay_boundary(tmp_path):
     assert events.turn_start(t) == events._epoch("2026-07-13T14:26:00.000Z")
 
 
-# --- opencode's boundary (TYCHO-21) -----------------------------------------
+# --- opencode's boundary -----------------------------------------
 #
 # The fixture is three real consecutive turns from a captured opencode.db: turn A edits
 # tycho/opencode.py, turn B runs nothing, turn C only greps. Same asymmetry as above, on
@@ -239,7 +239,7 @@ def _freshness_session(tmp_path: Path, edit_ts: float, turn_start: float) -> Ses
 
 
 def test_freshness_still_sees_edits_from_earlier_turns(tmp_path: Path):
-    """A source edited three turns ago and never retested genuinely is stale (TYCHO-23)."""
+    """A source edited three turns ago and never retested genuinely is stale."""
     result = checks.test_freshness(_freshness_session(tmp_path, edit_ts=100.0, turn_start=1000.0))
     assert result.status is CheckStatus.STALE
     # ...but the wording must not imply this turn touched it, or a doc-only turn reads
