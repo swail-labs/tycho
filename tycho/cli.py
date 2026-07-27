@@ -40,7 +40,7 @@ class ExitCode(IntEnum):
 _VERDICT_EXIT = {Verdict.FAILED: ExitCode.FAILED, Verdict.STALE: ExitCode.STALE}
 
 # One line per command, defined once: argparse's `-h` and `tycho help` both render these,
-# and a help screen that disagrees with `-h` is worse than no help screen (TYCHO-38).
+# and a help screen that disagrees with `-h` is worse than no help screen.
 _COMMANDS = {
     "verify": "verify what the agent claimed and render a verdict",
     "hook": "Stop-hook entrypoint: read hook JSON on stdin, verify, print",
@@ -100,7 +100,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--version", action="version", version=f"tycho {__version__}")
     # Not required: bare `tycho` defaults to `verify` (below), so "run tycho, see a verdict"
     # is one word — the on-demand path that works even where the Stop hook can't fire, e.g.
-    # Codex on Windows (TYCHO-124).
+    # Codex on Windows.
     sub = parser.add_subparsers(dest="command", required=False)
 
     v = sub.add_parser("verify", help=_COMMANDS["verify"])
@@ -145,7 +145,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     # `status` stays as a hidden back-compat alias: deployed statusLine entries and slash
     # commands (/tycho-status, --off/--on) still say `status`, and this tool ships to installs
-    # that already have them (TYCHO-108).
+    # that already have them.
     s = sub.add_parser("statusline", aliases=["status"], help=_COMMANDS["statusline"])
     toggle = s.add_mutually_exclusive_group()
     toggle.add_argument("--off", action="store_true", help="hide the indicator in this repo (the hook keeps verifying)")
@@ -296,7 +296,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             init_mod.init_global(assume_yes=args.yes) if args.globally
             else init_mod.init(Path.cwd(), only=args.harness, assume_yes=args.yes)
         )
-        _print_update_notice()  # tell them if a newer Tycho exists (TYCHO-53)
+        _print_update_notice()  # tell them if a newer Tycho exists
         return rc
     if args.command == "doctor":
         from . import doctor
@@ -319,7 +319,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _run(argv: list[str]) -> int:
-    """`tycho run [--] <cmd>` — the opt-in escape hatch (TYCHO-90). Exec <cmd> directly and
+    """`tycho run [--] <cmd>` — the opt-in escape hatch. Exec <cmd> directly and
     forward its output and *exit code* unchanged, so `command_execution` sees the runner's
     true status no matter how the command is wrapped, piped, or aliased — the cases static
     parsing of the shell string can't reach. Tycho only wraps; it never alters the child's
@@ -419,7 +419,7 @@ def _attest(cwd: Path, verify: str | None = None, write: list[str] | None = None
 
 
 def _help(cwd: Path) -> int:
-    """One screen: what Tycho is, whether it's live *here*, and every command (TYCHO-38).
+    """One screen: what Tycho is, whether it's live *here*, and every command.
 
     The liveness line is the reason this exists. `-h` lists subcommands but can't answer
     the question people actually have — is it on? — and nobody discovers `doctor` until
@@ -438,7 +438,7 @@ def _help(cwd: Path) -> int:
 
 
 def _count(cwd: Path, show_ledger: bool = False) -> int:
-    """`tycho count [--ledger]` — the running tally of what Tycho caught (TYCHO-50/62/131).
+    """`tycho count [--ledger]` — the running tally of what Tycho caught.
 
     Reads only what the hook already wrote (`state.catches.json`), like `status`: no engine,
     no verification. "Caught" is the adverse tally (FAILED + STALE); INDETERMINATE is folded
@@ -466,7 +466,7 @@ def _count(cwd: Path, show_ledger: bool = False) -> int:
 
 def _caught(counts: dict, totals: dict) -> str:
     """"274 runs, 41 blind (15%), 12 caught (9 FAILED, 3 STALE)" — the headline, in the order
-    that matters (TYCHO-58/131). Blind rate leads because it's the one number that does *not*
+    that matters. Blind rate leads because it's the one number that does *not*
     improve as models get better: catch rate decays with agent competence, blind rate is a
     harness/evidence problem, so a repo where catch → 0 and blind holds is telling you where
     the work is. Shown even at 0% for that reason — a promoted metric you can't see isn't one.
@@ -524,7 +524,7 @@ def _ledger_lines(data: dict, repo_runs: int | None = None) -> list[str]:
         "  (the retained turn record — `count` above is the all-time tally)",
     ]
     # The two numbers legitimately differ, and a reader who can't see why will assume one of
-    # them is broken. Name the two real causes rather than quietly printing both (TYCHO-131).
+    # them is broken. Name the two real causes rather than quietly printing both.
     # We do NOT close the gap by writing a record from `tycho verify`: a manual verify audits a
     # whole *session*, so recording it as a turn would invent a turn boundary that never
     # existed — and then double-count, in the one view whose job is measuring check decay.
@@ -608,7 +608,7 @@ def _scope(cwd: Path, action: str, paths: list[str], exclude_globs: list[str] | 
 
 
 def _relay(cwd: Path, on: bool, off: bool) -> int:
-    """`tycho relay [--on|--off]` — the opt-in verdict relay (TYCHO-35). Off by default.
+    """`tycho relay [--on|--off]` — the opt-in verdict relay. Off by default.
 
     With it on, the Stop hook feeds a non-VERIFIED verdict back to Claude or Codex as context,
     so the agent keeps working until VERIFIED — bounded by ``TYCHO_RELAY_MAX`` (default 3) so it
@@ -637,7 +637,7 @@ def _relay(cwd: Path, on: bool, off: bool) -> int:
 def _override(cwd: Path, check: str | None, reason: str | None,
               on: bool, off: bool, veto: bool = False, unveto: bool = False) -> int:
     """`tycho override [--on|--off|--veto|--unveto] | <check> "<reason>"` — the agent verdict
-    override (TYCHO-118). Toggle the capability, record a per-check override (agent), or veto one
+    override. Toggle the capability, record a per-check override (agent), or veto one
     (operator). Off by default; overrides and vetoes are logged to .tycho/overrides.json."""
     from . import state
 
@@ -737,11 +737,11 @@ def _is_homebrew_install() -> bool:
 
 def _upgrade_command(force: bool = False) -> list[str]:
     """The upgrade command for however Tycho was installed — best-effort from the install
-    path. Falls back to pip, which works for a plain `pip install` (TYCHO-10).
+    path. Falls back to pip, which works for a plain `pip install`.
 
     Names the **distribution** (`tycho-cli`), not the import/command name `tycho`: the bare
     `tycho` on PyPI is an unrelated project, so `pip install --upgrade tycho` would pull that,
-    and `pipx/uv upgrade tycho` wouldn't find the tool (installed as `tycho-cli`) — TYCHO-96.
+    and `pipx/uv upgrade tycho` wouldn't find the tool (installed as `tycho-cli`)
     Single-sourced from the same constant the update check queries, so the two can't drift.
 
     `force` reinstalls the latest even across a version pin set at install time (`uv tool
@@ -750,7 +750,7 @@ def _upgrade_command(force: bool = False) -> list[str]:
 
     A standalone binary can't infer its channel from `sys.prefix` (a PyInstaller build looks like
     none of pipx/uv/pip), so its installer announces itself via ``TYCHO_INSTALL``: the npm wrapper
-    (TYCHO-106) sets ``TYCHO_INSTALL=npm`` before exec'ing the binary. Without this the npm binary
+    sets ``TYCHO_INSTALL=npm`` before exec'ing the binary. Without this the npm binary
     would fall through to a `pip install` it can't run (no bundled pip). Homebrew
     installs a bare binary with no wrapper to set that variable, so it's detected from the install
     path instead — ``TYCHO_INSTALL=brew`` still works for anyone who wants to force it.
@@ -779,7 +779,7 @@ def _upgrade_command(force: bool = False) -> list[str]:
 def _update(skip: bool, force: bool = False) -> int:
     """`tycho update` — check the index and upgrade in place, or `--skip` to dismiss the
     notice for this version. `--force` reinstalls the latest across a pinned version (uv/pipx);
-    plain update respects the pin. Offline/failure is reported, never fatal (TYCHO-10/53)."""
+    plain update respects the pin. Offline/failure is reported, never fatal."""
     from . import state
     from . import version as version_mod
 
@@ -829,7 +829,7 @@ def _update(skip: bool, force: bool = False) -> int:
 
 def _spawn_deferred_upgrade(cmd: Sequence[str]) -> None:
     """Windows only: run `cmd` in a detached process that first waits for us to exit, so the
-    running tycho.exe's shim is unlocked before the upgrade copies over it (TYCHO-108 follow-up).
+    running tycho.exe's shim is unlocked before the upgrade copies over it (follow-up).
 
     Waits on THIS PID (deterministic, not a fixed sleep) with a 30s ceiling, then upgrades. Fully
     detached — no console window, survives our exit — so `tycho update` returns immediately and the
@@ -872,7 +872,7 @@ def _warn_if_hook_broken(cwd: Path) -> None:
     A manual `tycho verify` is often the only moment a human looks at Tycho — and the
     verdict it prints would look identical whether the Stop hook has been running all
     week or has been dead since the venv moved. Stderr, so it can't pollute a piped
-    report, and never fatal: a broken hook isn't a failed claim (TYCHO-8).
+    report, and never fatal: a broken hook isn't a failed claim.
     """
     try:
         from . import doctor
@@ -899,7 +899,7 @@ def _offer_first_run(cwd: Path) -> None:
 def _verify(args: argparse.Namespace) -> int:
     from . import state
 
-    # The repo root, not wherever the user happens to stand (TYCHO-79). Everything below is
+    # The repo root, not wherever the user happens to stand. Everything below is
     # keyed to it: harnesses store transcripts under the *project* path, so discovery from a
     # subdirectory finds no session and verify goes INDETERMINATE on a session that exists.
     cwd = state.root_for(Path.cwd())
@@ -943,7 +943,7 @@ def _verify(args: argparse.Namespace) -> int:
     # it (a green [TYCHO] after `tycho verify` → VERIFIED), same channel the hook writes.
     try:
         state.record_run(cwd, harness.name, verdict=verdict.name)
-        state.record_catch(cwd, harness.name, verdict.name, results)  # evidence trail (TYCHO-62)
+        state.record_catch(cwd, harness.name, verdict.name, results)  # evidence trail
     except Exception:
         pass  # a status-bar convenience must never be why verify fails
     print(render(verdict, results, claim=args.claim))

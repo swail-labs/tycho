@@ -46,6 +46,7 @@ import shlex
 from pathlib import Path
 
 from . import config as config_mod
+from . import gitstate
 from . import harness as harness_mod
 from . import opencode as opencode_mod
 from . import state
@@ -94,7 +95,7 @@ _SH_SHEBANG = re.compile(r"^#!.*\b(sh|bash|dash|ash|zsh|ksh)\b")
 _LOCAL_DIR = {"claude": ".claude", "cursor": ".cursor", "codex": ".codex", "opencode": ".opencode"}
 
 # statusLine poll cadence, so the badge settles on the verdict shortly after a turn rather
-# than lagging to the next prompt (TYCHO-59). Claude Code's `refreshInterval` is milliseconds
+# than lagging to the next prompt. Claude Code's `refreshInterval` is milliseconds
 # (contract in docs/harness-support.md); 1s is responsive and the read it triggers is cheap
 # (one small JSON file, no engine). A user who sets their own value keeps it.
 _STATUS_REFRESH_MS = 1000
@@ -130,7 +131,7 @@ def hook_command() -> str:
 
 
 def status_command() -> str:
-    """Same resolution as `hook_command`, for the status bar (TYCHO-39)."""
+    """Same resolution as `hook_command`, for the status bar."""
     return _command_for("statusline")
 
 
@@ -140,7 +141,7 @@ def _command_for(subcommand: str) -> str:
     # hook/status just never fires. Emit forward slashes, per Claude Code's own shipped
     # guidance. A blunt separator swap (not Path.as_posix, which is host-flavored) so it's
     # correct for a Windows path on any host — sys.executable / the console script never
-    # carry a literal backslash on POSIX (TYCHO-43).
+    # carry a literal backslash on POSIX.
     found = shutil.which("tycho")
     program = _quote_program((found or sys.executable).replace("\\", "/"))
     return f"{program} {subcommand}" if found else f"{program} -m tycho.cli {subcommand}"
@@ -153,7 +154,7 @@ def attest_command() -> str:
     `attest.py` owns that entrypoint outright — the hook therefore works the moment it is
     installed, with no CLI surface to keep in sync. The interpreter is the absolute one that
     ran `tycho init`, so the hook resolves without a PATH and without an activated venv,
-    exactly like `hook_command`. Forward slashes for the same Git Bash reason (TYCHO-43) —
+    exactly like `hook_command`. Forward slashes for the same Git Bash reason —
     git runs hooks through its bundled shell on Windows too.
 
     A frozen/standalone build has no importable interpreter (`sys.executable` *is* the tycho
@@ -206,7 +207,7 @@ def _is_tycho_hook(command: object) -> bool:
 
 
 def _is_tycho_status(command: object) -> bool:
-    # `statusline` is canonical; `status` is the pre-TYCHO-108 name. Match both so init
+    # `statusline` is canonical; `status` is the pre-name. Match both so init
     # self-heals an old `tycho status` statusLine into `tycho statusline`, and uninstall
     # removes it either way.
     return _is_ours(command, "statusline") or _is_ours(command, "status")
@@ -234,7 +235,7 @@ def _is_tycho_owned(command: object) -> bool:
 def config_path(repo: Path, name: str) -> Path:
     """Where `name`'s repo-local config lives. One map, so init and doctor can't disagree.
 
-    Resolved from the same root as `.tycho/` (TYCHO-79): a harness config is repo-local in
+    Resolved from the same root as `.tycho/`: a harness config is repo-local in
     exactly the way our state is, and if the two disagree, `doctor` run from a subdirectory
     finds the root's install record, looks for the harness config beside *itself*, and cries
     HOOK BROKEN over a hook that is wired fine.
@@ -416,7 +417,7 @@ def init(
             return [
                 "tycho: a global install is active — the Claude Code hooks already cover this "
                 f"repo ({settings_path(repo, GLOBAL)}).",
-                *filter(None, [_git_hook_line(repo)]),
+                *_git_lines(repo),
                 "  Per-repo anyway: `tycho init --harness claude` (global then defers to it).",
                 "  Remove the global install: `tycho uninstall --global`.",
             ]
@@ -442,12 +443,12 @@ def init(
             lines.append(f"{name}{REFUSED}{exc}")
     installed_any = bool(installed)
     # Did the user bring their own .tycho.toml? Capture it *before* `ensure` creates one, so the
-    # relay setup below can tell "user already configured this" from "we just seeded it" (TYCHO-114).
+    # relay setup below can tell "user already configured this" from "we just seeded it".
     config_existed = config_mod.path(repo).is_file()
-    # Seed a .tycho.toml so scope is discoverable and editable (TYCHO-55) — but only once a
+    # Seed a .tycho.toml so scope is discoverable and editable — but only once a
     # harness actually got wired: no install (declined/refused) means don't leave config
     # behind. Harness-agnostic, empty (behaviour unchanged until a glob is added), never
-    # clobbers an existing one (TYCHO-6). Appended last so a harness line stays lines[0].
+    # clobbers an existing one. Appended last so a harness line stays lines[0].
     if installed_any and config_mod.ensure(repo):
         lines.append(
             f"created {config_mod.CONFIG_NAME} — no scope set yet, so nothing changes until you "
@@ -456,7 +457,7 @@ def init(
     # The commit trailer (strategy §6.6). Gated on a harness actually being wired, same rule
     # as the config seed: no install means leave the user's repo alone, including their hooks.
     if installed_any:
-        lines += filter(None, [_git_hook_line(repo)])
+        lines += _git_lines(repo)
     lines += _offer_relay(
         repo, any(name in installed for name in ("claude", "codex")),
         assume_yes, config_existed, relay_confirm,
@@ -464,22 +465,26 @@ def init(
     return lines
 
 
-def _git_hook_line(repo: Path) -> str | None:
-    """Install the commit-trailer hook, turning a refusal into a status line like any other.
+def _git_lines(repo: Path) -> list[str]:
+    """Everything `init` does to git itself: the commit-trailer hook, and ignoring `.tycho/`.
 
     Wrapped rather than inlined because both `init` paths need it and neither may raise:
     a repo whose `prepare-commit-msg` we won't touch is a *reported* outcome, never an
-    exception that aborts the rest of an install that otherwise succeeded.
+    exception that aborts the rest of an install that otherwise succeeded. The two are
+    independent — a refused hook must not cost you the gitignore entry, or the reverse.
     """
-    try:
-        return _install_git_hook(repo)
-    except ConfigRefused as exc:
-        return f"git{REFUSED}{exc}"
+    lines = []
+    for step in (_install_git_hook, _install_gitignore):
+        try:
+            lines.append(step(repo))
+        except ConfigRefused as exc:
+            lines.append(f"git{REFUSED}{exc}")
+    return [line for line in lines if line]
 
 
 def _ask_relay() -> bool:
     """Prompt (default NO) to enable the verdict relay — it feeds Tycho's verdict into the
-    agent and spends extra tokens, so it must be *explicitly* opted into (TYCHO-35). Only
+    agent and spends extra tokens, so it must be *explicitly* opted into. Only
     'y'/'yes' enables; a bare Enter or EOF leaves it off."""
     try:
         reply = input(
@@ -495,7 +500,7 @@ def _offer_relay(
     repo: Path, relay_harness_installed: bool, assume_yes: bool,
     config_existed: bool, relay_confirm=None,
 ) -> list[str]:
-    """Set up the verdict relay at install time (TYCHO-35/114, Claude and Codex). If the user already
+    """Set up the verdict relay at install time (/114, Claude and Codex). If the user already
     had a `.tycho.toml`, *respect* its relay choice and just say how to change it; otherwise ask
     (default NO) and write the initial state. A scripted install (`--yes`, no TTY) never enables
     it silently. ``relay_confirm`` overrides the prompt for tests. Returns status lines to print."""
@@ -539,11 +544,11 @@ def _ask_setup(harnesses: list[str]) -> bool:
 
 
 def offer_first_run(repo: Path, confirm=None) -> list[str]:
-    """First-run nudge (TYCHO-49): a supported agent is here but Tycho isn't wired.
+    """First-run nudge: a supported agent is here but Tycho isn't wired.
 
     Offer to set it up — interactively when there's a terminal (`Set up Tycho here? [Y/n]` →
     runs init), or by printing the one-liner when there isn't. Fires **once per repo** (a
-    declined offer is never re-nagged) and **never writes config without consent** (TYCHO-6):
+    declined offer is never re-nagged) and **never writes config without consent**:
     the "already offered" marker lives outside the repo, and a decline touches nothing.
     Returns status lines for the caller to print; `[]` when there's nothing to offer.
     """
@@ -684,7 +689,7 @@ def uninstall(repo: Path, only: str | None = None, purge: bool = False) -> list[
     # The commit-trailer hook is harness-agnostic — it's git's, not Claude's — so it comes
     # out on any uninstall of this repo, and stays silent when it was never there.
     try:
-        lines += filter(None, [_uninstall_git_hook(repo)])
+        lines += filter(None, [_uninstall_git_hook(repo), _uninstall_gitignore(repo)])
     except ConfigRefused as exc:
         lines.append(f"git{REFUSED}{exc}")
     if purge:
@@ -821,14 +826,14 @@ def _install_claude(repo: Path, scope: str = REPO) -> str:
     groups, existed = _strip_claude_tycho(hooks.get("Stop") or [])
     groups.append({"hooks": [{"type": "command", "command": command}]})
     hooks["Stop"] = groups
-    # SessionStart: surface a newer-version notice to the user at agent bootup (TYCHO-53).
+    # SessionStart: surface a newer-version notice to the user at agent bootup.
     ss_command = _command_for_scope("session-start", scope)
     ss_groups, ss_existed = _strip_claude_tycho(hooks.get("SessionStart") or [])
     ss_groups.append({"hooks": [{"type": "command", "command": ss_command}]})
     hooks["SessionStart"] = ss_groups
     # UserPromptSubmit: mark a run in flight the moment a prompt is sent, so the badge turns
     # frost-blue "verifying" for the whole turn rather than only flickering at the Stop that
-    # ends it (TYCHO-94). The Stop hook clears the pending beat to the verdict.
+    # ends it. The Stop hook clears the pending beat to the verdict.
     ups_command = _command_for_scope("prompt-submit", scope)
     ups_groups, ups_existed = _strip_claude_tycho(hooks.get("UserPromptSubmit") or [])
     ups_groups.append({"hooks": [{"type": "command", "command": ups_command}]})
@@ -846,8 +851,8 @@ def _install_claude(repo: Path, scope: str = REPO) -> str:
 
 
 # One flat file per subcommand (`.claude/commands/tycho-status.md` → `/tycho-status`) so
-# each shows up with its own description in Claude Code's `/` autocomplete (TYCHO-48).
-# `hide`/`show` are the discoverable face of the `tycho status --off/--on` toggle (TYCHO-47).
+# each shows up with its own description in Claude Code's `/` autocomplete.
+# `hide`/`show` are the discoverable face of the `tycho status --off/--on` toggle.
 _SLASH_SUBCOMMANDS = {
     "status": ("Is Tycho live here, and its last verdict", "statusline"),
     "doctor": ("Full diagnostics: is Tycho installed, current, and firing?", "doctor"),
@@ -881,7 +886,7 @@ def _q(s: str) -> str:
 
 
 def _slash_body(description: str, cli_args: str, argument_hint: str = "") -> str:
-    """A prompt-style command file backed by the real CLI (TYCHO-48).
+    """A prompt-style command file backed by the real CLI.
 
     Prompt-style on purpose: relies only on the stable `.claude/commands/*.md` convention
     and `$ARGUMENTS`, not on `!`-exec / `allowed-tools` glob matching against a quoted
@@ -904,7 +909,7 @@ def _slash_body(description: str, cli_args: str, argument_hint: str = "") -> str
     )
 
 
-# The four scope commands (TYCHO-55). Each is its own `/tycho-scope-*` so it autocompletes
+# The four scope commands. Each is its own `/tycho-scope-*` so it autocompletes
 # with its own description and argument-hint. set/add/remove take path globs, which MUST be
 # passed single-quoted so the shell doesn't expand them before Tycho stores them — the body
 # says so explicitly. Value: (description, cli action, argument-hint).
@@ -1025,7 +1030,7 @@ def _global_statusline(data: dict, path: Path) -> tuple[dict, str]:
 
 
 def _with_statusline(repo: Path, data: dict, path: Path, scope: str = REPO) -> tuple[dict, str]:
-    """Claim Claude Code's status bar, *composing* with any existing one (TYCHO-39/47).
+    """Claim Claude Code's status bar, *composing* with any existing one.
 
     `statusLine` holds exactly one command, and a repo-level line wins over the user-level
     one — so Tycho could silently hide a working feature (a third-party badge, a shell prompt).
@@ -1054,7 +1059,7 @@ def _with_statusline(repo: Path, data: dict, path: Path, scope: str = REPO) -> t
 
     base = current if (ours and isinstance(current, dict)) else {}  # keep our own extra keys only
     merged = {**base, "type": "command", "command": command}
-    # Poll on top of the event-driven render (TYCHO-59). Claude Code renders the badge at the
+    # Poll on top of the event-driven render. Claude Code renders the badge at the
     # Stop event, which fires while our hook is still verifying (entry beat = "pending"), so
     # without polling the badge sits on yellow until the *next* prompt instead of settling on
     # the verdict. A short interval re-renders it a beat later, once the verdict is written.
@@ -1099,7 +1104,7 @@ def _install_cursor(repo: Path) -> str:
 def _install_codex(repo: Path) -> str:
     """Codex shares Claude's hooks shape: `hooks.<Event>` is a list of matcher-groups. Stop
     drives the verdict; SessionStart surfaces the bootup update notice via `systemMessage`
-    (Codex's output wire schema clones Claude's — docs/harness-support.md, TYCHO-72). Both go
+    (Codex's output wire schema clones Claude's — docs/harness-support.md, ). Both go
     in one write so the .bak doesn't churn (same reason `_install_claude` batches its keys).
     """
     path = config_path(repo, "codex")
@@ -1123,7 +1128,7 @@ def _install_codex(repo: Path) -> str:
 def _install_opencode(repo: Path) -> str:
     # OpenCode has no Stop hook; a project plugin drives two Tycho entrypoints off the
     # plugin event bus, each handed the session id on stdin. Both toast their result via
-    # client.tui.showToast — a genuinely user-facing sink (TYCHO-72):
+    # client.tui.showToast — a genuinely user-facing sink:
     #   - session.idle  → `tycho hook`          (the Stop verdict, after every turn)
     #   - session.created → `tycho session-start` (the bootup update-notice, once per session)
     # Tycho rebuilds the transcript from opencode.db — no `opencode export` (which truncates
@@ -1266,6 +1271,87 @@ def _install_git_hook(repo: Path) -> str | None:
     return f"git: {verb} {_GIT_HOOK} hook → {path}"
 
 
+# The line we add, and the comment that makes it ours to remove again. `.tycho/` is
+# machine-local: a per-repo tally, the last-run heartbeat, and `turns.jsonl` — which carries
+# the agent's own prose. None of it is shareable, all of it would dirty every `git status`,
+# and the prose is the part you especially don't want arriving in someone else's PR.
+_IGNORE_ENTRY = ".tycho/"
+_IGNORE_NOTE = "# Tycho's machine-local state (tally, heartbeat, turn record)."
+_IGNORE_BLOCK = f"{_IGNORE_NOTE}\n{_IGNORE_ENTRY}\n"
+
+
+def _already_ignored(repo: Path) -> bool:
+    """Is `.tycho/` already ignored here, by any means?
+
+    Asks git rather than scanning `.gitignore`, because the entry can legitimately live in a
+    parent `.gitignore`, in `.git/info/exclude`, or in the user's global excludesfile — and
+    appending a duplicate to a repo that already ignores it is exactly the kind of unasked-for
+    edit `init` is careful never to make. Any error reads as "not ignored"; the caller's write
+    is idempotent anyway, so a false negative costs one comment line and never a wrong file.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo), "check-ignore", "-q", _IGNORE_ENTRY],
+            capture_output=True,
+        )
+    except (OSError, ValueError):
+        return False
+    return proc.returncode == 0
+
+
+def _install_gitignore(repo: Path) -> str | None:
+    """Add `.tycho/` to the repo's `.gitignore`. None when there is nothing to do.
+
+    Same discipline as every other file `init` touches: idempotent, appended rather than
+    rewritten (every existing line survives, and ours goes at the end where an appended entry
+    belongs), backed up before the change, and never the reason an install fails — a
+    `.gitignore` we can't read or write is left completely alone.
+    """
+    if not gitstate.is_repo(repo) or _already_ignored(repo):
+        return None
+    path = repo / ".gitignore"
+    current = _current_text(path)
+    if current is not None and _IGNORE_ENTRY in current.splitlines():
+        return None  # present but not effective (negated later, say) — not ours to fight
+    if current is None:
+        text = _IGNORE_BLOCK
+    else:
+        tail = "" if current.endswith("\n") else "\n"  # don't glue onto their last line
+        text = f"{current}{tail}\n{_IGNORE_BLOCK}"     # blank line, then ours
+    if not _write_text(path, text, backup=current is not None):
+        return None
+    return f"git: ignored {_IGNORE_ENTRY} → {path}"
+
+
+def _uninstall_gitignore(repo: Path) -> str | None:
+    """Take our two lines back out, leaving every other line exactly as it was."""
+    path = repo / ".gitignore"
+    current = _current_text(path)
+    if not current or _IGNORE_BLOCK not in current:
+        return None
+    # Longest match first, so the blank separator line we added comes out with the block.
+    # Removing the block but leaving its separator would mean `init; uninstall` never restores
+    # the file byte-for-byte — which is the promise uninstall makes everywhere else.
+    for pattern, replacement in ((f"\n\n{_IGNORE_BLOCK}", "\n"), (f"\n{_IGNORE_BLOCK}", "\n"),
+                                 (_IGNORE_BLOCK, "")):
+        if pattern in current:
+            text = current.replace(pattern, replacement, 1)
+            break
+    else:
+        return None
+    if not text.strip():
+        # Nothing survives but whitespace, so the file was ours — same rule as the commit
+        # hook. Leaving an empty `.gitignore` we created is litter, not politeness.
+        try:
+            path.unlink()
+        except OSError:
+            return None
+        return f"git: removed the {path.name} Tycho created → {path}"
+    if not _write_text(path, text, backup=True):
+        return None
+    return f"git: stopped ignoring {_IGNORE_ENTRY} → {path}"
+
+
 def _uninstall_git_hook(repo: Path) -> str | None:
     """Take our block back out. Restores the file byte-for-byte, or deletes it if it was ours.
 
@@ -1394,7 +1480,7 @@ def _uninstall_slash_commands(repo: Path, scope: str = REPO) -> str | None:
 
 
 def _uninstall_codex(repo: Path) -> str:
-    """Remove the Stop and SessionStart hooks (TYCHO-72) — only ours, in one write."""
+    """Remove the Stop and SessionStart hooks — only ours, in one write."""
     path = repo / ".codex" / "hooks.json"
     if not path.exists():
         return "codex: nothing to remove (no config)"

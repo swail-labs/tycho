@@ -1,4 +1,4 @@
-"""TYCHO-6 — `tycho init` against a real developer's config: detect, ask, never clobber.
+"""— `tycho init` against a real developer's config: detect, ask, never clobber.
 
 The happy path lives in test_m4/test_m6. This file is the adversarial half: the states
 a real machine is actually in — a hand-edited config with a trailing comma, a settings
@@ -132,12 +132,12 @@ def test_harness_flag_installs_even_when_not_detected(tmp_path: Path):
     lines = init_mod.init(tmp_path, only="codex", assume_yes=True)
     assert (tmp_path / ".codex" / "hooks.json").exists()
     assert not (tmp_path / CLAUDE).exists()
-    # The codex install line, plus the seeded .tycho.toml line (TYCHO-55).
+    # The codex install line, plus the seeded .tycho.toml line.
     assert len(lines) == 2 and lines[0].startswith("codex")
     assert (tmp_path / ".tycho.toml").exists()
 
 
-# --- command builder: forward slashes for Git Bash (TYCHO-43) ----------------
+# --- command builder: forward slashes for Git Bash ----------------
 
 def test_command_for_forward_slashes_windows_paths(monkeypatch):
     # Claude Code runs hook/statusLine through Git Bash, which eats unquoted backslashes
@@ -153,7 +153,7 @@ def test_command_for_forward_slashes_windows_paths(monkeypatch):
     assert init_mod.status_command() == "C:/Tools/tycho.exe statusline"
 
 
-# --- SessionStart hook (TYCHO-53) --------------------------------------------
+# --- SessionStart hook --------------------------------------------
 
 def test_install_wires_the_sessionstart_hook(tmp_path: Path):
     (tmp_path / ".claude").mkdir()
@@ -174,7 +174,7 @@ def test_uninstall_removes_the_sessionstart_hook(tmp_path: Path):
 
 
 def test_codex_install_and_uninstall_round_trip_the_sessionstart_hook(tmp_path: Path):
-    # Codex gets the bootup-notice hook too (TYCHO-72), stripped alongside Stop in one write.
+    # Codex gets the bootup-notice hook too, stripped alongside Stop in one write.
     codex = tmp_path / ".codex" / "hooks.json"
     codex.parent.mkdir()
     init_mod.init(tmp_path, only="codex", assume_yes=True)
@@ -187,7 +187,7 @@ def test_codex_install_and_uninstall_round_trip_the_sessionstart_hook(tmp_path: 
     assert any("SessionStart" in ln for ln in lines)
 
 
-# --- UserPromptSubmit hook: mid-run frost-blue badge (TYCHO-94) ---------------
+# --- UserPromptSubmit hook: mid-run frost-blue badge ---------------
 
 def test_install_wires_the_userpromptsubmit_hook(tmp_path: Path):
     (tmp_path / ".claude").mkdir()
@@ -220,7 +220,7 @@ def test_install_is_idempotent_for_the_userpromptsubmit_hook(tmp_path: Path):
     assert len(ours) == 1
 
 
-# --- first-run offer (TYCHO-49) ----------------------------------------------
+# --- first-run offer ----------------------------------------------
 
 def test_first_run_offers_and_installs_on_yes(tmp_path: Path):
     (tmp_path / ".claude").mkdir()  # a supported agent is here, but Tycho isn't wired
@@ -439,7 +439,7 @@ def test_config_path_containing_spaces_round_trips(tmp_path: Path):
     assert init_mod._is_tycho_hook(data["hooks"]["Stop"][0]["hooks"][0]["command"])
 
 
-# --- cross-platform hook recognition (TYCHO-41) ------------------------------
+# --- cross-platform hook recognition ------------------------------
 
 def test_is_tycho_hook_recognizes_every_platform_form():
     ok = [
@@ -880,3 +880,92 @@ def test_a_guarded_global_command_is_recognized_on_every_platform_form():
         assert init_mod._is_tycho_hook(command), command
         assert init_mod._is_tycho_owned(command), command
     assert not init_mod._is_tycho_hook(init_mod._GLOBAL_GUARD + "/bin/tychonaut hook")
+
+
+# --- .gitignore for `.tycho/` -----------------------------------
+#
+# `.tycho/` is machine-local: a per-repo tally, the last-run heartbeat, and `turns.jsonl`,
+# which carries the agent's own prose. Left untracked it dirties every `git status`; committed
+# by accident it carries that prose into someone else's PR. Same bar as every other file init
+# touches: append politely, be idempotent, back up, and restore byte-for-byte on uninstall.
+
+
+def _gitignore(repo: Path) -> Path:
+    return repo / ".gitignore"
+
+
+def test_init_ignores_tycho_state(tmp_path: Path):
+    repo = _init_repo(tmp_path)
+    init_mod.init(repo, only="claude", assume_yes=True)
+    assert ".tycho/" in _gitignore(repo).read_text().splitlines()
+
+
+def test_init_keeps_every_existing_gitignore_line(tmp_path: Path):
+    repo = _init_repo(tmp_path)
+    _gitignore(repo).write_text("node_modules/\n*.log\n")
+    init_mod.init(repo, only="claude", assume_yes=True)
+    lines = _gitignore(repo).read_text().splitlines()
+    assert lines[:2] == ["node_modules/", "*.log"]  # theirs first, untouched
+    assert ".tycho/" in lines
+
+
+def test_init_does_not_glue_onto_a_file_with_no_trailing_newline(tmp_path: Path):
+    repo = _init_repo(tmp_path)
+    _gitignore(repo).write_text("*.log")  # no trailing newline
+    init_mod.init(repo, only="claude", assume_yes=True)
+    assert "*.log" in _gitignore(repo).read_text().splitlines()
+
+
+def test_init_is_idempotent_on_the_gitignore(tmp_path: Path):
+    repo = _init_repo(tmp_path)
+    init_mod.init(repo, only="claude", assume_yes=True)
+    first = _gitignore(repo).read_text()
+    init_mod.init(repo, only="claude", assume_yes=True)
+    assert _gitignore(repo).read_text() == first
+    assert first.count(".tycho/") == 1
+
+
+def test_init_says_nothing_when_tycho_is_already_ignored(tmp_path: Path):
+    """Including via a form we didn't write — we ask git, not the file."""
+    repo = _init_repo(tmp_path)
+    _gitignore(repo).write_text(".tycho\n")  # their spelling, no slash
+    lines = init_mod.init(repo, only="claude", assume_yes=True)
+    assert not any("ignored" in ln for ln in lines)
+    assert _gitignore(repo).read_text() == ".tycho\n"  # left exactly alone
+
+
+def test_uninstall_restores_the_gitignore_byte_for_byte(tmp_path: Path):
+    repo = _init_repo(tmp_path)
+    before = "node_modules/\n*.log\n"
+    _gitignore(repo).write_text(before)
+    init_mod.init(repo, only="claude", assume_yes=True)
+    assert _gitignore(repo).read_text() != before
+    init_mod.uninstall(repo, only="claude")
+    assert _gitignore(repo).read_text() == before
+
+
+def test_uninstall_removes_a_gitignore_that_was_only_ours(tmp_path: Path):
+    repo = _init_repo(tmp_path)
+    assert not _gitignore(repo).exists()
+    init_mod.init(repo, only="claude", assume_yes=True)
+    init_mod.uninstall(repo, only="claude")
+    assert not _gitignore(repo).exists()  # litter, not politeness
+
+
+def test_no_gitignore_outside_a_git_repo(tmp_path: Path):
+    (tmp_path / ".claude").mkdir()
+    init_mod.init(tmp_path, only="claude", assume_yes=True)
+    assert not (tmp_path / ".gitignore").exists()
+
+
+def test_a_refused_commit_hook_does_not_cost_the_gitignore_entry(tmp_path: Path, monkeypatch):
+    """The two git steps are independent — one refusing must not skip the other."""
+    repo = _init_repo(tmp_path)
+
+    def _refuse(_repo):
+        raise init_mod.ConfigRefused("nope")
+
+    monkeypatch.setattr(init_mod, "_install_git_hook", _refuse)
+    lines = init_mod.init(repo, only="claude", assume_yes=True)
+    assert any(init_mod.REFUSED in ln for ln in lines)
+    assert ".tycho/" in _gitignore(repo).read_text().splitlines()
