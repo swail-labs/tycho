@@ -8,6 +8,7 @@ is that Tycho either does the right thing or does nothing, and says which.
 
 import json
 import stat
+import subprocess
 import sys
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from tycho import init as init_mod
 
 CLAUDE = Path(".claude/settings.json")
 CURSOR = Path(".cursor/hooks.json")
+HOOK = "prepare-commit-msg"
 
 # The POSIX permission model (an executable/mode bit, dir perms that block a child
 # write) has no faithful Windows equivalent — chmod there only toggles read-only. These
@@ -548,3 +550,333 @@ def test_cli_init_rejects_an_unknown_harness(tmp_path: Path, monkeypatch):
     with pytest.raises(SystemExit) as exc:
         cli.main(["init", "--harness", "emacs"])
     assert exc.value.code == cli.ExitCode.USAGE
+
+
+# --- the commit-trailer git hook (strategy §6.6) ------------------------------
+#
+# `.git/hooks/prepare-commit-msg` is the highest-risk file this module writes: it is not
+# config, it is *code that runs inside every `git commit` the developer makes*. The bar is
+# the same as everywhere else here — merge, back up, refuse what we can't parse — plus one
+# more that only applies to a hook: never, ever fail the commit.
+
+
+def _init_repo(tmp_path: Path) -> Path:
+    repo = tmp_path / "gitrepo"
+    repo.mkdir()
+    subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True, capture_output=True)
+    (repo / ".claude").mkdir()
+    return repo
+
+
+def _hook_path(repo: Path) -> Path:
+    return init_mod.git_hooks_dir(repo) / HOOK
+
+
+def test_no_git_hook_outside_a_git_repo(tmp_path: Path):
+    # A plain directory is not a repo. Say nothing and write nothing, rather than inventing
+    # a `.git/` for a `git init` the user never ran.
+    (tmp_path / ".claude").mkdir()
+    lines = init_mod.init(tmp_path, only="claude", assume_yes=True)
+    assert init_mod.git_hooks_dir(tmp_path) is None
+    assert not any(ln.startswith("git:") for ln in lines)
+
+
+def test_init_installs_the_commit_trailer_hook(tmp_path: Path):
+    repo = _init_repo(tmp_path)
+    lines = init_mod.init(repo, only="claude", assume_yes=True)
+    hook = _hook_path(repo)
+    assert hook.is_file()
+    assert init_mod.attest_command() in hook.read_text()
+    assert any(HOOK in ln for ln in lines)
+
+
+def test_the_hook_block_can_neither_exit_nor_fail(tmp_path: Path):
+    repo = _init_repo(tmp_path)
+    init_mod.init(repo, only="claude", assume_yes=True)
+    block = _hook_path(repo).read_text()
+    assert "|| :" in block, "a non-zero exit must not propagate, even under `set -e`"
+    assert ">/dev/null 2>&1" in block, "output must not leak into the commit flow"
+    body = block.split(init_mod._GIT_BEGIN)[1].split(init_mod._GIT_END)[0]
+    assert "exit" not in body, "our block must never exit — a foreign hook's lines still run"
+
+
+def test_installing_the_hook_twice_does_not_stack_it(tmp_path: Path):
+    repo = _init_repo(tmp_path)
+    init_mod.init(repo, only="claude", assume_yes=True)
+    first = _hook_path(repo).read_text()
+    init_mod.init(repo, only="claude", assume_yes=True)
+    text = _hook_path(repo).read_text()
+    assert text == first
+    assert text.count(init_mod._GIT_BEGIN) == 1
+
+
+def test_a_stale_hook_block_is_refreshed_in_place(tmp_path: Path, monkeypatch):
+    repo = _init_repo(tmp_path)
+    monkeypatch.setattr(init_mod, "attest_command", lambda: "/old/python -m tycho.attest")
+    init_mod.init(repo, only="claude", assume_yes=True)
+    monkeypatch.setattr(init_mod, "attest_command", lambda: "/new/python -m tycho.attest")
+    init_mod.init(repo, only="claude", assume_yes=True)
+    text = _hook_path(repo).read_text()
+    assert "/new/python" in text and "/old/python" not in text
+    assert text.count(init_mod._GIT_BEGIN) == 1
+
+
+def test_an_existing_hook_keeps_every_line_it_had(tmp_path: Path):
+    repo = _init_repo(tmp_path)
+    hook = _hook_path(repo)
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    original = "#!/bin/bash\nset -euo pipefail\necho theirs\nexit 0\n"
+    hook.write_text(original)
+    hook.chmod(0o755)
+
+    init_mod.init(repo, only="claude", assume_yes=True)
+
+    text = hook.read_text()
+    for line in original.splitlines():
+        assert line in text
+    # Ours goes right after the shebang: their `exit 0` would otherwise skip us entirely.
+    assert text.splitlines()[0] == "#!/bin/bash"
+    assert text.index(init_mod._GIT_BEGIN) < text.index("set -euo pipefail")
+    assert hook.with_name(hook.name + ".tycho.bak").read_text() == original
+
+
+def test_a_hook_we_cannot_parse_is_refused_not_clobbered(tmp_path: Path):
+    repo = _init_repo(tmp_path)
+    hook = _hook_path(repo)
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    original = "#!/usr/bin/env python3\nimport sys\nsys.exit(0)\n"
+    hook.write_text(original)
+
+    lines = init_mod.init(repo, only="claude", assume_yes=True)
+
+    assert hook.read_text() == original, "the whole point: still there, byte for byte"
+    assert any(init_mod.REFUSED in ln and ln.startswith("git") for ln in lines)
+    # …and the refusal doesn't take the harness install down with it.
+    assert (repo / CLAUDE).exists()
+
+
+def test_a_hook_with_no_shebang_is_refused(tmp_path: Path):
+    repo = _init_repo(tmp_path)
+    hook = _hook_path(repo)
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    hook.write_text("echo hi\n")
+    lines = init_mod.init(repo, only="claude", assume_yes=True)
+    assert hook.read_text() == "echo hi\n"
+    assert any(init_mod.REFUSED in ln for ln in lines)
+
+
+def test_uninstall_deletes_a_hook_that_was_only_ours(tmp_path: Path):
+    repo = _init_repo(tmp_path)
+    init_mod.init(repo, only="claude", assume_yes=True)
+    assert _hook_path(repo).exists()
+
+    lines = init_mod.uninstall(repo, only="claude")
+
+    assert not _hook_path(repo).exists()
+    assert not _hook_path(repo).with_name(HOOK + ".tycho.bak").exists()  # no litter either
+    assert any(HOOK in ln for ln in lines)
+
+
+def test_uninstall_restores_a_foreign_hook_byte_for_byte(tmp_path: Path):
+    repo = _init_repo(tmp_path)
+    hook = _hook_path(repo)
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    original = "#!/bin/sh\n# my hook\necho theirs\n"
+    hook.write_text(original)
+
+    init_mod.init(repo, only="claude", assume_yes=True)
+    assert hook.read_text() != original
+    init_mod.uninstall(repo, only="claude")
+
+    assert hook.read_text() == original
+
+
+def test_uninstall_is_silent_and_idempotent_when_the_hook_was_never_installed(tmp_path: Path):
+    repo = _init_repo(tmp_path)
+    assert not any("git" in ln for ln in init_mod.uninstall(repo, only="claude"))
+    init_mod.init(repo, only="claude", assume_yes=True)
+    init_mod.uninstall(repo, only="claude")
+    assert not any("git" in ln for ln in init_mod.uninstall(repo, only="claude"))
+
+
+def test_the_hook_lands_where_core_hookspath_points(tmp_path: Path):
+    # A repo that moved its hooks (husky, lefthook) would otherwise get a hook git never
+    # runs — the silently-dead-hook failure, installed on purpose.
+    repo = _init_repo(tmp_path)
+    subprocess.run(["git", "-C", str(repo), "config", "core.hooksPath", "myhooks"],
+                   check=True, capture_output=True)
+    init_mod.init(repo, only="claude", assume_yes=True)
+    assert (repo / "myhooks" / HOOK).is_file()
+    assert not (repo / ".git" / "hooks" / HOOK).exists()
+
+
+# --- the machine-wide install (strategy §6.7) --------------------------------
+#
+# A user-level hook fires in every repo on the machine — a categorically bigger blast radius
+# than one someone opted into per repo. These pin the three things that make that safe:
+# consent, a run-time guard, and an uninstall that puts the file back exactly as it was.
+
+
+@pytest.fixture
+def user_home(tmp_path: Path, monkeypatch) -> Path:
+    """A fake `~/.claude` that exists. Nothing here may touch the developer's real one."""
+    home = tmp_path / "userhome" / ".claude"
+    home.mkdir(parents=True)
+    monkeypatch.setattr(init_mod.harness_mod, "home", lambda name: home.parent / f".{name}")
+    return home
+
+
+def test_global_install_is_never_implied_by_a_plain_init(tmp_path: Path, user_home: Path):
+    (tmp_path / ".claude").mkdir()
+    init_mod.init(tmp_path, only="claude", assume_yes=True)
+    assert not (user_home / "settings.json").exists()
+    assert init_mod.global_installed() is False
+
+
+def test_global_install_asks_first_and_writes_nothing_on_no(user_home: Path):
+    lines = init_mod.init_global(confirm=lambda: False)
+    assert not (user_home / "settings.json").exists()
+    assert "skipped" in lines[0]
+    assert init_mod.global_installed() is False
+
+
+def test_global_install_wires_the_user_level_config_on_yes(user_home: Path):
+    lines = init_mod.init_global(confirm=lambda: True)
+
+    data = json.loads((user_home / "settings.json").read_text())
+    command = data["hooks"]["Stop"][0]["hooks"][0]["command"]
+    assert init_mod._is_tycho_hook(command), "uninstall must recognize what install wrote"
+    assert init_mod.global_installed() is True
+    assert any("uninstall --global" in ln for ln in lines)  # loud about how to undo it
+
+
+def test_the_global_command_refuses_to_fire_outside_a_git_repo(user_home: Path):
+    init_mod.init_global(confirm=lambda: True)
+    command = json.loads((user_home / "settings.json").read_text())["hooks"]["Stop"][0]["hooks"][0]["command"]
+    # Guard 1: no repo, no run — otherwise a user-level hook sprinkles `.tycho/` across
+    # every scratch directory the agent is ever launched from.
+    assert command.startswith("git rev-parse --show-toplevel >/dev/null 2>&1 || exit 0;")
+    # Guard 2: a repo with its own install owns it. This is the anti-double-fire rule, and
+    # it holds for repos wired long before `--global` was ever run.
+    assert "grep -qsE" in command and ".claude/settings.json" in command
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="needs a POSIX /bin/sh to run the guard")
+def test_the_global_guard_actually_behaves_that_way(tmp_path: Path, user_home: Path):
+    """Assert on the *behaviour* of the guard, not just its text — it is a shell fragment,
+    and a shell fragment that looks right and exits 1 is a broken install."""
+    init_mod.init_global(confirm=lambda: True)
+    command = json.loads((user_home / "settings.json").read_text())["hooks"]["Stop"][0]["hooks"][0]["command"]
+    guard = command.split("; ")[0] + "; " + command.split("; ")[1] + "; echo FIRED"
+
+    plain = tmp_path / "not-a-repo"
+    plain.mkdir()
+    out = subprocess.run(["/bin/sh", "-c", guard], cwd=plain, capture_output=True, text=True)
+    assert out.returncode == 0 and "FIRED" not in out.stdout  # quiet, and not an error
+
+    repo = _init_repo(tmp_path)
+    out = subprocess.run(["/bin/sh", "-c", guard], cwd=repo, capture_output=True, text=True)
+    assert out.returncode == 0 and "FIRED" in out.stdout  # a bare repo: global runs
+
+    init_mod.init(repo, only="claude", assume_yes=True)  # …until the repo has its own
+    out = subprocess.run(["/bin/sh", "-c", guard], cwd=repo, capture_output=True, text=True)
+    assert out.returncode == 0 and "FIRED" not in out.stdout, "double fire"
+
+
+def test_a_plain_init_defers_to_an_active_global_install(tmp_path: Path, user_home: Path):
+    init_mod.init_global(confirm=lambda: True)
+    repo = _init_repo(tmp_path)
+
+    lines = init_mod.init(repo, assume_yes=True)
+
+    assert not (repo / CLAUDE).exists(), "two Stop hooks would fire on every turn"
+    assert any("global install is active" in ln for ln in lines)
+    # …but the commit trailer is per-repo and global can't provide it, so it still lands.
+    assert _hook_path(repo).is_file()
+
+
+def test_an_explicit_harness_flag_still_installs_per_repo_under_a_global_install(
+    tmp_path: Path, user_home: Path
+):
+    init_mod.init_global(confirm=lambda: True)
+    repo = _init_repo(tmp_path)
+    init_mod.init(repo, only="claude", assume_yes=True)
+    assert (repo / CLAUDE).exists()  # the user named it; not ours to second-guess
+
+
+def test_global_install_leaves_an_existing_user_statusline_alone(user_home: Path):
+    settings = user_home / "settings.json"
+    settings.write_text(json.dumps({"statusLine": {"type": "command", "command": "mybadge"}}))
+
+    lines = init_mod.init_global(confirm=lambda: True)
+
+    data = json.loads(settings.read_text())
+    assert data["statusLine"]["command"] == "mybadge"  # untouched, not composed with
+    assert any("left your user-level statusLine alone" in ln for ln in lines)
+
+
+def test_global_install_takes_an_empty_statusline_slot(user_home: Path):
+    init_mod.init_global(confirm=lambda: True)
+    data = json.loads((user_home / "settings.json").read_text())
+    assert init_mod._is_tycho_status(data["statusLine"]["command"])
+
+
+def test_global_uninstall_restores_the_user_config_byte_for_byte(user_home: Path):
+    settings = user_home / "settings.json"
+    original = json.dumps({"model": "opus", "hooks": {"Stop": [
+        {"hooks": [{"type": "command", "command": "make lint"}]},
+    ]}}, indent=2) + "\n"
+    settings.write_text(original)
+
+    init_mod.init_global(confirm=lambda: True)
+    assert init_mod.global_installed() is True
+    init_mod.uninstall_global()
+
+    assert settings.read_text() == original
+    assert init_mod.global_installed() is False
+    assert not list(init_mod._commands_dir(Path.cwd(), init_mod.GLOBAL).glob("tycho*.md"))
+    assert init_mod.uninstall_global()  # idempotent, and says something rather than raising
+
+
+def test_global_install_refuses_a_user_config_it_cannot_parse(user_home: Path):
+    settings = user_home / "settings.json"
+    settings.write_text('{"model": "opus",}\n')  # a hand edit, not garbage
+
+    lines = init_mod.init_global(confirm=lambda: True)
+
+    assert init_mod.REFUSED in lines[0]
+    assert settings.read_text() == '{"model": "opus",}\n'
+
+
+def test_global_install_says_so_when_the_harness_is_not_installed(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(init_mod.harness_mod, "home", lambda name: tmp_path / "nowhere")
+    lines = init_mod.init_global(assume_yes=True)
+    assert "isn't installed" in lines[0]
+    assert not (tmp_path / "nowhere").exists()
+
+
+def test_global_install_needs_a_terminal_or_an_explicit_yes(user_home: Path, monkeypatch):
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    lines = init_mod.init_global()
+    assert "--yes" in lines[0]
+    assert not (user_home / "settings.json").exists()
+
+
+def test_the_global_prompt_defaults_to_no(user_home: Path, monkeypatch, capsys):
+    # `[y/N]`, not the per-repo `[Y/n]`: a bare Enter must never install machine-wide.
+    monkeypatch.setattr("builtins.input", lambda prompt: "")
+    assert init_mod._ask_global() is False
+    monkeypatch.setattr("builtins.input", lambda prompt: "y")
+    assert init_mod._ask_global() is True
+    assert str(user_home / "settings.json") in capsys.readouterr().out  # names what it writes
+
+
+def test_a_guarded_global_command_is_recognized_on_every_platform_form():
+    """Uninstall removes exactly what install wrote — including through the guard prefix,
+    and including Windows' `tycho.exe` console script."""
+    for program in ("/home/me/.venv/bin/tycho", r"C:\Users\me\.venv\Scripts\tycho.EXE",
+                    '"C:/Program Files/t/tycho.exe"', "/usr/bin/python -m tycho.cli"):
+        command = init_mod._GLOBAL_GUARD + f"{program} hook"
+        assert init_mod._is_tycho_hook(command), command
+        assert init_mod._is_tycho_owned(command), command
+    assert not init_mod._is_tycho_hook(init_mod._GLOBAL_GUARD + "/bin/tychonaut hook")
