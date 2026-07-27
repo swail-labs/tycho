@@ -17,7 +17,16 @@ from . import config as config_mod
 from . import events as events_mod
 from . import fsstate, gitstate
 from .config import Config
-from .model import CheckResult, CheckStatus, FileEdit, FileState, GitSnapshot, Session, Verdict
+from .model import (
+    Attribution,
+    CheckResult,
+    CheckStatus,
+    FileEdit,
+    FileState,
+    GitSnapshot,
+    Session,
+    Verdict,
+)
 
 
 def gather(
@@ -28,6 +37,7 @@ def gather(
     parse: Callable[[Path], tuple] | None = None,
     turn_start: Callable[[Path], float] | None = None,
     messages: Callable[[Path], tuple] | None = None,
+    attribution: Callable[[Path], Attribution] | None = None,
 ) -> Session:
     """Read the transcript + config + file/git state into the immutable Session.
 
@@ -35,6 +45,9 @@ def gather(
     ``parse`` selects the harness transcript reader (default: Claude Code).
     ``turn_start`` locates the boundary of the turn under review (TYCHO-17); omit it
     to scope the whole transcript, which is what a manual ``tycho verify`` audit wants.
+    ``attribution`` reads who produced the turn (model/agent version/session id) for the
+    per-turn record; it belongs here rather than in the caller precisely because it is
+    transcript data, and this is the only I/O boundary on the way in.
     """
     events = (parse or events_mod.parse)(transcript)
     msgs = (messages or events_mod.assistant_messages)(transcript)
@@ -56,6 +69,7 @@ def gather(
         has_tests=_has_tests(repo),
         turn_start=turn_start(transcript) if turn_start else 0.0,
         messages=msgs,
+        attribution=attribution(transcript) if attribution else Attribution(),
     )
 
 

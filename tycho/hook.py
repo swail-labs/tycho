@@ -14,9 +14,11 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
 
 from . import harness as harness_mod
+from . import record
 from . import state
 from . import verify as engine
 from .model import Verdict
@@ -52,7 +54,7 @@ def run(stdin_text: str) -> dict | None:
     try:
         session = engine.gather(
             Path(transcript), repo, parse=harness.parse, turn_start=harness.turn_start,
-            messages=harness.messages,
+            messages=harness.messages, attribution=harness.attribution,
         )
         if not engine.has_verifiable_activity(session):
             state.record_run(repo, harness.name)  # fired, nothing to report — clear pending (grey)
@@ -67,6 +69,15 @@ def run(stdin_text: str) -> dict | None:
         # And log it to the catch record with its evidence trail, if adverse/intermediate
         # (TYCHO-62). No-op for VERIFIED/UNSUPPORTED; never raises.
         state.record_catch(repo, harness.name, verdict.name, results)
+        # And the durable per-turn record (strategy §9.2) — the substrate `tycho blame`,
+        # the turn digest, the attestation trailer and the decay ledger all read. Written
+        # ONLY here, on the one path that reached a real verdict: every earlier return
+        # above (nothing to verify, no transcript, unreadable session) writes no record, so
+        # the file can never claim a turn was verified when it wasn't. `append` never
+        # raises; `build` is pure, so the clock is read here and passed in.
+        record.append(
+            repo, record.build(session, results, verdict.name, harness.name, time.time())
+        )
     except Exception:
         # broad catch is the correct behavior here — fail open, never
         # break the agent's Stop over an unreadable transcript or git hiccup. Clear the

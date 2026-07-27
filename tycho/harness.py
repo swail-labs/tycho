@@ -21,6 +21,7 @@ from pathlib import Path
 
 from . import events
 from . import opencode as opencode_mod
+from .model import Attribution
 
 
 @dataclass(frozen=True)
@@ -47,6 +48,12 @@ class Harness:
     # transcript we don't (yet) mine for prose supplies no messages, and the check degrades
     # to UNSUPPORTED there rather than guessing.
     messages: Callable[[Path], tuple] = lambda _: ()
+    # Who produced the turn — model id, agent version, session id — for the per-turn record
+    # (record.py). Harness knowledge like every other reader here, so nothing outside this
+    # module needs to know that Claude puts the model on `message.model`. The default
+    # supplies nothing: a harness whose transcript we can't attribute stores nulls in the
+    # record, never a guess (the decay ledger slices catch rate by this field).
+    attribution: Callable[[Path], Attribution] = lambda _: Attribution()
     # How to surface the bootup update-notice (TYCHO-72). This is a *human-only* channel and
     # is deliberately NOT `format_output`: on Cursor `format_output` is model-facing
     # (`followup_message`), and a notice that reaches the model could commission it to go
@@ -190,6 +197,7 @@ CLAUDE = Harness(
     transcript_of=_payload_transcript,
     turn_start=events.turn_start,
     messages=events.assistant_messages,
+    attribution=events.attribution,
 )
 
 CURSOR = Harness(

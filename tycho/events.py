@@ -18,7 +18,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import runlog
-from .model import Event, FileEdit, Message
+from .model import Attribution, Event, FileEdit, Message
 
 _EDIT_TOOLS = frozenset({"Edit", "Write", "MultiEdit"})
 
@@ -82,6 +82,35 @@ def assistant_messages(transcript: Path) -> tuple[Message, ...]:
                 if isinstance(text, str) and text.strip():
                     out.append(Message(ts=ts, text=text))
     return tuple(out)
+
+
+def attribution(transcript: Path) -> Attribution:
+    """Who produced this Claude Code session: model id, harness version, session id.
+
+    Verified against real transcripts under ``~/.claude/projects`` (2026-07): every row
+    carries a top-level ``sessionId`` and the harness ``version`` (e.g. ``"2.1.220"``), and
+    every ``type: "assistant"`` row carries ``message.model`` (e.g. ``"claude-opus-5"``).
+    The *last* value of each wins — a session can be resumed under a newer harness build or
+    a different model, and the turn a Stop is recording is the most recent one.
+
+    Never raises and never guesses: an unreadable transcript, or a field this harness build
+    doesn't write, yields None. The record stores that null rather than a plausible value —
+    the decay ledger is only worth anything if its model attribution is genuinely observed.
+    """
+    model = version = session_id = None
+    try:
+        for entry in _entries(transcript):
+            if isinstance(sid := entry.get("sessionId"), str) and sid:
+                session_id = sid
+            if isinstance(ver := entry.get("version"), str) and ver:
+                version = ver
+            if entry.get("type") == "assistant":
+                candidate = (entry.get("message") or {}).get("model")
+                if isinstance(candidate, str) and candidate:
+                    model = candidate
+    except OSError:
+        return Attribution()
+    return Attribution(model=model, agent_version=version, session_id=session_id)
 
 
 def turn_start(transcript: Path) -> float:

@@ -29,6 +29,39 @@ class CheckStatus(StrEnum):
     INDETERMINATE = "INDETERMINATE"
 
 
+class Stage(StrEnum):
+    """The acceptance ladder (strategy §6.4): how far a turn actually got.
+
+    `attempted -> executed -> artifact_changed -> claim_supported`, lowest to highest. A
+    turn's stage is the highest rung it reached; `record.stage_of` computes it.
+
+    It lives here with `Verdict`/`CheckStatus` rather than in `record.py` because it is a
+    fact *about a turn*, not a storage detail: the digest, `blame`/`log` and the decay
+    ledger all read it, and none of them should have to import the writer to name it.
+    Values are lowercase — they're a progression, not a status; the visual distinction
+    from a shouty `Verdict` is deliberate.
+    """
+
+    ATTEMPTED = "attempted"
+    EXECUTED = "executed"
+    ARTIFACT_CHANGED = "artifact_changed"
+    CLAIM_SUPPORTED = "claim_supported"
+
+
+@dataclass(frozen=True)
+class Attribution:
+    """Who produced a turn: the model, the agent build, and the session it belongs to.
+
+    Every field is None when the harness doesn't expose it. **Never guessed** — the decay
+    ledger slices catch rate by `model`, and a plausible-but-invented model id would make
+    that measurement worse than not having it.
+    """
+
+    model: str | None = None
+    agent_version: str | None = None
+    session_id: str | None = None
+
+
 @dataclass(frozen=True)
 class CheckResult:
     """One check's outcome plus the human-readable evidence for it."""
@@ -126,6 +159,10 @@ class Session:
     # Assistant prose, for tool_call_provenance. Empty for harnesses whose reader doesn't
     # supply it (the check then degrades to UNSUPPORTED there, never a false verdict).
     messages: tuple[Message, ...] = ()
+    # Who produced this turn (model id, agent version, session id), read once in gather()
+    # from the harness's `attribution` reader. Empty for a harness that exposes none of it
+    # — the per-turn record then stores nulls rather than a guess.
+    attribution: Attribution = Attribution()
     # Epoch at which the turn under review began. 0.0 means "the whole transcript is
     # the turn" — the honest default for `tycho verify` (a manual whole-session audit)
     # and for harnesses whose readers already hand us a single turn (Codex) or that
