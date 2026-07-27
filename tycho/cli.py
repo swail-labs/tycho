@@ -137,7 +137,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     toggle = s.add_mutually_exclusive_group()
     toggle.add_argument("--off", action="store_true", help="hide the indicator in this repo (the hook keeps verifying)")
     toggle.add_argument("--on", action="store_true", help="show the indicator again")
-    sub.add_parser("count", help=_COMMANDS["count"])
+    ct = sub.add_parser("count", help=_COMMANDS["count"])
+    ct.add_argument(
+        "--ledger", action="store_true",
+        help="the decay ledger: per-model and per-check catch and blind rates",
+    )
     sh = sub.add_parser("show", help=_COMMANDS["show"])
     sh.add_argument("turn", nargs="?", metavar="TURN",
                     help="a turn id from `tycho log` (default: the most recent turn)")
@@ -208,7 +212,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "help":
         return _help(Path.cwd())
     if args.command == "count":
-        return _count(Path.cwd())
+        return _count(Path.cwd(), show_ledger=args.ledger)
     if args.command == "run":
         return _run(args.cmd)
     if args.command == "exec":
@@ -368,26 +372,40 @@ def _help(cwd: Path) -> int:
     return ExitCode.OK
 
 
-def _count(cwd: Path) -> int:
-    """`tycho count` — the running tally of what Tycho caught (TYCHO-50/62).
+def _count(cwd: Path, show_ledger: bool = False) -> int:
+    """`tycho count [--ledger]` — the running tally of what Tycho caught (TYCHO-50/62/131).
 
     Reads only what the hook already wrote (`state.catches.json`), like `status`: no engine,
-    no verification. "Caught" is the adverse tally (FAILED + STALE); INDETERMINATE is shown
-    apart, because a blind spot isn't a save.
+    no verification. "Caught" is the adverse tally (FAILED + STALE); INDETERMINATE is folded
+    into *blind*, because a blind spot isn't a save.
+
+    `--ledger` adds the decay view underneath (strategy §7): per-model and per-check rates
+    off the turn record. One flag, not a query language — the two questions it answers
+    ("which model is this" and "which check has gone quiet") are read together or not at all,
+    so splitting them into `--by-model`/`--checks` would only ever mean typing both.
     """
     from . import state
 
     here = _caught(state.counts(cwd), state.totals(cwd))
     everywhere = _caught(state.all_time_counts(), state.all_time_totals())
     print(f"this repo: {here} · all-time: {everywhere}")
+    if show_ledger:
+        print()
+        for line in _ledger_lines(state.ledger(cwd)):  # resolves the root itself, like counts()
+            print(line)
     return ExitCode.OK
 
 
 def _caught(counts: dict, totals: dict) -> str:
-    """"12 caught (9 FAILED, 3 STALE) of 274 runs, 41 blind (15%)" — the catches read against
-    their denominator (TYCHO-58). The breakdown and the blind clause each drop when zero; the
-    whole denominator drops for a legacy tally with no run count yet (runs == 0), falling back
-    to the bare "N caught"."""
+    """"274 runs, 41 blind (15%), 12 caught (9 FAILED, 3 STALE)" — the headline, in the order
+    that matters (TYCHO-58/131). Blind rate leads because it's the one number that does *not*
+    improve as models get better: catch rate decays with agent competence, blind rate is a
+    harness/evidence problem, so a repo where catch → 0 and blind holds is telling you where
+    the work is. Shown even at 0% for that reason — a promoted metric you can't see isn't one.
+
+    The FAILED/STALE breakdown drops when zero; the whole denominator drops for a legacy tally
+    with no run count yet (runs == 0), falling back to the bare "N caught".
+    """
     caught = counts["FAILED"] + counts["STALE"]
     breakdown = ", ".join(f"{counts[v]} {v}" for v in ("FAILED", "STALE") if counts[v])
     text = f"{caught} caught ({breakdown})" if caught else "0 caught"
@@ -395,8 +413,76 @@ def _caught(counts: dict, totals: dict) -> str:
     if not runs:  # legacy tally with no denominator, or a genuinely quiet repo
         return text
     blind = totals["blind"]  # INDETERMINATE + UNSUPPORTED — runs Tycho couldn't speak to
-    rate = f", {blind} blind ({round(100 * blind / runs)}%)" if blind else ""
-    return f"{text} of {runs} run{'' if runs == 1 else 's'}{rate}"
+    return (f"{runs} run{'' if runs == 1 else 's'}, "
+            f"{blind} blind ({round(100 * blind / runs)}%), {text}")
+
+
+def _pct(n: int, denominator: int) -> str:
+    """"25%", or "—" when the denominator is zero — an empty denominator is not 0%."""
+    return f"{round(100 * n / denominator)}%" if denominator else "—"
+
+
+def _rate(n: int, denominator: int) -> str:
+    return f"{n} ({_pct(n, denominator)})"
+
+
+def _ledger_lines(data: dict) -> list[str]:
+    """Render `state.ledger` — per-model and per-check catch/blind rates (strategy §7).
+
+    Both denominators are printed in the header rather than left to the reader, because the
+    whole point of the view is deciding what to retire and a rate whose denominator you have
+    to guess is not evidence. Per check: catch rate is over the turns the check could *speak*
+    to, blind rate over every turn it ran in — see `state.ledger`.
+
+    The per-check `by model` column is the retirement signal itself: `caught/spoke` per model
+    id, most-observed first, so a check reading `0/…` across three generations is visible on
+    one line without any cross-model arithmetic.
+    """
+    import time as time_mod
+
+    turns = data["turns"]
+    if not turns:
+        return ["ledger: no turns recorded here yet — the Stop hook writes one per verified "
+                "turn to .tycho/turns.jsonl."]
+    span = " ".join(
+        time_mod.strftime("%Y-%m-%d", time_mod.localtime(ts))
+        for ts in (data["first"], data["last"]) if ts
+    ).split()
+    when = f", {span[0]} → {span[-1]}" if span else ""
+    out = [
+        f"ledger: {turns} turn{'' if turns == 1 else 's'} on the record{when}, "
+        f"{data['blind']} blind ({_pct(data['blind'], turns)}), "
+        f"{data['caught']} caught ({_pct(data['caught'], turns)})",
+        "  (the retained turn record — `count` above is the all-time tally)",
+        "",
+    ]
+    width = max([24, *(len(_model_label(m)) + 2 for m in data["models"])])
+    out.append(f"  {'model':<{width}}{'turns':>6}  {'caught':<11}{'blind':<11}")
+    for m in data["models"]:
+        out.append(f"  {_model_label(m):<{width}}{m['turns']:>6}  "
+                   f"{_rate(m['caught'], m['turns']):<11}{_rate(m['blind'], m['turns']):<11}")
+    if not data["checks"]:
+        return [line.rstrip() for line in out]
+    cwidth = max([24, *(len(c["name"]) + 2 for c in data["checks"])])
+    out += ["", f"  {'check':<{cwidth}}{'spoke':>6}  {'caught':<11}{'blind':<11}by model (caught/spoke)"]
+    for c in data["checks"]:
+        by_model = ", ".join(
+            f"{m['model'] or 'unknown model'} {m['caught']}/{m['spoke']}" for m in c["models"]
+        )
+        out.append(f"  {c['name']:<{cwidth}}{c['spoke']:>6}  "
+                   f"{_rate(c['caught'], c['spoke']):<11}"
+                   f"{_rate(c['blind'], c['spoke'] + c['blind']):<11}{by_model}")
+    out += ["", "  catch rate = caught / turns the check could speak to (PASS|FAIL|STALE).",
+            "  blind rate = blind / every turn it ran in — the metric that doesn't improve "
+            "with model capability.",
+            "  a check at 0% across three model generations is the retirement signal (§7)."]
+    return [line.rstrip() for line in out]
+
+
+def _model_label(m: dict) -> str:
+    """"claude-opus-5 (claude 2.1.220)" — never guessed: an absent id renders as "unknown"."""
+    detail = " ".join(str(x) for x in (m.get("harness"), m.get("agent_version")) if x)
+    return f"{m.get('model') or 'unknown'}{f' ({detail})' if detail else ''}"
 
 
 def _scope(cwd: Path, action: str, paths: list[str], exclude_globs: list[str] | None = None) -> int:

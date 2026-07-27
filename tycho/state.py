@@ -275,6 +275,129 @@ def last_run(repo: Path) -> dict | None:
     return _read_json(dir_for(repo) / _LAST_RUN)
 
 
+# --- the decay ledger (TYCHO-131, strategy §7/§9.5) --------------------------
+#
+# Five of the nine checks are competence-bound and will stop firing as agents get better
+# (§7). That is a maintenance problem only if you can *see* it, so this is the instrument:
+# per-check, per-model catch rate over time, from which a check that reads zero across
+# three model generations gets retired publicly, with evidence, instead of by guess.
+#
+# **Source of truth: `turns.jsonl`, not `catches.json`.** The tally in catches.json is a
+# bag of counters — it has no per-check breakdown and no place to hang attribution without
+# multiplying into (model × check × status) counters that would then be a second, drifting
+# copy of what the turn record already holds exactly. `record.py` already stamps `model`,
+# `agent_version`, `harness` and every per-check status on every line, so the ledger reads
+# that and catches.json keeps doing the one thing it does well: an exact, unbounded,
+# machine-wide *tally*. The two answer different questions and the ledger says so out loud
+# (`turns` is the retained record; `runs` in `count` is all-time), rather than pretending a
+# capped file and an uncapped counter are the same number.
+#
+# Consequence, stated rather than hidden: the ledger's window is `record.max_records()`
+# turns (default 5000), and a legacy install with a tally but no turn record has an empty
+# ledger. Both are honest — "we don't have that evidence" is the same posture as
+# INDETERMINATE — and both are visible in the header the CLI prints.
+#
+# **Denominators.** Two rates, never one without the other, because they answer different
+# questions and only one of them is a competence signal:
+#
+#   catch rate = caught / spoke   — of the turns where the check had enough evidence to
+#                                   reach a verdict (PASS/FAIL/STALE), how often did it
+#                                   find something. Excludes turns the check couldn't
+#                                   speak to, because counting those as "didn't catch"
+#                                   flatters a check that is merely never applicable.
+#   blind rate = blind / seen     — of every turn the check ran in, how often it had
+#                                   nothing to say (UNSUPPORTED/INDETERMINATE). This is
+#                                   the harness/evidence metric §7 promotes: it does not
+#                                   improve with model capability.
+#
+# `seen = spoke + blind`, so the two denominators are stated, not inferred, and a check
+# that is UNSUPPORTED on 90% of turns shows a small `spoke` next to a 90% blind rate —
+# you cannot read one rate without the other being on the same line.
+#
+# Run level uses the same words for the same things: a turn is `caught` when its verdict
+# is FAILED/STALE and `blind` when it is INDETERMINATE/UNSUPPORTED, over all recorded
+# turns. Deliberately the same definitions `counts`/`totals` use above, so `tycho count`
+# and the ledger never disagree about what a catch is — only about the window.
+
+_CHECK_CAUGHT = ("FAIL", "STALE")  # per-check statuses that caught something
+_CHECK_BLIND = ("UNSUPPORTED", "INDETERMINATE")  # per-check statuses with nothing to say
+_RUN_CAUGHT = ("FAILED", "STALE")  # verdicts that count as a catch (matches `_caught` in cli)
+
+
+def ledger(repo: Path) -> dict:
+    """Per-check and per-model catch/blind rates over `repo`'s retained turn record.
+
+    Returns (all counts are turns)::
+
+        {"turns": int, "first": float|None, "last": float|None,
+         "caught": int, "blind": int,
+         "models": [{"model", "agent_version", "harness", "turns", "caught", "blind"}, …],
+         "checks": [{"name", "spoke", "caught", "blind",
+                     "models": [{"model", "spoke", "caught"}, …]}, …]}
+
+    `model`/`agent_version` are None when the harness didn't expose them — never guessed,
+    never backfilled (see `model.Attribution`); a null model is its own bucket rather than
+    being folded into a neighbour, because "we don't know which model did this" is a fact
+    about the evidence and merging it would corrupt exactly the measurement this exists for.
+
+    Sorted for a stable render: models by turn count then id, checks by name. Never raises
+    and never opens a socket — this reads one local file, like everything else here.
+    """
+    from . import record  # lazy: record imports state, so a module-level import would cycle
+
+    turns = caught = blind = 0
+    first = last = None
+    per_model: dict[tuple, dict] = {}
+    per_check: dict[str, dict] = {}
+    for row in record.iter_records(repo):
+        verdict = row.get("verdict")
+        if not isinstance(verdict, str):
+            continue  # not a turn record we can read — skip it, same rule as a corrupt line
+        turns += 1
+        is_caught = verdict in _RUN_CAUGHT
+        is_blind = verdict in _BLIND
+        caught += is_caught
+        blind += is_blind
+        for stamp in ("started_at", "ended_at"):
+            ts = row.get(stamp)
+            if isinstance(ts, (int, float)) and not isinstance(ts, bool):
+                first = ts if first is None else min(first, ts)
+                last = ts if last is None else max(last, ts)
+        key = (row.get("model"), row.get("agent_version"), row.get("harness"))
+        bucket = per_model.setdefault(
+            key,
+            {"model": key[0], "agent_version": key[1], "harness": key[2],
+             "turns": 0, "caught": 0, "blind": 0},
+        )
+        bucket["turns"] += 1
+        bucket["caught"] += is_caught
+        bucket["blind"] += is_blind
+        for entry in row.get("checks") if isinstance(row.get("checks"), list) else ():
+            if not isinstance(entry, dict) or not isinstance(entry.get("name"), str):
+                continue
+            status = entry.get("status")
+            check = per_check.setdefault(
+                entry["name"], {"name": entry["name"], "spoke": 0, "caught": 0, "blind": 0,
+                                "models": {}},
+            )
+            spoke = status not in _CHECK_BLIND
+            check["spoke"] += spoke
+            check["caught"] += status in _CHECK_CAUGHT
+            check["blind"] += status in _CHECK_BLIND
+            slice_ = check["models"].setdefault(key[0], {"model": key[0], "spoke": 0, "caught": 0})
+            slice_["spoke"] += spoke
+            slice_["caught"] += status in _CHECK_CAUGHT
+    return {
+        "turns": turns, "first": first, "last": last, "caught": caught, "blind": blind,
+        "models": sorted(per_model.values(), key=lambda m: (-m["turns"], m["model"] or "")),
+        "checks": [
+            {**c, "models": sorted(c["models"].values(),
+                                   key=lambda m: (-m["spoke"], m["model"] or ""))}
+            for c in sorted(per_check.values(), key=lambda c: c["name"])
+        ],
+    }
+
+
 # --- update check cache (TYCHO-53) ------------------------------------------
 #
 # Machine-wide (one check serves every repo): the newest version we saw, when we last
