@@ -22,7 +22,12 @@ Both run in CI (Linux, Python 3.11 / 3.12 / 3.13) on every pull request.
 ## Design invariants (don't break these)
 
 - **Never blocks.** The Stop hook (`hook.py`) always exits 0 and fails open (returns `None`)
-  on any error. Only `tycho verify` exits 1 (on FAILED), so CI can gate on it.
+  on any error — so does the `prepare-commit-msg` trailer hook, which can never fail a commit.
+  Only the manual commands exit non-zero, so CI can gate on them: `tycho verify` (1 on FAILED,
+  3 on STALE), `tycho review --exit-code` (6), `tycho attest --verify` (7). Exit codes are a
+  public contract — see `cli.ExitCode`; don't renumber them.
+- **No LLM, no network in the trust path.** Only code renders a verdict. There is no advisory
+  LLM lane and no pytest marker for one; `tests/test_invariants.py` is what keeps this true.
 - **Harness-agnostic engine.** Checks run on a frozen, normalized `Session` and never learn
   which harness produced it. All harness-specific code lives in `harness.py` (the adapter)
   plus one `parse_*` reader in `events.py`.
