@@ -418,7 +418,11 @@ def touching(repo: Path, path: str, limit: int | None = None) -> list[dict]:
     """
     if limit is not None and limit <= 0:
         return []
-    needle = str(path or "").replace("\\", "/").lstrip("./")
+    # `removeprefix`, never `lstrip("./")`: lstrip strips a character *set*, so it eats the
+    # leading dot of every dotfile — `.github/workflows/ci.yml` became `github/workflows/…`
+    # and matched nothing, making dotfiles silently unblameable. A false "no turn touched
+    # this" is the one answer a tool built on not lying must never give.
+    needle = str(path or "").replace("\\", "/").removeprefix("./")
     if not needle:
         return []
     hits: deque[dict] = deque(maxlen=limit)

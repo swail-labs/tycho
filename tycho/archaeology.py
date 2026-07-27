@@ -165,38 +165,16 @@ def blame(repo: Path, target: str, limit: int = 10, cwd: Path | None = None,
 
 
 def _touching(repo: Path, path: str, limit: int) -> list[dict]:
-    """Records whose `files` include `path`, newest first — same contract as
-    `record.touching`, same bounded streaming (one `deque` of `limit` records over a
-    generator, so a 5000-turn file costs ten records of memory).
+    """Records whose `files` include `path`, newest first.
 
-    Not `record.touching` itself because that one normalizes with `lstrip("./")`, which
-    strips a *set* of characters rather than a prefix: `.github/workflows/ci.yml` becomes
-    `github/workflows/ci.yml` and then matches nothing, so no dotfile is blameable. Reported
-    upstream; this is a five-line workaround rather than an edit to a module another surface
-    owns. ponytail: delete this and call `record.touching` again once the lstrip is a
-    `removeprefix`.
-
-    An exact repo-relative path is the unambiguous form; a bare basename also matches the
-    file in any directory, because that is what someone types mid-debug.
+    A thin pass-through to `record.touching` — kept as a seam only so the dotfile
+    regression that once lived here has somewhere to be pinned (see
+    `test_blame_finds_a_dotfile_path`). The normalization bug it used to work around is
+    fixed at the source now: `record.touching` uses `removeprefix("./")`, not `lstrip`.
     """
-    needle = str(path or "").replace("\\", "/").removeprefix("./")
-    if not needle or limit <= 0:
+    if limit <= 0:
         return []
-    hits: deque[dict] = deque(
-        (r for r in record_mod.iter_records(repo) if _mentions(r, needle)), maxlen=limit
-    )
-    return list(reversed(hits))
-
-
-def _mentions(record: dict, needle: str) -> bool:
-    files = record.get("files")
-    if not isinstance(files, list):
-        return False
-    for entry in files:
-        stored = entry.get("path") if isinstance(entry, dict) else None
-        if isinstance(stored, str) and (stored == needle or stored.endswith("/" + needle)):
-            return True
-    return False
+    return record_mod.touching(repo, path, limit=limit)
 
 
 def log(repo: Path, limit: int = 20, verdict: str | None = None,
