@@ -17,6 +17,15 @@ import pytest
 def _isolate_tycho_home(tmp_path_factory, monkeypatch):
     monkeypatch.setenv("TYCHO_HOME", str(tmp_path_factory.mktemp("tycho-home")))
     monkeypatch.setenv("TYCHO_NO_UPDATE_CHECK", "1")
+    # And off the developer's real `~/.claude`. `init.global_installed()` reads the
+    # user-level Claude config to decide whether a machine-wide install is already
+    # covering this repo, so without this a developer who has actually run
+    # `tycho init --global` would see unrelated tests change behaviour — the suite would
+    # pass or fail depending on the machine it ran on, which is worse than either.
+    # `harness.home` reads this var first, so one override redirects detection and
+    # installation together. Tests that exercise the `Path.home()` fallback itself delete
+    # it (see test_m4.py) — that still works, because deleting beats setting.
+    monkeypatch.setenv("TYCHO_CLAUDE_HOME", str(tmp_path_factory.mktemp("claude-home")))
 
 
 def pytest_terminal_summary(terminalreporter):

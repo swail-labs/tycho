@@ -557,6 +557,18 @@ def test_git_state_counts_uncommitted_with_relative_paths():
 CWD = Path("/proj/app")
 
 
+def _home_is(tmp_path: Path, monkeypatch) -> None:
+    """Point harness discovery at `tmp_path` through the real `Path.home()` fallback.
+
+    conftest sets `TYCHO_CLAUDE_HOME` for every test, so the suite never reads a developer's
+    real `~/.claude` (`init.global_installed()` does). These tests are about the fallback
+    *underneath* that override, so they drop it — deleting beats setting, and doing it here
+    keeps the reason in one place instead of four.
+    """
+    monkeypatch.delenv("TYCHO_CLAUDE_HOME", raising=False)
+    monkeypatch.setattr(harness.Path, "home", lambda: tmp_path)
+
+
 def _make_claude(home: Path, mtime: float) -> Path:
     d = home / ".claude" / "projects" / "-proj-app"
     d.mkdir(parents=True)
@@ -577,7 +589,7 @@ def _make_cursor(home: Path, mtime: float) -> Path:
 
 def test_discover_skips_disabled_harnesses(tmp_path, monkeypatch):
     # Cursor is newer, but only Claude is enabled in usage now — discovery skips the rest.
-    monkeypatch.setattr(harness.Path, "home", lambda: tmp_path)
+    _home_is(tmp_path, monkeypatch)
     _make_claude(tmp_path, mtime=100.0)
     _make_cursor(tmp_path, mtime=200.0)  # newer, but disabled
     path, h = harness.discover(CWD)
@@ -585,7 +597,7 @@ def test_discover_skips_disabled_harnesses(tmp_path, monkeypatch):
 
 
 def test_discover_claude_when_it_is_newer(tmp_path, monkeypatch):
-    monkeypatch.setattr(harness.Path, "home", lambda: tmp_path)
+    _home_is(tmp_path, monkeypatch)
     _make_claude(tmp_path, mtime=300.0)  # newer
     _make_cursor(tmp_path, mtime=200.0)
     path, h = harness.discover(CWD)
@@ -593,7 +605,7 @@ def test_discover_claude_when_it_is_newer(tmp_path, monkeypatch):
 
 
 def test_discover_only_filter_forces_harness(tmp_path, monkeypatch):
-    monkeypatch.setattr(harness.Path, "home", lambda: tmp_path)
+    _home_is(tmp_path, monkeypatch)
     _make_claude(tmp_path, mtime=100.0)
     _make_cursor(tmp_path, mtime=999.0)  # newer, but filtered out
     path, h = harness.discover(CWD, only="claude")
@@ -601,7 +613,7 @@ def test_discover_only_filter_forces_harness(tmp_path, monkeypatch):
 
 
 def test_discover_none_when_nothing_found(tmp_path, monkeypatch):
-    monkeypatch.setattr(harness.Path, "home", lambda: tmp_path)
+    _home_is(tmp_path, monkeypatch)
     assert harness.discover(CWD) == (None, None)
 
 
