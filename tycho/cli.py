@@ -44,7 +44,13 @@ _COMMANDS = {
     "uninstall": "remove Tycho's hooks (leaves your other hooks alone)",
     "statusline": "one line for a harness status bar: is Tycho live here, and the last verdict",
     "count": "how many problems Tycho has caught — in this repo, and all-time",
+    "show": "the full digest of a turn: what changed, what ran, what's still unverified",
+    "blame": "which turn touched this file, what the agent claimed, and what backed it",
+    "log": "the recorded history of what agents did in this repo, newest first",
+    "review": "risk-focus the diff: which changes no test covered and no command exercised",
+    "attest": "print the Tycho-Attestation trailer for the latest recorded turn",
     "run": "run a command so its true exit code is seen even when wrapped/piped: tycho run -- pytest",
+    "exec": "run a command and put its real output and exit status on the record",
     "scope": "show or edit which files the agent may edit (the scope_drift allowlist)",
     "relay": "let Claude/Codex see its verdict and keep working until VERIFIED (bounded, off by default)",
     "override": "record a per-check verdict override when the relay is on (agent-authorized, logged, off by default)",
@@ -132,11 +138,28 @@ def main(argv: Sequence[str] | None = None) -> int:
     toggle.add_argument("--off", action="store_true", help="hide the indicator in this repo (the hook keeps verifying)")
     toggle.add_argument("--on", action="store_true", help="show the indicator again")
     sub.add_parser("count", help=_COMMANDS["count"])
+    sh = sub.add_parser("show", help=_COMMANDS["show"])
+    sh.add_argument("turn", nargs="?", metavar="TURN",
+                    help="a turn id from `tycho log` (default: the most recent turn)")
+    bl = sub.add_parser("blame", help=_COMMANDS["blame"])
+    bl.add_argument("target", metavar="PATH[:LINE]", help="the file (optionally :line) to blame")
+    bl.add_argument("-n", "--limit", type=int, default=10, help="how many turns to show (default 10)")
+    lg = sub.add_parser("log", help=_COMMANDS["log"])
+    lg.add_argument("-n", "--limit", type=int, default=20, help="how many turns to show (default 20)")
+    rv = sub.add_parser("review", help=_COMMANDS["review"])
+    rv.add_argument("--since", default="HEAD", help="git ref to diff from (default: HEAD)")
+    sub.add_parser("attest", help=_COMMANDS["attest"])
     r = sub.add_parser("run", help=_COMMANDS["run"])
     r.add_argument(
         "cmd",
         nargs=argparse.REMAINDER,
         help="the command to run, e.g. tycho run -- pytest -q (the -- is optional)",
+    )
+    ex = sub.add_parser("exec", help=_COMMANDS["exec"])
+    ex.add_argument(
+        "cmd",
+        nargs=argparse.REMAINDER,
+        help="the command to run and record, e.g. tycho exec -- pytest -q (the -- is optional)",
     )
     sc = sub.add_parser("scope", help=_COMMANDS["scope"])
     sc.add_argument("action", choices=("list", "set", "add", "remove"), help="list, or set/add/remove globs")
@@ -188,6 +211,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _count(Path.cwd())
     if args.command == "run":
         return _run(args.cmd)
+    if args.command == "exec":
+        from . import command as command_mod
+        from . import state
+
+        return command_mod.execute(state.root_for(Path.cwd()), args.cmd)
+    if args.command == "show":
+        return _show(Path.cwd(), args.turn)
+    if args.command == "blame":
+        return _archaeology("blame", Path.cwd(), args.target, args.limit)
+    if args.command == "log":
+        return _archaeology("log", Path.cwd(), None, args.limit)
+    if args.command == "review":
+        return _review(Path.cwd(), args.since)
+    if args.command == "attest":
+        return _attest(Path.cwd())
     if args.command == "scope":
         return _scope(Path.cwd(), args.action, args.paths, args.exclude)
     if args.command == "update":
@@ -256,6 +294,59 @@ def _run(argv: list[str]) -> int:
         return ExitCode.USAGE
     except KeyboardInterrupt:
         return 130  # conventional 128+SIGINT, matching what a bare run would return
+
+
+def _show(cwd: Path, turn: str | None) -> int:
+    """`tycho show [TURN]` — the full digest of a turn (strategy §9.1). The unprompted
+    digest is deliberately rare; this is the always-available on-demand view."""
+    from . import digest as digest_mod
+    from . import record as record_mod
+    from . import state
+
+    repo = state.root_for(cwd)
+    records = record_mod.read(repo, limit=1) if not turn else [
+        r for r in record_mod.read(repo) if r.get("id", "").startswith(turn)
+    ]
+    if not records:
+        print("tycho: no turn recorded yet — the Stop hook writes one per verified turn.")
+        return ExitCode.OK
+    print(digest_mod.render(records[0]))
+    return ExitCode.OK
+
+
+def _archaeology(action: str, cwd: Path, target: str | None, limit: int) -> int:
+    """`tycho blame <path>` / `tycho log` — what the agent did here (strategy §9.3)."""
+    from . import archaeology
+    from . import state
+
+    repo = state.root_for(cwd)
+    lines = archaeology.blame(repo, target, limit) if action == "blame" else archaeology.log(repo, limit)
+    for line in lines:
+        print(line)
+    return ExitCode.OK
+
+
+def _review(cwd: Path, since: str) -> int:
+    """`tycho review` — which changes nothing exercised (strategy §9.4)."""
+    from . import review as review_mod
+    from . import state
+
+    for line in review_mod.review(state.root_for(cwd), since):
+        print(line)
+    return ExitCode.OK
+
+
+def _attest(cwd: Path) -> int:
+    """`tycho attest` — the commit trailer for the latest recorded turn (strategy §9.7)."""
+    from . import attest as attest_mod
+    from . import state
+
+    line = attest_mod.trailer(state.root_for(cwd))
+    if line is None:
+        print("tycho: no turn recorded yet — nothing to attest.")
+        return ExitCode.OK
+    print(line)
+    return ExitCode.OK
 
 
 def _help(cwd: Path) -> int:
