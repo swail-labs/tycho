@@ -30,6 +30,11 @@ class ExitCode(IntEnum):
     STALE = 3  # edits landed after the last passing test run
     INTERNAL = 4  # Tycho itself could not complete (bad transcript/config/git)
     UNHEALTHY = 5  # `doctor`: Tycho is installed here but not working (broken/outdated)
+    # `review --exit-code` only. Deliberately its own code rather than reusing FAILED: a hunk
+    # nothing exercised is a *coverage* claim, not a proof that anything is wrong, and a gate
+    # that can't tell those apart would fail honest work.
+    UNEXERCISED = 6
+    MISMATCH = 7  # `attest --verify`: the trailer does not match the record
 
 
 _VERDICT_EXIT = {Verdict.FAILED: ExitCode.FAILED, Verdict.STALE: ExitCode.STALE}
@@ -118,6 +123,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="install only this harness, detected or not (default: every one detected here)",
     )
     i.add_argument("--yes", action="store_true", help="skip the prompts (for scripts and CI)")
+    i.add_argument(
+        "--global", dest="globally", action="store_true",
+        help="install for EVERY repo on this machine (opt-in, defers to any per-repo install)",
+    )
     sub.add_parser("doctor", help=_COMMANDS["doctor"])
     u = sub.add_parser("uninstall", help=_COMMANDS["uninstall"])
     u.add_argument(
@@ -129,6 +138,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--purge",
         action="store_true",
         help="also delete repo-local Tycho state (.tycho/) and config (.tycho.toml)",
+    )
+    u.add_argument(
+        "--global", dest="globally", action="store_true",
+        help="remove the machine-wide install instead of this repo's",
     )
     # `status` stays as a hidden back-compat alias: deployed statusLine entries and slash
     # commands (/tycho-status, --off/--on) still say `status`, and this tool ships to installs
@@ -150,9 +163,29 @@ def main(argv: Sequence[str] | None = None) -> int:
     bl.add_argument("-n", "--limit", type=int, default=10, help="how many turns to show (default 10)")
     lg = sub.add_parser("log", help=_COMMANDS["log"])
     lg.add_argument("-n", "--limit", type=int, default=20, help="how many turns to show (default 20)")
+    # Both filter *inside* the bounded stream, so `--verdict FAILED -n 20` gives twenty
+    # failures rather than the failures among the last twenty turns.
+    lg.add_argument("--verdict", help="only turns with this verdict, e.g. FAILED")
+    lg.add_argument("--since", metavar="YYYY-MM-DD", help="only turns on or after this date")
     rv = sub.add_parser("review", help=_COMMANDS["review"])
     rv.add_argument("--since", default="HEAD", help="git ref to diff from (default: HEAD)")
-    sub.add_parser("attest", help=_COMMANDS["attest"])
+    # Advisory by default (§6 demotes PR-gating). This is the opt-in for a caller that
+    # genuinely wants a gate — a distinct code, never reusing verify's FAILED/STALE, because
+    # "nothing exercised this" is a coverage claim, not a proof that anything is wrong.
+    # Gates on UNEXERCISED/NO TEST RUN only — never on UNRECORDED, which just means no turn
+    # Tycho saw touched the file (human-written, or predating the install). Gating on that
+    # would fail every honest hand-written commit.
+    rv.add_argument(
+        "--exit-code", action="store_true",
+        help=f"exit {int(ExitCode.UNEXERCISED)} if a recorded change had no command run after "
+             f"it (default: always 0 — review is advisory)",
+    )
+    at = sub.add_parser("attest", help=_COMMANDS["attest"])
+    at_mode = at.add_mutually_exclusive_group()
+    at_mode.add_argument("--verify", nargs="?", const="HEAD", metavar="REF",
+                         help="check a commit's trailer against the record (default: HEAD)")
+    at_mode.add_argument("--write", nargs="+", metavar=("MSGFILE", "SOURCE"),
+                         help="prepare-commit-msg entrypoint (internal): add the trailer to MSGFILE")
     r = sub.add_parser("run", help=_COMMANDS["run"])
     r.add_argument(
         "cmd",
@@ -225,11 +258,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "blame":
         return _archaeology("blame", Path.cwd(), args.target, args.limit)
     if args.command == "log":
-        return _archaeology("log", Path.cwd(), None, args.limit)
+        return _archaeology("log", Path.cwd(), None, args.limit,
+                            verdict=args.verdict, since=args.since)
     if args.command == "review":
-        return _review(Path.cwd(), args.since)
+        return _review(Path.cwd(), args.since, exit_code=args.exit_code)
     if args.command == "attest":
-        return _attest(Path.cwd())
+        return _attest(Path.cwd(), verify=args.verify, write=args.write)
     if args.command == "scope":
         return _scope(Path.cwd(), args.action, args.paths, args.exclude)
     if args.command == "update":
@@ -258,7 +292,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "init":
         from . import init as init_mod
 
-        rc = _install(init_mod.init(Path.cwd(), only=args.harness, assume_yes=args.yes))
+        rc = _install(
+            init_mod.init_global(assume_yes=args.yes) if args.globally
+            else init_mod.init(Path.cwd(), only=args.harness, assume_yes=args.yes)
+        )
         _print_update_notice()  # tell them if a newer Tycho exists (TYCHO-53)
         return rc
     if args.command == "doctor":
@@ -271,7 +308,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "uninstall":
         from . import init as init_mod
 
-        return _install(init_mod.uninstall(Path.cwd(), only=args.harness, purge=args.purge))
+        return _install(
+            init_mod.uninstall_global() if args.globally
+            else init_mod.uninstall(Path.cwd(), only=args.harness, purge=args.purge)
+        )
     if args.command == "verify":
         return _verify(args)
     parser.error(f"unknown command: {args.command}")  # argparse exits; unreachable below
@@ -318,36 +358,61 @@ def _show(cwd: Path, turn: str | None) -> int:
     return ExitCode.OK
 
 
-def _archaeology(action: str, cwd: Path, target: str | None, limit: int) -> int:
+def _archaeology(action: str, cwd: Path, target: str | None, limit: int,
+                 verdict: str | None = None, since: str | None = None) -> int:
     """`tycho blame <path>` / `tycho log` — what the agent did here (strategy §9.3)."""
     from . import archaeology
     from . import state
 
     repo = state.root_for(cwd)
-    lines = archaeology.blame(repo, target, limit) if action == "blame" else archaeology.log(repo, limit)
+    lines = (
+        archaeology.blame(repo, target, limit) if action == "blame"
+        else archaeology.log(repo, limit, verdict=verdict, since=since)
+    )
     for line in lines:
         print(line)
     return ExitCode.OK
 
 
-def _review(cwd: Path, since: str) -> int:
-    """`tycho review` — which changes nothing exercised (strategy §9.4)."""
+def _review(cwd: Path, since: str, exit_code: bool = False) -> int:
+    """`tycho review` — which changes nothing exercised (strategy §9.4).
+
+    Advisory by default: it ranks and prints, and exits OK whatever it found. `--exit-code`
+    is the opt-in gate, and it gets its own `UNEXERCISED` code rather than `FAILED` — a hunk
+    nothing exercised is a coverage claim, not a proof that the code is wrong.
+    """
     from . import review as review_mod
     from . import state
 
-    for line in review_mod.review(state.root_for(cwd), since):
+    lines, findings = review_mod.inspect(state.root_for(cwd), since)
+    for line in lines:
         print(line)
-    return ExitCode.OK
+    if not exit_code:
+        return ExitCode.OK
+    return ExitCode.UNEXERCISED if review_mod.unexercised(findings) else ExitCode.OK
 
 
-def _attest(cwd: Path) -> int:
-    """`tycho attest` — the commit trailer for the latest recorded turn (strategy §9.7)."""
+def _attest(cwd: Path, verify: str | None = None, write: list[str] | None = None) -> int:
+    """`tycho attest [--verify REF | --write MSGFILE [SOURCE]]` (strategy §9.7).
+
+    Bare: print the trailer for what's currently staged. `--verify`: check a commit's trailer
+    against the record — exit `MISMATCH` only on a genuine mismatch, never on "cannot tell",
+    because a pruned record must not read as a forged one. `--write` is the
+    prepare-commit-msg entrypoint, and like the hook it can never fail a commit.
+    """
     from . import attest as attest_mod
     from . import state
 
-    line = attest_mod.trailer(state.root_for(cwd))
+    repo = state.root_for(cwd)
+    if write:
+        return attest_mod.main(write)
+    if verify:
+        ok, text = attest_mod.verify(repo, verify)
+        print(text)
+        return ExitCode.MISMATCH if ok is False else ExitCode.OK
+    line = attest_mod.trailer(repo)
     if line is None:
-        print("tycho: no turn recorded yet — nothing to attest.")
+        print("tycho: nothing staged that a recorded turn touched — nothing to attest.")
         return ExitCode.OK
     print(line)
     return ExitCode.OK

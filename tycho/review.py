@@ -95,27 +95,38 @@ class Finding:
 
 def review(repo: Path, since: str = "HEAD") -> list[str]:
     """The rendered review: worst hunks first, everything else counted. Never raises."""
+    return inspect(repo, since)[0]
+
+
+def inspect(repo: Path, since: str = "HEAD") -> tuple[list[str], list[Finding]]:
+    """The rendered review *and* the findings behind it, in one pass.
+
+    `review` is the printing surface; a caller that also wants to act on the result — the
+    `--exit-code` gate in cli.py — needs the findings too, and re-deriving them would mean a
+    second `git diff` and a second pass over the record. Returns `[]` findings on every
+    can't-say path, so "no findings" is never mistaken for "nothing was wrong".
+    """
     if not gitstate.is_repo(repo):
-        return ["tycho: not a git repository — nothing to review."]
+        return ["tycho: not a git repository — nothing to review."], []
     hunks = gitstate.diff_hunks(repo, since)
     if hunks is None and since != "HEAD" and not gitstate.commit_exists(repo, since):
-        return [f"tycho: can't diff against {since} — no such commit."]
+        return [f"tycho: can't diff against {since} — no such commit."], []
     untracked = _untracked_hunks(repo)
     blind = hunks is None
     if blind:
         # The ref doesn't resolve (a fresh repo with no commits is the common one). The
         # untracked files are still real, so review those and say what's missing.
         if not untracked:
-            return [f"tycho: can't diff against {since} — nothing to compare."]
+            return [f"tycho: can't diff against {since} — nothing to compare."], []
         hunks = ()
     all_hunks = tuple(h for h in (*hunks, *untracked) if not _is_own_state(repo, h.path))
     if not all_hunks:
-        return [f"tycho: no changes against {since}."]
-    lines = render(classify(repo, all_hunks), since,
-                   truncated=len(hunks) >= gitstate.MAX_HUNKS)
+        return [f"tycho: no changes against {since}."], []
+    findings = classify(repo, all_hunks)
+    lines = render(findings, since, truncated=len(hunks) >= gitstate.MAX_HUNKS)
     if blind:
         lines.insert(0, f"tycho: can't diff against {since} — untracked files only.")
-    return lines
+    return lines, findings
 
 
 def classify(repo: Path, hunks, now: float | None = None) -> list[Finding]:
