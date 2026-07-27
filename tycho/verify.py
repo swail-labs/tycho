@@ -13,6 +13,7 @@ import os
 from pathlib import Path, PurePosixPath
 
 from . import checks as checks_mod
+from . import command as command_mod
 from . import config as config_mod
 from . import events as events_mod
 from . import fsstate, gitstate
@@ -59,7 +60,9 @@ def gather(
         for fe in events_mod.file_edits(events)
     )
     files = {fe.path: _file_state(repo, fe.path) for fe in edits}
+    start = turn_start(transcript) if turn_start else 0.0
     return Session(
+        commands=command_mod.read(repo, since=_evidence_floor(events, edits, start)),
         events=events,
         edits=edits,
         repo=repo,
@@ -67,10 +70,33 @@ def gather(
         files=files,
         git=_git_snapshot(repo, since),
         has_tests=_has_tests(repo),
-        turn_start=turn_start(transcript) if turn_start else 0.0,
+        turn_start=start,
         messages=msgs,
         attribution=attribution(transcript) if attribution else Attribution(),
     )
+
+
+def _evidence_floor(events, edits, turn_start: float) -> float:
+    """The earliest moment a `tycho exec` run may still count as evidence for this session.
+
+    `.tycho/commands.jsonl` is repo-scoped and long-lived — it knows nothing about turns,
+    sessions or harnesses. Read unbounded, it would happily offer a green `pytest` from
+    yesterday as proof of a claim made today, which is a fabricated green. So the floor is:
+
+    - the turn boundary when we have one (the Stop hook always does — TYCHO-17); else
+    - the first thing this session did, for a whole-session `tycho verify` audit; else
+    - **0.0, meaning admit nothing.** No timestamps anywhere (a transcript with no events,
+      or a harness that stamps none) is not a licence to trust the whole log — it is the
+      absence of the anchor that makes trusting it safe. `command.read` returns () for 0.0.
+
+    Deliberately *not* an "ignore anything older than N hours" rule: a wall-clock heuristic
+    would make the verdict depend on when you ran the verifier, and a long agent turn would
+    quietly lose its own evidence.
+    """
+    if turn_start:
+        return turn_start
+    stamps = [e.ts for e in events if e.ts] + [fe.ts for fe in edits if fe.ts]
+    return min(stamps) if stamps else 0.0
 
 
 _IGNORED_TEST_DIRS = {".git", ".venv", "venv", "node_modules", "vendor", "target", "dist", "build"}

@@ -169,9 +169,10 @@ def _unwrap(segment: str) -> str | None:
         return None
     head = _EXE_SUFFIX.sub("", parts[0].rsplit("/", 1)[-1]).lower()
 
-    # Our opt-in escape hatch: `tycho run [--] <cmd>` execs <cmd> and forwards its real exit
-    # code, so the runner inside is both visible here and trustworthy at runtime (TYCHO-90).
-    if head == "tycho" and len(parts) >= 2 and parts[1] == "run":
+    # Our opt-in escape hatches: `tycho run|exec [--] <cmd>` both exec <cmd> and forward its
+    # real exit code, so the runner inside is visible here and trustworthy at runtime
+    # (TYCHO-90). `exec` additionally logs what it saw — see `_exec_run_for`.
+    if head == "tycho" and len(parts) >= 2 and parts[1] in ("run", "exec"):
         rest = parts[2:]
         if rest and rest[0] == "--":
             rest = rest[1:]
@@ -214,6 +215,67 @@ def _runner_segment(cmd: str) -> str | None:
             if found is not None:
                 return found
     return None
+
+
+def _exec_argv(cmd: str) -> list[str] | None:
+    """The argv `tycho exec` was given inside `cmd`, or None if it wasn't used.
+
+    Recurses through the same wrappers `_unwrap` knows, so `bash -c 'tycho exec -- pytest'`
+    still yields `["pytest"]`. This is the join between the two evidence streams: the
+    transcript says *what the turn ran*, the exec log says *what Tycho observed*, and the
+    inner argv is the only thing both of them independently know.
+    """
+    for segment in _SEGMENT_SEP.split(cmd):
+        try:
+            parts = shlex.split(segment)
+        except ValueError:
+            continue
+        if not parts:
+            continue
+        head = _EXE_SUFFIX.sub("", parts[0].rsplit("/", 1)[-1]).lower()
+        if head == "tycho" and len(parts) >= 2 and parts[1] == "exec":
+            rest = parts[2:]
+            if rest and rest[0] == "--":
+                rest = rest[1:]
+            if rest:
+                return rest
+        inner = _unwrap(segment)
+        if inner is not None:
+            found = _exec_argv(inner)
+            if found is not None:
+                return found
+    return None
+
+
+def _exec_run_for(event, commands) -> "CommandRun | None":  # noqa: F821 — model.CommandRun
+    """The `tycho exec` evidence for this transcript event, or None.
+
+    Matched on the inner argv, not on timestamps: harness clocks vary (Cursor stamps
+    nothing at all), while the argv is written independently by both sides and has to agree.
+    `commands` is already floored to this turn/session by `verify.gather`, so an old run of
+    the same command is not in the running — that is where staleness is prevented, and it is
+    prevented by construction rather than by a heuristic here.
+
+    The **latest** match wins, the same rule `command_execution` already applies to events:
+    when a turn ran the suite twice, the claim rests on the last one.
+
+    ponytail: an exact argv match. A command whose *string* was altered by redaction
+    (`TOKEN=x pytest`) simply won't match, and the check falls back to its pre-exec
+    behaviour — losing evidence, never inventing it, which is the safe side of that trade.
+    """
+    if not commands:
+        return None
+    argv = _exec_argv(event.input.get("command") or "")
+    if not argv:
+        return None
+    best = None
+    for run in commands:
+        try:
+            if shlex.split(run.cmd) == argv and (best is None or run.ended_at >= best.ended_at):
+                best = run
+        except ValueError:
+            continue
+    return best
 
 
 def _status_is_masked(cmd: str) -> bool:
@@ -276,17 +338,38 @@ def _captured_output(event) -> str:
     return "\n".join(text.splitlines()[-_SUMMARY_TAIL_LINES:]) if text else ""
 
 
-def _outcome(event) -> bool | None:
+def _outcome(event, commands=()) -> bool | None:
     """Did this runner invocation fail? True = failed, False = passed, None = can't tell.
 
     One predicate for every caller, so `command_execution` and `_last_green_run_ts` can
     never disagree about what "green" means — a split brain there is how a run gets
     reported green by one check and stale-against-nothing by the other.
 
-    The exit code wins whenever it is genuinely the runner's. Otherwise fall back to the
-    runner's own summary line, which is evidence rather than inference — but weaker
-    evidence, so callers say so in their output.
+    **The evidence ladder, strongest first:**
+
+    1. *A status Tycho captured itself* (`tycho exec`). Tycho was the parent process and
+       read `wait()`. There is no shell in between to mask it, no harness in between to
+       drop or truncate it, and no way to run the command without producing it. Strictly
+       stronger than anything the transcript can offer, which is the entire point of §9.6.
+    2. *The transcript's exit code*, when it is genuinely the runner's — i.e. nothing in
+       the command line masked it (`_status_is_masked`). Real, but the harness had to
+       choose to keep it, and three of the four often don't.
+    3. *The runner's own summary line*, read back out of whatever output survived. Still
+       evidence — the runner reporting on itself — but the weakest kind, and the one a
+       30k head-truncation silently destroys. Callers say so in their output.
+
+    **When 1 and 2 disagree**, failure wins: Tycho's status decides whether the *runner*
+    failed, and a trustworthy transcript status may add a failure it can never remove.
+    Asymmetric on purpose. `tycho exec -- pytest && ./deploy.sh` can fail for a reason
+    Tycho's capture cannot see, and reading that as "the runner passed, all good" would be
+    a fabricated green — the one failure this program must never have. The reverse (the
+    transcript is green because a `;` swallowed the status, Tycho saw exit 1) is exactly the
+    lie `tycho exec` exists to catch, and rung 1 catches it.
     """
+    run = _exec_run_for(event, commands)
+    if run is not None:
+        masked = _status_is_masked(event.input.get("command") or "")
+        return run.failed or bool(event.is_error and not masked)
     if not _status_is_masked(event.input.get("command") or "") and event.is_error is not None:
         return event.is_error
     return runlog.outcome(_captured_output(event))
@@ -304,7 +387,8 @@ def command_execution(session: Session) -> CheckResult:
     raw = last.input.get("command", "")
     cmd = _short(_runner_segment(raw) or raw)
     masked = _status_is_masked(raw)
-    outcome = _outcome(last)
+    run = _exec_run_for(last, session.commands)
+    outcome = _outcome(last, session.commands)
     if outcome is None:
         why = (
             "its exit status was masked by the shell" if masked
@@ -313,11 +397,15 @@ def command_execution(session: Session) -> CheckResult:
         return _r(
             "command_execution",
             CheckStatus.UNSUPPORTED,
-            f"`{cmd}` ran but {why}, and its output carries no summary — Tycho can't confirm it passed",
+            f"`{cmd}` ran but {why}, and its output carries no summary — Tycho can't confirm it passed"
+            " (prefix it with `tycho exec --` to put its real status on the record)",
         )
     # Say where the verdict came from. A status recovered from output is real evidence but
     # weaker than an exit code, and a reader who can't tell which they got can't judge it.
-    via = " (read from its output — exit status masked by the shell)" if masked else ""
+    if run is not None:
+        via = f" (Tycho ran it — exit {run.exit_code})"
+    else:
+        via = " (read from its output — exit status masked by the shell)" if masked else ""
     if outcome:
         return _r("command_execution", CheckStatus.FAIL, f"`{cmd}` ran but reported an error{via}")
     return _r("command_execution", CheckStatus.PASS, f"`{cmd}` ran without error{via}")
@@ -646,7 +734,7 @@ def _last_green_run_ts(session: Session) -> float | None:
     # Session-scoped on purpose: a run three turns back still covers a source that
     # hasn't changed since, and test_freshness/test_provenance are exactly the checks
     # whose job is to reason across turns.
-    greens = [e.ts for e in _runner_events(session.events) if _outcome(e) is False]
+    greens = [e.ts for e in _runner_events(session.events) if _outcome(e, session.commands) is False]
     return max(greens) if greens else None
 
 

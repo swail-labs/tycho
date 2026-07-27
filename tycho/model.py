@@ -103,6 +103,36 @@ class Message:
 
 
 @dataclass(frozen=True)
+class CommandRun:
+    """One command Tycho ran itself, via `tycho exec` — evidence the harness didn't produce.
+
+    The distinction from `Event` is the whole point of strategy §9.6. An `Event` is what a
+    *harness* chose to write down about a command, and three of the four harnesses choose
+    to write down almost nothing: no stdout, no exit status, sometimes no result at all. A
+    `CommandRun` is what Tycho observed by being the parent process — `wait()`'s status and
+    the bytes off the pipe. Nothing sits between the runner and this, so nothing can mask,
+    drop or head-truncate it.
+
+    `exit_code` is already normalized to the shell's convention (128+signal), so `failed`
+    is a plain comparison rather than a platform quiz. `output` is the **tail** of the run,
+    redacted and bounded — see `command._MAX_CAPTURE_BYTES` for why the tail and not the head.
+    """
+
+    cmd: str
+    exit_code: int
+    started_at: float
+    ended_at: float
+    cwd: str = ""
+    output: str = ""
+
+    @property
+    def failed(self) -> bool:
+        """True when the command Tycho ran returned non-zero. Never None: unlike a
+        transcript's `is_error`, this evidence either exists or the run isn't here."""
+        return self.exit_code != 0
+
+
+@dataclass(frozen=True)
 class FileEdit:
     """A file the agent created or edited this session.
 
@@ -168,6 +198,12 @@ class Session:
     # and for harnesses whose readers already hand us a single turn (Codex) or that
     # don't timestamp events at all (Cursor).
     turn_start: float = 0.0
+    # Commands Tycho ran itself (`tycho exec`), read once in gather() from
+    # `.tycho/commands.jsonl`. **Already bounded to this turn/session by gather's floor** —
+    # the log outlives every session, so admitting all of it would let a green run from
+    # yesterday vouch for a claim made today. Empty is the normal case: nobody has to use
+    # `tycho exec`, and every check degrades to exactly its old behaviour when they don't.
+    commands: tuple[CommandRun, ...] = ()
 
     @property
     def turn_edits(self) -> tuple[FileEdit, ...]:

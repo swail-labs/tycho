@@ -251,7 +251,7 @@ def build(
         "files": [
             {"path": fe.path, "kind": fe.kind, "ts": fe.ts} for fe in session.turn_edits
         ],
-        "commands": _commands(turn_events),
+        "commands": _commands(turn_events, session.commands),
         "claims": [
             _clean(m.text, _MAX_CLAIM_CHARS) for m in session.turn_messages[:_MAX_CLAIMS]
         ],
@@ -269,14 +269,16 @@ def _turn_id(session_id: str | None, started_at: float, ended_at: float) -> str:
     return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
 
 
-def _commands(turn_events) -> list[dict]:
+def _commands(turn_events, exec_runs=()) -> list[dict]:
     """Every shell command this turn ran: the string, whether it was a recognized
     test/build runner, and what it returned.
 
     The runner predicate and the outcome both come from ``checks`` — ``_runner_segment``
     and ``_outcome`` encode which wrappers hide a runner and when the shell masked its exit
     status, and a second copy of that reasoning here would eventually disagree with the
-    verdict about what "passed" means.
+    verdict about what "passed" means. ``exec_runs`` is ``Session.commands``, so a command
+    put on the record by ``tycho exec`` reports the status Tycho itself observed — the
+    receipt and the verdict read the same evidence, by construction.
     """
     out = []
     for e in turn_events:
@@ -287,7 +289,7 @@ def _commands(turn_events) -> list[dict]:
             continue
         runner = checks_mod._runner_segment(cmd) is not None
         if runner:
-            failed = checks_mod._outcome(e)
+            failed = checks_mod._outcome(e, exec_runs)
         elif checks_mod._status_is_masked(cmd):
             failed = None  # the recorded status isn't this command's — say unknown
         else:
@@ -344,8 +346,14 @@ def append(repo: Path, record: dict) -> bool:
         return False
 
 
-def _prune(path: Path, cap: int) -> None:
-    """Trim the file to its newest `cap` records, once it has drifted past cap+slack."""
+def _prune(path: Path, cap: int, slack: int | None = None) -> None:
+    """Trim the file to its newest `cap` records, once it has drifted past cap+slack.
+
+    `slack` is a parameter because the same amortization suits different write rates:
+    turns are appended once per agent turn, `command.py`'s evidence log once per command.
+    Read at call time, not bound as a default, so ``_PRUNE_SLACK`` stays patchable.
+    """
+    slack = _PRUNE_SLACK if slack is None else slack
     kept: deque[str] = deque(maxlen=cap)
     total = 0
     try:
@@ -353,7 +361,7 @@ def _prune(path: Path, cap: int) -> None:
             for line in fh:
                 total += 1
                 kept.append(line)
-        if total <= cap + _PRUNE_SLACK:
+        if total <= cap + slack:
             return
         # Atomic, like every other write in this package: temp sibling, then rename.
         tmp = path.with_name(path.name + ".tmp")
