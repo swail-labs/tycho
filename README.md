@@ -51,6 +51,13 @@ curl -fsSL https://swail.dev/tycho/install.sh | sh
 It downloads the binary for your platform, verifies it against the release checksums, and drops
 the `tycho` command in `~/.local/bin`.
 
+On macOS or Linux with Homebrew, the tap installs that same binary and keeps it upgradable
+alongside the rest of your kegs:
+
+```sh
+brew install swail-labs/tap/tycho
+```
+
 **Have Python?** The PyPI package is **`tycho-cli`** (the name `tycho` is taken by an unrelated
 project); it installs the **`tycho`** command:
 
@@ -75,6 +82,11 @@ fetches the same checksummed binary:
 npx @swail-labs/tycho <command>     # run once, cached after first use
 npm install -g @swail-labs/tycho    # or put the `tycho` command on your PATH
 ```
+
+Pick one channel per machine. `npm install -g` and `brew install` both want to own
+`<brew-prefix>/bin/tycho` when your node is Homebrew-installed, so the second one you run won't
+link. They ship the same binary from the same release — `brew` tells you how to choose if you hit
+it.
 
 Then wire it into your repo (or let Tycho offer to on first run):
 
@@ -345,7 +357,8 @@ under `~/.local/share/tycho` is never touched.
 Removing the hooks and removing the package are two separate steps: uninstall first (otherwise the
 harness is left calling a command that no longer exists), then remove the package the same way you
 installed it — `uv tool uninstall tycho-cli`, `pipx uninstall tycho-cli`, `pip uninstall tycho-cli`,
-or deleting the standalone binary. (The distribution is `tycho-cli`, not `tycho`.)
+`brew uninstall tycho`, or deleting the standalone binary. (The distribution is `tycho-cli`, not
+`tycho`.)
 
 ## The checks
 

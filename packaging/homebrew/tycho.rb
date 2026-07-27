@@ -1,15 +1,16 @@
-# Homebrew formula for Tycho (TYCHO-69 §2) — TEMPLATE, not yet publishable.
+# Homebrew formula for Tycho — the TEMPLATE, not the published file.
 #
-# This installs the standalone binary produced by the `binaries` release job (see
+# It installs the standalone binary produced by the `binaries` release job (see
 # docs/bundler-spike.md), so `brew install` pulls no Python toolchain.
 #
-# BEFORE THIS WORKS, the operator must (see docs/tycho-69-remaining.md):
-#   1. Create the tap repo `swail-labs/homebrew-tap` and drop this file at `Formula/tycho.rb`.
-#   2. Cut a GitHub release whose assets include the per-arch binaries, tarred + sha256'd.
-#   3. Replace every REPLACE_ME below with the real version, URLs, and sha256 sums.
-# Then: `brew install swail-labs/tap/tycho`.
+# The markers below are filled at release time: the `homebrew-publish` job runs
+# `packaging/homebrew/stamp.py` against the release's SHA256SUMS and pushes the result to
+# `swail-labs/homebrew-tap` as `Formula/tycho.rb`. Edit this file, never the tap copy — the
+# next release overwrites it. Renaming a marker or an asset breaks the publish;
+# tests/test_homebrew.py fails first if you do.
 #
-# `brew audit --new tycho` and `brew test tycho` must pass before the tap goes public.
+# Then: `brew install swail-labs/tap/tycho`.
+# Operator setup (tap repo + token) is in docs/homebrew-remaining.md.
 class Tycho < Formula
   desc "Offline, stdlib-only verifier that proves an AI agent did what it claimed"
   homepage "https://swail.dev"
@@ -36,6 +37,29 @@ class Tycho < Formula
 
   def install
     bin.install "tycho"
+  end
+
+  # The npm wrapper (@swail-labs/tycho) installs its shim at
+  # `<prefix>/bin/tycho` when node itself is Homebrew-installed — the exact path this formula
+  # links. Homebrew then refuses to link (correctly: it never clobbers a file it doesn't own)
+  # and reports a bare "Error: ... not linked", which reads like a broken formula rather than
+  # two install channels asking for the same name.
+  #
+  # Both are the same binary and the same release, so there's nothing to reconcile — the user
+  # just has to pick an owner. Deliberately NOT `link_overwrite "bin/tycho"`: that would
+  # silently delete a wrapper the user installed on purpose.
+  def caveats
+    return unless (HOMEBREW_PREFIX/"lib/node_modules/@swail-labs/tycho").exist?
+
+    <<~EOS
+      The npm wrapper (@swail-labs/tycho) already owns #{HOMEBREW_PREFIX}/bin/tycho, so this
+      formula is installed but not linked. Both run the same binary — pick one owner:
+
+        npm uninstall -g @swail-labs/tycho && brew link tycho   # let Homebrew own `tycho`
+        brew uninstall tycho                                    # keep the npm wrapper
+
+      `tycho update` upgrades whichever one you keep, via that channel.
+    EOS
   end
 
   test do

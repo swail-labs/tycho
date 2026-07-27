@@ -462,6 +462,21 @@ def _print_update_notice() -> None:
         pass
 
 
+def _is_homebrew_install() -> bool:
+    """True when this is the frozen binary Homebrew installed.
+
+    A formula installs a bare executable into `<prefix>/Cellar/tycho/<version>/bin/tycho`, with
+    `<prefix>/bin/tycho` a symlink to it — so the *real* path is the signal (`realpath` resolves
+    the symlink the user actually invoked). Gated on `sys.frozen` deliberately: a plain
+    `pip install tycho-cli` into Homebrew's *Python* also lives under a Cellar path
+    (`.../Cellar/python@3.12/...`), and that one upgrades with pip, not brew.
+    """
+    if not getattr(sys, "frozen", False):
+        return False
+    real = os.path.realpath(sys.executable).replace("\\", "/").lower()
+    return "/cellar/tycho/" in real
+
+
 def _upgrade_command(force: bool = False) -> list[str]:
     """The upgrade command for however Tycho was installed — best-effort from the install
     path. Falls back to pip, which works for a plain `pip install` (TYCHO-10).
@@ -478,13 +493,21 @@ def _upgrade_command(force: bool = False) -> list[str]:
     A standalone binary can't infer its channel from `sys.prefix` (a PyInstaller build looks like
     none of pipx/uv/pip), so its installer announces itself via ``TYCHO_INSTALL``: the npm wrapper
     (TYCHO-106) sets ``TYCHO_INSTALL=npm`` before exec'ing the binary. Without this the npm binary
-    would fall through to a `pip install` it can't run (no bundled pip) — see TYCHO-109 for the
-    Homebrew/direct channels still to wire.
+    would fall through to a `pip install` it can't run (no bundled pip). Homebrew
+    installs a bare binary with no wrapper to set that variable, so it's detected from the install
+    path instead — ``TYCHO_INSTALL=brew`` still works for anyone who wants to force it.
     """
     from . import version as version_mod
 
-    if os.environ.get("TYCHO_INSTALL", "").strip().lower() == "npm":
+    channel = os.environ.get("TYCHO_INSTALL", "").strip().lower()
+    if channel == "npm":
         return ["npm", "install", "-g", "@swail-labs/tycho@latest"]
+    if channel == "brew" or _is_homebrew_install():
+        # Tap-qualified: a bare `tycho` is ambiguous if another tap ships that name.
+        # `reinstall` also repairs a partially-linked keg; there's no user-set version pin for
+        # `--force` to cross here, since the formula pins the version, not the user.
+        target = "swail-labs/tap/tycho"
+        return ["brew", "reinstall", target] if force else ["brew", "upgrade", target]
 
     pkg = version_mod._DIST_NAME or "tycho-cli"
     prefix = sys.prefix.replace("\\", "/").lower()
