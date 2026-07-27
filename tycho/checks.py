@@ -281,7 +281,7 @@ def _captured_output(event) -> str:
     """The runner's own words, tail-first — or "" when the harness kept none.
 
     Tail only: Claude Code caps `toolUseResult.stdout` at 30k chars and keeps the *head*
-    (verified against 2356 real payloads — see docs/harness-support.md) while pytest prints its
+    (verified against 2356 real payloads) while pytest prints its
     summary last, so a truncated capture honestly reports nothing rather than matching a stray
     "5 passed" from a red run.
     """

@@ -180,7 +180,7 @@ CODEX = Harness(
     parse=events.parse_codex,
     repo_root=_cwd_root,
     format_output=lambda text: {"systemMessage": text},
-    # `systemMessage` is Codex's human-facing SessionStart field (docs/harness-support.md);
+    # `systemMessage` is Codex's human-facing SessionStart field;
     # render path unconfirmed, worst case the toast is silent, never model-facing.
     notice_output=lambda text: {"systemMessage": text},
     discover=_codex_discover,
@@ -214,7 +214,7 @@ ENABLED_NAMES = ("claude",)
 ENABLED = tuple(h for h in ALL if h.name in ENABLED_NAMES)
 
 # The harness version each hook contract was last verified against, plus the local
-# `--version` probe. Machine copy of docs/harness-support.md's "Verified against" row; a
+# `--version` probe. The version each adapter's contract was last checked against; a
 # test pins the two together. OpenCode has no CLI version contract, so it isn't probed.
 VERIFIED_AGAINST = {
     "claude": {"version": "2.1.210", "probe": ("claude", "--version")},

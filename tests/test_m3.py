@@ -24,7 +24,7 @@ def make_session(events=(), edits=(), files=None, git=None, config=None, message
 
 def bash(command, ts, is_error=False, result=None) -> Event:
     # `result` carries the captured stdout/stderr; empty by default, since three of the
-    # four harnesses record none (see docs/harness-support.md).
+    # four harnesses record none.
     return Event(ts=ts, tool="Bash", input={"command": command}, is_error=is_error, result=result or {})
 
 
@@ -398,8 +398,8 @@ def test_freshness_ignores_prose_edited_after_run():
     false alarm on the one check meant to prove the run still covers the code."""
     s = make_session(
         events=[bash("pytest -q", 100.0)],
-        edits=[FileEdit("docs/hooks.md", ts=110.0, original="x", kind="edit")],
-        files={"docs/hooks.md": FileState("docs/hooks.md", True, mtime=200.0, current_text="x")},
+        edits=[FileEdit("notes/design.md", ts=110.0, original="x", kind="edit")],
+        files={"notes/design.md": FileState("notes/design.md", True, mtime=200.0, current_text="x")},
     )
     assert checks.test_freshness(s).status == CheckStatus.UNSUPPORTED
 

@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/swail-logo-rounded.png" alt="Swail" width="96">
+<img src="swail-logo-rounded.png" alt="Swail" width="96">
 
 # Tycho
 
@@ -789,8 +789,6 @@ agent** — malformed stdin, an unreadable transcript, a git hiccup all mean "re
 The turn record behind `show`, `blame`, `log`, `review`, `attest` and `count --ledger` is one
 append-only JSONL file — greppable, stdlib-readable, no index. That is what buys the zero
 dependencies, and the zero dependencies are what let all of this be instant and free.
-
-See [`docs/hooks.md`](docs/hooks.md) for the design.
 
 ## License
 

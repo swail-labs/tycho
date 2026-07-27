@@ -253,12 +253,14 @@ def test_probe_version_never_raises_on_a_missing_binary():
     assert doctor._probe_version(("tycho-no-such-harness-binary", "--version")) is None
 
 
-def test_pinned_versions_stay_in_step_with_the_support_matrix_doc():
-    # The dict is the machine copy of docs/harness-support.md's "Verified against" row —
-    # guard against the two drifting apart (the exact failure the matrix exists to prevent).
-    doc = (Path(__file__).parent.parent / "docs" / "harness-support.md").read_text(encoding="utf-8")
-    for name, pinned in doctor.harness_mod.VERIFIED_AGAINST.items():
-        assert pinned["version"] in doc, f"{name} version {pinned['version']} missing from harness-support.md"
+def test_every_enabled_harness_has_a_version_pin():
+    # The pin is what lets `doctor` say "your harness moved past the contract we checked".
+    # An enabled harness with no pin fails open silently — it would never warn, which looks
+    # exactly like "the contract is fine".
+    for name in doctor.harness_mod.ENABLED_NAMES:
+        pinned = doctor.harness_mod.VERIFIED_AGAINST.get(name)
+        assert pinned, f"{name} is enabled but has no verified-against pin"
+        assert pinned["version"] and pinned["probe"]
 
 
 # --- resolution rules --------------------------------------------------------

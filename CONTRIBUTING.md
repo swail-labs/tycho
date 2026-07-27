@@ -42,8 +42,9 @@ One adapter + one reader + one fixture, no engine change:
 2. Add a `parse_*` reader in `events.py`, pinned to a real fixture in `tests/fixtures/`.
 3. That's it — the engine and the checks stay untouched.
 
-See [`docs/hooks.md`](docs/hooks.md) for the multi-harness design and
-[`docs/harness-support.md`](docs/harness-support.md) for the contracts each adapter depends on.
+Each adapter's docstring in `harness.py` records the contract it depends on, and
+`harness.VERIFIED_AGAINST` pins the harness version that contract was last checked
+against — `tycho doctor` warns when the installed harness has moved past it.
 
 ## Commits
 

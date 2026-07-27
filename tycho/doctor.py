@@ -220,7 +220,9 @@ def _harness_drift(wired: list[str]) -> list[Finding]:
         findings.append(Finding(
             DRIFT,
             f"{name}: hook contract verified against {pinned['version']}, you have {installed}",
-            "re-verify Tycho's output fields against this version — see docs/harness-support.md",
+            "re-verify Tycho's output fields against this version — a harness can change its "
+            "hook contract in a patch release, and the hook would still fire while the verdict "
+            "reached nobody",
         ))
     return findings
 

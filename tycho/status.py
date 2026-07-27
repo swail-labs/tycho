@@ -1,7 +1,7 @@
 """`tycho status` — the one-line "am I on?" indicator, for a harness status bar.
 
 Harness contract (Claude Code 2.1.210, read from the shipped binary — see
-`docs/harness-support.md`): status payload arrives as JSON on **stdin**, ~5s budget;
+the pinned harness contract): status payload arrives as JSON on **stdin**, ~5s budget;
 **stdout** is used only on **exit 0**, trimmed, blank lines dropped; ANSI colour is
 rendered dimmed; stderr goes to a debug log.
 

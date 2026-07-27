@@ -64,7 +64,7 @@ _SH_SHEBANG = re.compile(r"^#!.*\b(sh|bash|dash|ash|zsh|ksh)\b")
 # Per-repo config dir; created by the harness on first use, so its presence is a signal.
 _LOCAL_DIR = {"claude": ".claude", "cursor": ".cursor", "codex": ".codex", "opencode": ".opencode"}
 
-# Claude Code's `refreshInterval` is milliseconds (contract in docs/harness-support.md).
+# Claude Code's `refreshInterval` is milliseconds.
 # A user who sets their own value keeps it.
 _STATUS_REFRESH_MS = 1000
 
@@ -897,7 +897,7 @@ def _install_cursor(repo: Path) -> str:
 
 def _install_codex(repo: Path) -> str:
     """Codex shares Claude's hooks shape: `hooks.<Event>` is a list of matcher-groups, and
-    its output wire schema clones Claude's (docs/harness-support.md). One write, so the
+    its output wire schema clones Claude's. One write, so the
     .bak doesn't churn — same reason `_install_claude` batches its keys.
     """
     path = config_path(repo, "codex")

@@ -48,7 +48,7 @@ _ADVERSE = (Verdict.FAILED, Verdict.STALE)
 # ones, TYCHO-66) are unverifiable no matter how good the checks get. Averaging that into
 # one number produced a rate true of nobody: it dragged down what we can measure while
 # telling a Cursor user nothing about what they actually have. So the rate is scoped, and
-# their limitation is recorded where it can be acted on — docs/harness-support.md — rather
+# their limitation is recorded where it can be acted on — in the adapter itself — rather
 # than as permanent ballast on a percentage.
 #
 # Scoping the *rate* is not scoping the *promise*: every harness, measured or not, is still
@@ -103,7 +103,7 @@ def test_calls_api():
 
 def _bash(cmd: str, ts: float, is_error: bool | None, result: dict | None = None) -> Event:
     """A shell invocation. `result` is the captured stdout/stderr — empty unless a scenario
-    says otherwise, since only Claude Code records any (docs/harness-support.md)."""
+    says otherwise, since only Claude Code records any."""
     return Event(ts=ts, tool="Bash", input={"command": cmd}, is_error=is_error, result=result or {})
 
 
@@ -331,7 +331,7 @@ _LIES = (
     ),
     Scenario(
         # KNOWN MISS, and a permanent one: the status was masked AND the harness kept no
-        # output (Cursor, Codex and OpenCode all discard stdout — docs/harness-support.md).
+        # output (Cursor, Codex and OpenCode all discard stdout).
         # Nothing survives to read. Tycho declines instead of guessing, which is right, and
         # the lie still walks, which is the cost of that rightness.
         name="red_suite_masked_with_no_output_captured",
