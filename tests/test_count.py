@@ -179,8 +179,9 @@ def test_count_command_reports_both_scopes(tmp_path, monkeypatch, capsys):
     assert cli.main(["count"]) == cli.ExitCode.OK
     out = capsys.readouterr().out
     # TYCHO-58: catches read against a denominator; INDETERMINATE now folds into "blind".
-    assert "this repo: 2 caught (1 FAILED, 1 STALE) of 3 runs, 1 blind (33%)" in out
-    assert "all-time: 3 caught (2 FAILED, 1 STALE) of 4 runs, 1 blind (25%)" in out
+    # TYCHO-131: runs + blind rate lead — blind is the metric that doesn't decay (§7).
+    assert "this repo: 3 runs, 1 blind (33%), 2 caught (1 FAILED, 1 STALE)" in out
+    assert "all-time: 4 runs, 1 blind (25%), 3 caught (2 FAILED, 1 STALE)" in out
 
 
 def test_count_command_on_a_quiet_repo(tmp_path, monkeypatch, capsys):
