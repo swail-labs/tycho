@@ -160,7 +160,7 @@ def _update_suffix(harness) -> str:
     Only on harnesses with a human-only Stop channel: there, `format_output` writes the same field
     `notice_output` does (systemMessage / message), so appending here stays human-facing. On Cursor
     `format_output` is model-facing (`followup_message`) and `notice_output is None`, so a notice
-    would reach the model (TYCHO-35's rule) — suppress it, exactly as the bootup notice does.
+    would reach the model and could commission a self-update — suppress it, as the bootup notice does.
 
     Cache-only (`refresh_first=False`): the Stop path must never hit the network — the once-a-day
     fetch is the doctor/init/bootup job. Respects opt-out + dismissal via `version.notice`. Never
@@ -214,7 +214,7 @@ def _apply_overrides(repo: Path, results, verdict: Verdict) -> Verdict:
         if not (state.relay_enabled(repo) and state.override_enabled(repo)):
             return verdict
         if verdict is Verdict.VERIFIED:
-            # TYCHO-119: a proven-green turn has no adverse (FAIL/STALE) check to override, so an override
+            # A proven-green turn has no adverse (FAIL/STALE) check to override, so an override
             # here could only downgrade a real VERIFIED to OVERRIDDEN. Leave it. Non-VERIFIED verdicts
             # (including INDETERMINATE) still reach OVERRIDDEN below — the escape hatch is unchanged.
             return verdict
@@ -315,12 +315,13 @@ def _relay_guard(attempt: int, cap: int, override_on: bool = False) -> str:
 
 
 def session_start() -> int:
-    """SessionStart / bootup hook: surface a *user-facing* update notice at agent bootup
-    (generalized to Codex/OpenCode in TYCHO-72). The output shape is the harness's
+    """SessionStart / bootup hook: surface a *user-facing* update notice at agent bootup.
+
+    The output shape is the harness's
     `notice_output` — a human-only channel (`systemMessage` on Claude/Codex, `message` toasted
     by the OpenCode plugin). A harness with no such channel (Cursor: `notice_output is None`)
-    gets nothing, so the notice can never reach the model and commission a self-update
-    (TYCHO-35's rule). We parse the payload only to pick that shape; the update check itself is
+    gets nothing, so the notice can never reach the model and commission a self-update.
+    We parse the payload only to pick that shape; the update check itself is
     machine-global, not per-repo.
 
     Same invariants as the Stop hook: never raises, always exit 0, prints nothing when

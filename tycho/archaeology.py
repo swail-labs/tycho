@@ -101,7 +101,7 @@ def resolve(repo: Path, path: str, cwd: Path | None = None) -> str:
 
     Absolute, repo-relative, and relative-to-a-subdirectory all have to land on the same
     string, because `state.root_for` keys everything to the repo root while the developer
-    stands wherever they were debugging (TYCHO-79's problem, one layer up).
+    stands wherever they were debugging.
 
     A **bare basename that doesn't exist relative to cwd** is deliberately passed through
     untouched: `record.touching` matches a basename against any directory, and someone who

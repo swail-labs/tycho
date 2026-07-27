@@ -57,7 +57,7 @@ class Harness:
     # How to surface the bootup update-notice. This is a *human-only* channel and
     # is deliberately NOT `format_output`: on Cursor `format_output` is model-facing
     # (`followup_message`), and a notice that reaches the model could commission it to go
-    # update Tycho (the TYCHO-35 rule). None — the default — means "no user-facing bootup
+    # update Tycho. None — the default — means "no user-facing bootup
     # channel", so the notice is suppressed there rather than risk a model-facing one. Only
     # Claude/Codex (`systemMessage`) and OpenCode (`message`, toasted by the plugin) have one.
     notice_output: Callable[[str], dict] | None = None
@@ -191,7 +191,7 @@ CLAUDE = Harness(
     # Claude renders `systemMessage` to the human; exit 0 never blocks the Stop.
     format_output=lambda text: {"systemMessage": text},
     # Bootup notice rides the same human-only field — verified against 2.1.212 that
-    # SessionStart's `systemMessage` renders to the user, not the model (TYCHO-72 step 0).
+    # SessionStart's `systemMessage` renders to the user, not the model.
     notice_output=lambda text: {"systemMessage": text},
     discover=_claude_discover,
     transcript_of=_payload_transcript,

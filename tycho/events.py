@@ -204,9 +204,9 @@ def parse_codex(transcript: Path) -> tuple[Event, ...]:
     Returns all turns' events, not just the latest, so the session-scoped checks can
     reason across turns (freshness/provenance, and the AST checks that diff the earliest
     original against disk); the Stop narrows to the turn under review via
-    ``Harness.turn_start`` (``turn_start_codex``), exactly as Claude does. (TYCHO-20 —
-    this used to filter to the latest ``turn_id`` in the reader, which left those checks
-    blind to earlier turns and made Codex's scope disagree with every other reader.)
+    ``Harness.turn_start`` (``turn_start_codex``), exactly as Claude does. Filtering to the
+    latest ``turn_id`` here instead would leave those checks blind to earlier turns and make
+    Codex's scope disagree with every other reader.
     """
     calls: dict[str, tuple[float, str]] = {}
     results: dict[str, tuple[bool | None, str]] = {}  # call_id -> (is_error, output text)

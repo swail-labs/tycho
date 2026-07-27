@@ -556,7 +556,7 @@ def scope_drift(session: Session) -> CheckResult:
 # tool_call_provenance families. Each is (label, claim pattern, tool-name
 # substrings). BROAD by design: a claim of a family requires *some* tool call of that family
 # in the turn — not a content match, which no generalizable tool schema supports and which
-# would risk a false FAIL (deferred to tycho-web/TYCHO-85 if ever needed). The claim patterns
+# would risk a false FAIL. The claim patterns
 # are first-person, past-tense assertions of a *completed* action (never future/hypothetical),
 # anchored on unambiguous cues (a web verb, or a ticket KEY next to a ticket verb) so an honest
 # turn is never failed; a claim we can't classify is simply not counted. This table is the
@@ -566,11 +566,11 @@ _PROV_WEB = re.compile(
     r"browsed to|fetched the (?:page|url|web ?site|site))\b",
     re.IGNORECASE,
 )
-# An issue-tracker action is claimed when a ticket anchor (a KEY like TYCHO-95, or "Jira
+# An issue-tracker action is claimed when a ticket anchor (a KEY like ACME-123, or "Jira
 # ticket/issue/card") sits within a short window of an action cue — in *either* order, since
-# real prose says both "moved TYCHO-29 to In Progress" and "TYCHO-29 moved to Done".
+# real prose says both "moved ACME-123 to In Progress" and "ACME-123 moved to Done".
 # Two cue kinds, both conservative enough to never false-FAIL an honest/future turn:
-#   - a *past-tense* action verb (a future "I'll move TYCHO-40" uses base "move", never "moved");
+#   - a *past-tense* action verb (a future "I'll move ACME-123" uses base "move", never "moved");
 #   - a *two-status arrow* ("Hold → In Review"), which only ever reports a transition that
 #     happened — a plan is written "I'll move it to In Review", never "Hold → In Review".
 _ISSUE_ANCHOR = r"(?:\b[A-Z][A-Z0-9]+-\d+\b|\b[Jj]ira (?:ticket|issue|card)\b)"
@@ -588,12 +588,12 @@ _PROVENANCE_FAMILIES = (
 )
 
 # A cue whose subject is a third party, or that reports a pre-existing state, is the agent
-# *narrating* — not claiming it just acted. "Dan closed TYCHO-97", "the operator moved it",
-# "TYCHO-30 was already closed", "Dan searched the web" all describe someone else's or an
+# *narrating* — not claiming it just acted. "Dan closed ACME-123", "the operator moved it",
+# "ACME-123 was already closed", "Dan searched the web" all describe someone else's or an
 # already-true action, and firing on them is a false FAIL (the exact live miss: reporting that
-# a ticket the agent looked up is already Done — follow-up to TYCHO-91/95). Neutralize these
+# a ticket the agent looked up is already Done). Neutralize these
 # clauses before matching, so provenance judges only the agent's own claims — subject-dropped
-# ("TYCHO-30 closed") and first-person ("I closed") survive untouched. Recall loss (a genuine
+# ("ACME-123 closed") and first-person ("I closed") survive untouched. Recall loss (a genuine
 # fabrication sitting right after a name is missed) is accepted over any false FAIL, exactly as
 # the rest of the check is tuned. The name branch is case-sensitive so a lowercase word ("and
 # moved") is never mistaken for a subject; the verbs stay case-insensitive.
@@ -611,7 +611,7 @@ _REPORTED = re.compile(
     rf"\b{_REPORTED_SUBJECT}\s+(?:already |just |then |recently |now )?{_REPORTED_VERB}"
 )
 
-# An *observed* ticket state — "TYCHO-30 already sits at In Review → Done", "it's now at Hold →
+# An *observed* ticket state — "ACME-123 already sits at In Review → Done", "it's now at Hold →
 # Done", "the board shows In Review → Done" — reports where a ticket already is, not a transition
 # the agent performed. The status-arrow branch of _ISSUE_CUE otherwise reads any arrow as a
 # self-made transition and false-FAILs the observation (the live miss: narrating board state Tycho
@@ -691,7 +691,7 @@ def run_checks(session: Session) -> list[CheckResult]:
 def has_verifiable_activity(session: Session) -> bool:
     """Whether an automatic Stop verdict would have meaningful work to report.
 
-    Turn-scoped, and that is the whole of TYCHO-17: session-scoped, a read-only turn
+    Turn-scoped, and that is the whole of ACME-123: session-scoped, a read-only turn
     in a session that edited anything earlier still looked like "activity", so every
     later Stop re-reported long-committed work as though it were this turn's. A turn
     that did nothing verifiable earns silence, not a stale green tick.
@@ -716,7 +716,7 @@ def _scope(session: Session) -> str:
 
     A 0.0 boundary means nothing narrowed the view — `tycho verify` auditing a whole
     session, or a harness that can't mark turns — so the honest word is "session".
-    Saying "turn" there would re-tell the exact lie TYCHO-17 is about.
+    Saying "turn" there would re-tell the exact lie ACME-123 is about.
     """
     return "turn" if session.turn_start else "session"
 

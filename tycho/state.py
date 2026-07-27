@@ -7,7 +7,7 @@ Two files under ``<repo>/.tycho/``, both entirely ours (no user content, ever):
 
 Separate files on purpose: init and the hook write on different schedules from
 different processes, so one shared file would mean read-modify-write races and a lost
-update — exactly the kind of silent corruption TYCHO-6 just finished stamping out.
+update — exactly the kind of silent corruption this split exists to prevent.
 
 **Nothing here may raise into a caller.** The hook must never break the agent's Stop
 (see hook.py), so a heartbeat we can't write is simply not written: a missing beat makes
@@ -140,7 +140,7 @@ def record_run(repo: Path, harness: str, verdict: str | None = None, pending: bo
         pass
 
 
-# --- the catch record (replaces TYCHO-50's bare tally) -------------
+# --- the catch record --------------------------------------------
 #
 # What Tycho caught — with the evidence, not just a number. Two files, same fail-open rule
 # as everything here (a record we can't write is simply not written):
@@ -152,7 +152,7 @@ def record_run(repo: Path, harness: str, verdict: str | None = None, pending: bo
 # recorded (a standing failure re-reported each turn counts each turn).
 
 _CATCHES = "catches.json"
-_LEGACY_COUNTS = "counts.json"  # pre-TYCHO-62 tally; migrated on first read/write, then dropped
+_LEGACY_COUNTS = "counts.json"  # legacy tally; migrated on first read/write, then dropped
 _TALLIED = ("FAILED", "STALE", "INDETERMINATE")  # verdicts that count as catches (with evidence)
 _BLIND = ("INDETERMINATE", "UNSUPPORTED")  # verdicts where Tycho had nothing to say
 _CATCH_LIST_CAP = 100  # the repo evidence trail keeps the most recent N; the tally stays exact
@@ -162,7 +162,7 @@ def user_dir() -> Path:
     """Root of Tycho's *machine-level* state — outside every repo, by definition.
 
     ``TYCHO_HOME`` wins, then ``XDG_DATA_HOME``, then the ``~/.local/share`` default:
-    the same override chain the harness roots use (``harness.home``, TYCHO-14), spelled
+    the same override chain the harness roots use (``harness.home``), spelled
     out here because this root is an XDG data dir rather than a ``~/.<name>`` dotdir.
     """
     override = os.environ.get("TYCHO_HOME")
@@ -250,7 +250,7 @@ def totals(repo: Path) -> dict:
     """{"runs": n, "blind": n} for `repo`: every verdict recorded — the denominator
     the catch counts are read against — and how many of those were blind (INDETERMINATE or
     UNSUPPORTED, i.e. Tycho had nothing to say). `runs` is 0 for a legacy tally migrated from
-    the pre-TYCHO-58 `counts.json`, which had no denominator; it fills in as new runs land."""
+    `counts.json`, which had no denominator; it fills in as new runs land."""
     return _totals(_read_catches(dir_for(repo) / _CATCHES))
 
 
@@ -427,7 +427,7 @@ def dismiss_update(version: str) -> None:
 
 
 def update_dismissed_count() -> int:
-    """How many update notices the user has dismissed (record-keeping, TYCHO-53)."""
+    """How many update notices the user has dismissed."""
     return _count_of(read_update_cache(), "dismissed")
 
 
@@ -496,7 +496,7 @@ def set_status_enabled(repo: Path, enabled: bool) -> None:
 # verdict back to Claude as additionalContext or Codex as a blocked Stop with a continuation
 # reason, which makes the agent address what Tycho caught, "until VERIFIED".
 #
-# The on/off flag lives in `.tycho.toml` (`[relay] enabled`, TYCHO-114) so it's hand-editable
+# The on/off flag lives in `.tycho.toml` (`[relay] enabled`) so it's hand-editable
 # and versionable; these functions just delegate to `config`. Only the transient per-turn leash
 # (`relay-streak`) stays a runtime file here — it's ephemeral state, not user configuration.
 #

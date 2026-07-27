@@ -44,8 +44,8 @@ def render(
     parse or semantically match the claim — structured claim matching is a Pro concern.
 
     ``only_adverse`` keeps just the FAIL/STALE/INDETERMINATE lines — the model-facing relay
-    copy, so it names what to fix without re-listing every passing check (TYCHO-116 follow-up:
-    the harness echoes `additionalContext`, so a full copy there duplicates the human's verdict).
+    copy, so it names what to fix without re-listing every passing check (the harness echoes
+    `additionalContext`, so a full copy there duplicates the human's verdict).
     Falls back to all lines when nothing is adverse, so the header never stands alone.
     """
     header = f"🔍 Tycho: {verdict}"

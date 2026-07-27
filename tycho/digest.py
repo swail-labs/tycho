@@ -115,8 +115,8 @@ def speaks(record: dict, history: Sequence[dict] = (), decay: bool = True) -> Si
 
 
 # How many consecutive prior turns must have carried a signal before it stops being news.
-# ponytail: two is the smallest number that can tell "again" from "still"; raise it with
-# TYCHO-style calibration if users report the digest going quiet too eagerly.
+# ponytail: two is the smallest number that can tell "again" from "still"; raise it if
+# users report the digest going quiet too eagerly.
 _DECAY_AFTER = 2
 
 

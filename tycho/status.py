@@ -101,7 +101,7 @@ def repo_of(payload: dict) -> Path:
 def _stdin_text() -> str:
     """The harness's JSON on stdin as raw text — or "" when a human ran this in a terminal.
 
-    Raw, not parsed, because a *wrapped* status command (composition, TYCHO-47) needs the
+    Raw, not parsed, because a *wrapped* status command (composition) needs the
     exact same bytes forwarded to it. The isatty check keeps `tycho status` from hanging on
     an interactive read: no payload is coming, and a status command that blocks is worse
     than one that says nothing.
@@ -147,8 +147,8 @@ def _wrapped_output(repo: Path, stdin_text: str) -> str:
 def main(off: bool = False, on: bool = False) -> int:
     try:
         # This line is UTF-8 (⬤, [TYCHO] colour codes). On Windows, stdout to a pipe
-        # defaults to cp1252, where writing it raises UnicodeEncodeError — the crash
-        # TYCHO-40 found in `doctor`. Say what encoding we speak instead of dying, and
+        # defaults to cp1252, where writing it raises UnicodeEncodeError — the crash this
+        # first hit in `doctor`. Say what encoding we speak instead of dying, and
         # don't assume reconfigure exists (a wrapped stdout may not have it).
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
