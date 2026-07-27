@@ -2,11 +2,11 @@
 
 Three properties, and they are in tension, which is why they all get tests:
 
-1. **It must not change the command.** Same exit code, same live output, same interactivity
-   as far as a pipe allows. `tycho exec` is meant to be safe to prefix onto anything, and a
-   wrapper that swallows a test runner's progress for two minutes is not.
-2. **It must capture the part that carries the verdict** — the tail, on huge output, on
-   non-UTF-8 output, on a command that doesn't exist.
+1. **It must not change the command.** Same exit code, same live output, same interactivity:
+   the child inherits Tycho's stdio, so it keeps its TTY. `tycho exec` is meant to be safe to
+   prefix onto anything.
+2. **It must record what the command returned** — the exit status, including for a command
+   that doesn't exist.
 3. **The evidence must reach the checks, and must not be able to vouch for the wrong turn.**
 
 The eval (`tests/test_eval.py`) scores what this buys; this file proves the mechanism.
@@ -129,63 +129,23 @@ def test_command_not_found_returns_127_and_is_itself_evidence(tmp_path: Path):
 # --- 2. capturing the part that carries the verdict -------------------------
 
 
-def test_huge_output_is_captured_tail_first_not_head_first(tmp_path: Path):
-    """The exact mistake the third structural eval miss is made of.
-
-    A runner prints its conclusion *last*. A harness that caps stdout and keeps the head
-    therefore throws away precisely the verdict. Tycho owns this capture, so it keeps the end.
-    """
-    child = (
-        "import sys\n"
-        "for i in range(200000): print('noise line', i)\n"
-        "print('1 failed, 76 passed in 1.07s')\n"
-    )
-    assert _run(tmp_path, child) == 0
-    output = _entries(tmp_path)[-1]["output"]
-    assert output.endswith("1 failed, 76 passed in 1.07s")
-    assert "noise line 0\n" not in output, "kept the head — this is the harness's bug, not ours"
-    assert len(output) <= command._MAX_OUTPUT_CHARS + 64
-    # And the point of keeping the tail: the runner's own verdict is still readable.
-    from tycho import runlog
-    assert runlog.outcome(output) is True
-
-
-def test_non_utf8_output_neither_crashes_nor_loses_the_run(tmp_path: Path):
-    """A runner may emit any bytes at all (a filename in another encoding, a control byte).
-    Losing the exit code over an undecodable byte would be the tail wagging the dog."""
-    child = (
-        "import sys\n"
-        "sys.stdout.buffer.write(b'\\xff\\xfe broken bytes \\x80\\n')\n"
-        "sys.stdout.buffer.write(b'2 failed, 8 passed in 0.31s\\n')\n"
-        "sys.exit(1)\n"
-    )
-    assert _run(tmp_path, child) == 1
-    entry = _entries(tmp_path)[-1]
-    assert entry["exit"] == 1
-    assert "2 failed, 8 passed in 0.31s" in entry["output"]
-
-
-def test_the_entry_carries_command_status_timings_and_cwd(tmp_path: Path):
+def test_the_entry_carries_command_status_and_timings(tmp_path: Path):
     before = time.time()
     _run(tmp_path, "print('hi')")
     entry = _entries(tmp_path)[-1]
     assert entry["schema"] == command.SCHEMA
     assert entry["exit"] == 0
     assert before <= entry["started_at"] <= entry["ended_at"] <= time.time()
-    assert entry["cwd"] == os.getcwd()
-    assert "hi" in entry["output"]
 
 
-def test_secrets_are_redacted_from_both_the_command_and_its_output(tmp_path: Path):
+def test_secrets_are_redacted_from_the_command(tmp_path: Path):
     """One redaction policy, `record.redact` — reused, not re-implemented, so the evidence
     log can't quietly become the one durable file that keeps credentials."""
-    command.execute(tmp_path, ["--", PY, "-c", "print('AWS_SECRET_ACCESS_KEY=hunter2seekrit')",
+    command.execute(tmp_path, ["--", PY, "-c", "print('hi')",
                                "--token", "ghp_abcdefghijklmnopqrstuvwxyz012345"])
     entry = _entries(tmp_path)[-1]
     assert "ghp_abcdefghijklmnopqrstuvwxyz012345" not in entry["cmd"]
     assert "[REDACTED]" in entry["cmd"]
-    assert "hunter2seekrit" not in entry["output"]
-    assert "AWS_SECRET_ACCESS_KEY=[REDACTED]" in entry["output"]
 
 
 def test_the_log_is_capped_so_it_cannot_grow_unboundedly(tmp_path: Path, monkeypatch):
@@ -194,7 +154,7 @@ def test_the_log_is_capped_so_it_cannot_grow_unboundedly(tmp_path: Path, monkeyp
     path = command.path_for(tmp_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     for i in range(20):
-        command._log(tmp_path, ["echo", str(i)], 0, 1000.0 + i, 1000.0 + i, "")
+        command._log(tmp_path, ["echo", str(i)], 0, 1000.0 + i, 1000.0 + i)
     entries = _entries(tmp_path)
     assert len(entries) <= 5 + 2
     # Newest kept, oldest dropped — an evidence log that prunes the recent end is useless.
@@ -212,7 +172,7 @@ def test_a_corrupt_or_foreign_log_line_costs_only_that_line(tmp_path: Path):
     path = command.path_for(tmp_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     good = {"schema": 1, "cmd": "pytest -q", "exit": 1, "started_at": 50.0,
-            "ended_at": 51.0, "cwd": "/repo", "output": ""}
+            "ended_at": 51.0}
     path.write_text(
         "\n".join([
             "{not json at all",
@@ -229,7 +189,7 @@ def test_a_corrupt_or_foreign_log_line_costs_only_that_line(tmp_path: Path):
 def test_read_declines_without_a_time_anchor(tmp_path: Path):
     """`since=0.0` means "we have no idea when this turn was". The safe answer to that is
     no evidence, not all of it — see `verify._evidence_floor`."""
-    command._log(tmp_path, ["pytest", "-q"], 0, 100.0, 101.0, "")
+    command._log(tmp_path, ["pytest", "-q"], 0, 100.0, 101.0)
     assert command.read(tmp_path, since=0.0) == ()
     assert command.read(tmp_path, since=100.0)
 
@@ -248,9 +208,8 @@ def _session(events, commands=(), turn_start: float = 0.0) -> Session:
     )
 
 
-def _ran(cmd: str, exit_code: int, ts: float = 100.0, output: str = "") -> CommandRun:
-    return CommandRun(cmd=cmd, exit_code=exit_code, started_at=ts, ended_at=ts + 1,
-                      cwd="/repo", output=output)
+def _ran(cmd: str, exit_code: int, ts: float = 100.0) -> CommandRun:
+    return CommandRun(cmd=cmd, exit_code=exit_code, started_at=ts, ended_at=ts + 1)
 
 
 def test_a_runner_behind_tycho_exec_is_still_recognized_as_a_runner():
@@ -290,7 +249,7 @@ def test_exec_evidence_answers_where_the_transcript_recorded_nothing_at_all():
 def test_exec_evidence_also_carries_the_greens():
     """An evidence channel that only ever produces failures is a pessimist, not a verifier."""
     session = _session([_event("tycho exec -- pytest -q", 100.0, is_error=None)],
-                       [_ran("pytest -q", 0, ts=99.0, output="77 passed in 0.79s")])
+                       [_ran("pytest -q", 0, ts=99.0)])
     result = checks.command_execution(session)
     assert result.status is checks.CheckStatus.PASS
     assert "exit 0" in result.evidence
@@ -339,8 +298,8 @@ def test_a_plain_run_with_no_exec_evidence_behaves_exactly_as_before():
 def test_gather_floors_the_evidence_at_the_turn_boundary(tmp_path: Path):
     """An exec run from an *earlier* turn must not vouch for this one. The floor lives in
     `gather` — the I/O boundary — so no check has to remember to apply it."""
-    command._log(tmp_path, ["pytest", "-q"], 1, 100.0, 101.0, "")   # last turn
-    command._log(tmp_path, ["pytest", "-q"], 0, 200.0, 201.0, "")   # this turn
+    command._log(tmp_path, ["pytest", "-q"], 1, 100.0, 101.0)   # last turn
+    command._log(tmp_path, ["pytest", "-q"], 0, 200.0, 201.0)   # this turn
     assert [r.exit_code for r in command.read(tmp_path, since=150.0)] == [0]
     assert engine._evidence_floor((), (), 150.0) == 150.0
 
@@ -368,14 +327,14 @@ def test_a_stale_exec_run_cannot_be_credited_to_a_later_turn(tmp_path: Path, mon
         encoding="utf-8",
     )
     turn_start = engine.events_mod.parse(transcript)[0].ts
-    command._log(tmp_path, ["pytest", "-q"], 0, turn_start - 86_400, turn_start - 86_399, "")
+    command._log(tmp_path, ["pytest", "-q"], 0, turn_start - 86_400, turn_start - 86_399)
 
     session = engine.gather(transcript, tmp_path, turn_start=lambda _p: turn_start)
     assert session.commands == (), "an exec run from a previous day was offered as evidence"
     assert checks.command_execution(session).status is checks.CheckStatus.UNSUPPORTED
 
     # The same run, inside the turn, is evidence.
-    command._log(tmp_path, ["pytest", "-q"], 1, turn_start + 1, turn_start + 2, "")
+    command._log(tmp_path, ["pytest", "-q"], 1, turn_start + 1, turn_start + 2)
     session = engine.gather(transcript, tmp_path, turn_start=lambda _p: turn_start)
     assert [r.exit_code for r in session.commands] == [1]
     assert checks.command_execution(session).status is checks.CheckStatus.FAIL

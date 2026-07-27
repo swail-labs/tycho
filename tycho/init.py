@@ -158,9 +158,7 @@ def attest_command() -> str:
     git runs hooks through its bundled shell on Windows too.
 
     A frozen/standalone build has no importable interpreter (`sys.executable` *is* the tycho
-    binary), so it falls back to the console-script form. ponytail: that spelling needs
-    `tycho attest --write` in cli.py; until then the hook there is a silent no-op, which is
-    the correct failure for something that must never break `git commit`.
+    binary), so it falls back to the `tycho attest --write` console-script form.
     """
     program = _quote_program(sys.executable.replace("\\", "/"))
     if getattr(sys, "frozen", False):

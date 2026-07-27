@@ -39,10 +39,10 @@ fails open — no trailer, never an exception, never a non-zero exit on the writ
 from __future__ import annotations
 
 import re
-import subprocess
 import sys
 from pathlib import Path
 
+from . import gitstate
 from . import record as record_mod
 from . import state
 
@@ -72,20 +72,13 @@ _TRAILER_SHAPE = re.compile(r"^[A-Za-z][A-Za-z0-9-]*: ")
 
 
 def _git(repo: Path, *args: str) -> str | None:
-    """Run a read-only git command in `repo`; stdout on success, None on any failure.
+    """Read-only git in `repo`; stdout on success, None on any failure.
 
-    Deliberately not `gitstate._git`: this module runs inside a commit hook, where "git is
-    missing" and "git said no" must be the same, silent answer. Same read-only posture as
-    `gitstate` — nothing here ever writes to the repo.
+    Inside a commit hook "git is missing" and "git said no" must be the same silent answer,
+    which `gitstate._git` already guarantees.
     """
-    try:
-        proc = subprocess.run(
-            ["git", "-C", str(repo), *args],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-        )
-    except (OSError, ValueError):
-        return None
-    return proc.stdout if proc.returncode == 0 else None
+    code, out = gitstate._git(repo, *args)
+    return out if code == 0 else None
 
 
 def _paths_of(out: str | None) -> tuple[str, ...]:
@@ -153,12 +146,9 @@ def attestation(repo: Path, paths, until: float | None = None) -> dict | None:
         ended = row.get("ended_at")
         if until is not None and isinstance(ended, (int, float)) and ended > until:
             continue
-        files = row.get("files")
-        if not isinstance(files, list):
-            continue
         if not any(
-            isinstance(e, dict) and isinstance(e.get("path"), str) and e["path"] in wanted
-            for e in files
+            isinstance(e.get("path"), str) and e["path"] in wanted
+            for e in record_mod._rows(row, "files")
         ):
             continue
         turns.append(record_mod.digest(row))
@@ -315,37 +305,27 @@ def verify(repo: Path, ref: str = "HEAD") -> tuple[bool | None, str]:
 
 # --- entrypoint --------------------------------------------------------------
 #
-# `attest.py` carries its own `__main__` so the git hook has something to call that works
-# today: `<python> -m tycho.attest <msgfile> <source>`. `tycho attest --write/--verify` can
-# route straight here once cli.py grows the flags (see the report) — the argv shapes below
-# accept both spellings, so the installed hook command never has to change.
+# `attest.py` carries its own `__main__` because the installed git hook calls
+# `<python> -m tycho.attest <msgfile> <source>` directly. Printing and verifying live in
+# `cli._attest`; this is only the write path.
 
 
 def main(argv: list[str] | None = None) -> int:
-    """`--write <msgfile> [<source>]` | `--verify [<ref>]` | bare (print the trailer).
+    """`[--write] <msgfile> [<source>]` — git's `prepare-commit-msg` argv, verbatim.
 
-    The write path **always returns 0**. It runs inside `git commit`, and a verifier that can
-    make a commit fail is one people uninstall.
+    **Always returns 0.** It runs inside `git commit`, and a verifier that can make a commit
+    fail is one people uninstall.
     """
     args = list(sys.argv[1:] if argv is None else argv)
-    repo = state.root_for(Path.cwd())
-    if args and args[0] == "--verify":
-        ok, line = verify(repo, args[1] if len(args) > 1 else "HEAD")
-        print(line)
-        return 1 if ok is False else 0
     if args and args[0] == "--write":
         args = args[1:]
-    if args:  # <msgfile> [<source> [<sha>]] — git's own prepare-commit-msg argv, verbatim
+    if args:
         try:
-            write_message(repo, args[0], args[1] if len(args) > 1 else None)
+            write_message(
+                state.root_for(Path.cwd()), args[0], args[1] if len(args) > 1 else None
+            )
         except Exception:  # noqa: BLE001 — nothing may escape into `git commit`
             pass
-        return 0
-    line = trailer(repo)
-    if line is None:
-        print("tycho: nothing staged that a recorded turn touched — nothing to attest.")
-        return 0
-    print(line)
     return 0
 
 

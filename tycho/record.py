@@ -81,16 +81,21 @@ _MAX_DEFAULT = 5000
 _PRUNE_SLACK = 250
 
 
-def max_records() -> int:
-    """How many turns ``turns.jsonl`` keeps. Default 5000; ``TYCHO_TURNS_MAX`` overrides.
+def _env_cap(var: str, default: int) -> int:
+    """A retention cap from `var`, floored at 1, falling back to `default` on junk.
 
-    Floored at 1 — "keep nothing" is not a retention policy, it's a broken config, and this
-    is read inside the Stop hook, so a junk value falls back to the default rather than raising.
+    "Keep nothing" is not a retention policy, it's a broken config; and this is read inside
+    the Stop hook, so a junk value must not raise.
     """
     try:
-        return max(1, int(os.environ.get("TYCHO_TURNS_MAX", _MAX_DEFAULT)))
+        return max(1, int(os.environ.get(var, default)))
     except (TypeError, ValueError):
-        return _MAX_DEFAULT
+        return default
+
+
+def max_records() -> int:
+    """How many turns ``turns.jsonl`` keeps. Default 5000; ``TYCHO_TURNS_MAX`` overrides."""
+    return _env_cap("TYCHO_TURNS_MAX", _MAX_DEFAULT)
 
 
 def path_for(repo: Path) -> Path:
@@ -304,6 +309,28 @@ def _commands(turn_events, exec_runs=()) -> list[dict]:
     return out
 
 
+# --- safe accessors ----------------------------------------------------------
+#
+# A record read back off disk may have been written by an older schema, by a crashed
+# append, or hand-edited. These coerce rather than validate: a malformed row yields less,
+# never a traceback in the Stop hook. They live here because this is where the schema is
+# defined — `digest`, `archaeology`, `attest` and `review` all read through them.
+
+
+def _rows(record: dict, key: str) -> list[dict]:
+    """The list-of-dicts under `key`, with anything else dropped."""
+    value = record.get(key)
+    return [r for r in value if isinstance(r, dict)] if isinstance(value, list) else []
+
+
+def _claims(record: dict) -> list[str]:
+    """The agent's own prose for this turn, blanks dropped."""
+    value = record.get("claims")
+    if not isinstance(value, list):
+        return []
+    return [c.strip() for c in value if isinstance(c, str) and c.strip()]
+
+
 # --- the attestation digest --------------------------------------------------
 
 
@@ -372,15 +399,15 @@ def _prune(path: Path, cap: int, slack: int | None = None) -> None:
         pass
 
 
-def iter_records(repo: Path) -> Iterator[dict]:
-    """Stream every record for `repo`, **oldest first**, skipping corrupt lines.
+def iter_jsonl(path: Path) -> Iterator[dict]:
+    """Stream the JSON objects in a JSONL file, oldest first, skipping corrupt lines.
 
     Streaming and never-raising: a truncated final line (a crashed append), a line of
-    garbage, or an unreadable file yields fewer records — never an exception. This is the
-    primitive the decay ledger groups by ``model`` over.
+    garbage, or an unreadable file yields fewer rows — never an exception. Shared with
+    ``command.py``'s evidence log, which has the same durability problem.
     """
     try:
-        with path_for(repo).open(encoding="utf-8", errors="replace") as fh:
+        with path.open(encoding="utf-8", errors="replace") as fh:
             for line in fh:
                 line = line.strip()
                 if not line:
@@ -393,6 +420,12 @@ def iter_records(repo: Path) -> Iterator[dict]:
                     yield row
     except OSError:
         return
+
+
+def iter_records(repo: Path) -> Iterator[dict]:
+    """Stream every turn record for `repo`, **oldest first**. The primitive the decay
+    ledger groups by ``model`` over."""
+    yield from iter_jsonl(path_for(repo))
 
 
 def read(repo: Path, limit: int | None = None) -> list[dict]:

@@ -109,21 +109,17 @@ class CommandRun:
     The distinction from `Event` is the whole point of strategy §9.6. An `Event` is what a
     *harness* chose to write down about a command, and three of the four harnesses choose
     to write down almost nothing: no stdout, no exit status, sometimes no result at all. A
-    `CommandRun` is what Tycho observed by being the parent process — `wait()`'s status and
-    the bytes off the pipe. Nothing sits between the runner and this, so nothing can mask,
-    drop or head-truncate it.
+    `CommandRun` is what Tycho observed by being the parent process — `wait()`'s status.
+    Nothing sits between the runner and this, so nothing can mask or drop it.
 
     `exit_code` is already normalized to the shell's convention (128+signal), so `failed`
-    is a plain comparison rather than a platform quiz. `output` is the **tail** of the run,
-    redacted and bounded — see `command._MAX_CAPTURE_BYTES` for why the tail and not the head.
+    is a plain comparison rather than a platform quiz.
     """
 
     cmd: str
     exit_code: int
     started_at: float
     ended_at: float
-    cwd: str = ""
-    output: str = ""
 
     @property
     def failed(self) -> bool:

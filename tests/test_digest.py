@@ -103,7 +103,7 @@ def test_ladder_ticks_nothing_for_an_unknown_stage():
 
 def test_adverse_verdict_speaks_and_names_the_failing_check():
     signal = digest.speaks(rec(verdict="FAILED", checks=[check("test_freshness", "STALE", "old")]))
-    assert signal is not None and signal.name == "adverse"
+    assert signal is not None and signal.key.startswith("adverse")
     assert "test_freshness" in signal.headline and "old" in signal.headline
 
 
@@ -118,21 +118,21 @@ def test_unbacked_claim_speaks_when_prose_says_done_but_the_ladder_stopped_short
     signal = digest.speaks(
         rec(stage=Stage.ARTIFACT_CHANGED.value, claims=["Fixed the retry logic, all tests pass."])
     )
-    assert signal is not None and signal.name == "unbacked_claim"
+    assert signal is not None and signal.key.startswith("unbacked_claim")
     assert "artifact_changed" in signal.headline
 
 
 def test_regression_speaks_on_the_first_unproven_turn_after_a_green_run():
     history = [rec() for _ in range(4)]
     signal = digest.speaks(rec(verdict="INDETERMINATE"), history)
-    assert signal is not None and signal.name == "regression"
+    assert signal is not None and signal.key == "regression"
     assert "4" in signal.headline
 
 
 def test_blast_radius_speaks_when_a_turn_dwarfs_this_repos_recent_turns():
     history = [rec(files=1) for _ in range(6)]
     signal = digest.speaks(rec(files=9), history)
-    assert signal is not None and signal.name == "blast_radius"
+    assert signal is not None and signal.key == "blast_radius"
     assert "9 files" in signal.headline
 
 
@@ -215,7 +215,7 @@ def test_decay_can_be_switched_off_for_a_caller_who_asked_for_everything():
 
 def test_the_unprompted_digest_fits_the_hook_output_budget():
     """§6.1 says ~4 lines, and §4 says evidence nobody reads is evidence that doesn't exist."""
-    for signal in (None, digest.Signal("x", "x", "y" * 200)):
+    for signal in (None, digest.Signal("x", "y" * 200)):
         assert len(digest.brief(rec(files=40, claims=["a" * 500]), signal).splitlines()) <= 4
 
 

@@ -40,6 +40,7 @@ from . import harness as harness_mod
 from . import init as init_mod
 from . import state
 from . import version as version_mod
+from .review import _ago
 
 # Severities. BROKEN and OUTDATED are the two that mean "Tycho is not doing its job";
 # the rest is context for whoever is reading.
@@ -229,13 +230,6 @@ def _heartbeat_finding(repo: Path, wired: list[str]) -> Finding:
         )
     age = max(0.0, time.time() - at)
     return Finding(OK, f"hook last fired {_ago(age)} (via {beat.get('harness', '?')})")
-
-
-def _ago(seconds: float) -> str:
-    for size, unit in ((86400, "d"), (3600, "h"), (60, "m")):
-        if seconds >= size:
-            return f"{int(seconds // size)}{unit} ago"
-    return "just now"
 
 
 def _transcript_finding(repo: Path) -> Finding:

@@ -393,32 +393,8 @@ def test_main_write_always_exits_zero_even_with_a_broken_repo(tmp_path: Path, mo
     assert attest.main([str(tmp_path / "does-not-exist"), "message"]) == 0
 
 
-def test_main_verify_exits_one_only_on_a_real_mismatch(repo: Path, monkeypatch, capsys):
-    monkeypatch.chdir(repo)
-    _commit(repo, "a.py", "unattested")
-    assert attest.main(["--verify"]) == 0  # unknown is not a failure
-    # A real mismatch needs a record that *does* cover the commit — otherwise the honest
-    # answer is "cannot confirm", which must stay a 0.
-    _record(repo, "b.py")
-    (repo / "b.py").write_text("x = 1\n")
-    _git(repo, "add", "b.py")
-    _git(repo, "commit", "-qm", "bogus\n\nTycho-Attestation: sha256:" + "0" * 64)
-    assert attest.main(["--verify", "HEAD"]) == 1
-    assert "does NOT match" in capsys.readouterr().out
-
-
-def test_bare_main_prints_the_trailer_for_what_is_staged(repo: Path, monkeypatch, capsys):
-    monkeypatch.chdir(repo)
-    _record(repo, "a.py")
-    _staged(repo)
-    assert attest.main([]) == 0
-    assert capsys.readouterr().out.startswith("Tycho-Attestation: sha256:")
-
-
-def test_bare_main_says_so_when_there_is_nothing_to_attest(repo: Path, monkeypatch, capsys):
-    monkeypatch.chdir(repo)
-    assert attest.main([]) == 0
-    assert "nothing to attest" in capsys.readouterr().out
+# `--verify` and the bare trailer print live in `cli._attest`, covered by
+# tests/test_cli_surface.py.
 
 
 # --- end to end: real commits, real hook -------------------------------------

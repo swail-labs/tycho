@@ -1,8 +1,8 @@
-"""The engine: reduce check results to a verdict.
+"""The engine: gather a session, run the checks, reduce their results to a verdict.
 
-M1 is a walking skeleton — `run_stub` returns a hard-coded result set so the CLI
-renders a real block. The `gather -> run_checks` pipeline lands in M2/M3;
-`verdict_of` is already the real reduction (it's pure and cheap to get right now).
+`gather()` is the only I/O boundary — everything downstream is pure over a frozen
+`Session`. `run_checks`/`has_verifiable_activity` delegate to `checks`, keeping this module
+a single facade over that boundary.
 """
 
 from __future__ import annotations

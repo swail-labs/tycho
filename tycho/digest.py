@@ -31,7 +31,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from statistics import median
 
+from .archaeology import _count, _trunc
 from .model import Stage, Verdict
+from .record import _claims, _rows
 
 # How many prior turns the signals read. Enough to have a norm for this repo, short enough
 # that "recent" still means recent — a month-old blast radius is not this repo's habit any
@@ -52,12 +54,11 @@ _LADDER = tuple(s.value for s in Stage)
 class Signal:
     """One reason a turn is worth interrupting for.
 
-    `key` is the signal's *identity* for decay purposes, which is deliberately finer than
-    `name`: two consecutive FAILED turns on the same check are the same news, but a FAILED
-    turn on a check that was fine yesterday is new news. See `speaks`.
+    `key` is the signal's *identity* for decay purposes, and is deliberately fine-grained:
+    two consecutive FAILED turns on the same check are the same news, but a FAILED turn on
+    a check that was fine yesterday is new news. See `speaks`.
     """
 
-    name: str
     key: str
     headline: str
 
@@ -159,12 +160,10 @@ def _adverse(record: dict) -> Signal | None:
     bad = _unproven_checks(record)
     if bad:
         name, evidence = bad[0]
-        return Signal("adverse", f"adverse:{name}", f"{verdict} — {name}: {evidence}")
+        return Signal(f"adverse:{name}", f"{verdict} — {name}: {evidence}")
     # OVERRIDDEN can reach here with everything PASS (the agent set the check aside and the
     # rest were fine), so there is nothing to name — say so rather than printing a bare word.
-    return Signal(
-        "adverse", f"adverse:{verdict}", f"{verdict} — no check could confirm this turn"
-    )
+    return Signal(f"adverse:{verdict}", f"{verdict} — no check could confirm this turn")
 
 
 # Prose that asserts the work is finished. Matched against the agent's own messages, and only
@@ -200,9 +199,8 @@ def _unbacked_claim(record: dict) -> Signal | None:
         return None
     rung = stage or "nothing recorded"
     return Signal(
-        "unbacked_claim",
         f"unbacked_claim:{rung}",
-        f'said "{_snip(said, 48)}" — evidence stopped at {rung}',
+        f'said "{_trunc(said, 48)}" — evidence stopped at {rung}',
     )
 
 
@@ -227,7 +225,7 @@ def _regression(record: dict, history: Sequence[dict]) -> Signal | None:
         green += 1
     if green < _GREEN_STREAK:
         return None
-    return Signal("regression", "regression", f"first unproven turn after {green} proven ones")
+    return Signal("regression", f"first unproven turn after {green} proven ones")
 
 
 # A turn must be at least this many files AND this multiple of the repo's recent median before
@@ -255,7 +253,6 @@ def _blast_radius(record: dict, history: Sequence[dict]) -> Signal | None:
     if n < max(_BLAST_FLOOR, _BLAST_FACTOR * norm):
         return None
     return Signal(
-        "blast_radius",
         "blast_radius",
         f"{n} files touched — recent turns touch {_num(norm)}",
     )
@@ -302,7 +299,7 @@ def render(record: dict) -> str:
     for i, cmd in enumerate(_commands(record)):
         lines.append(_wrap("ran" if i == 0 else "", f"{cmd['cmd']} → {cmd['outcome']}"))
     for i, claim in enumerate(_claims(record)[:4]):
-        lines.append(_wrap("claimed" if i == 0 else "", f'"{_snip(claim, 100)}"'))
+        lines.append(_wrap("claimed" if i == 0 else "", f'"{_trunc(claim, 100)}"'))
     unproven = _unproven_checks(record)
     for i, (name, evidence) in enumerate(unproven):
         lines.append(_wrap("open" if i == 0 else "", f"{name} — {evidence}"))
@@ -347,7 +344,7 @@ def _facts(record: dict) -> str:
     if files:
         parts.append(_count(len(files), "file"))
     commands = sorted(_commands(record), key=lambda c: not c["runner"])
-    parts.extend(f"{_snip(c['cmd'], 40)} {c['outcome']}" for c in commands[:2])
+    parts.extend(f"{_trunc(c['cmd'], 40)} {c['outcome']}" for c in commands[:2])
     if len(commands) > 2:
         parts.append(f"+{len(commands) - 2} more")
     return " · ".join(parts)
@@ -360,18 +357,12 @@ def _wrap(label: str, text: str) -> str:
 
 # --- safe accessors -----------------------------------------------------------
 #
-# Every one of these reads a record off disk that may have been written by an older schema, by
-# a crashed append, or (via `tycho show <id>`) hand-edited. They coerce rather than validate:
-# a malformed row renders a shorter digest, never a traceback in the Stop hook.
+# `_rows`/`_claims` live in `record.py`, next to the schema they read. The rest coerce the
+# same way: a malformed row renders a shorter digest, never a traceback in the Stop hook.
 
 
 def _text(value: object) -> str:
     return value if isinstance(value, str) else ""
-
-
-def _rows(record: dict, key: str) -> list[dict]:
-    value = record.get(key)
-    return [r for r in value if isinstance(r, dict)] if isinstance(value, list) else []
 
 
 def _files(record: dict) -> list[dict]:
@@ -394,13 +385,6 @@ def _commands(record: dict) -> list[dict]:
     ]
 
 
-def _claims(record: dict) -> list[str]:
-    value = record.get("claims")
-    if not isinstance(value, list):
-        return []
-    return [c.strip() for c in value if isinstance(c, str) and c.strip()]
-
-
 def _unproven_checks(record: dict) -> list[tuple[str, str]]:
     """(name, evidence) for every check that didn't prove out, in the order they were run."""
     return [
@@ -408,15 +392,6 @@ def _unproven_checks(record: dict) -> list[tuple[str, str]]:
         for r in _rows(record, "checks")
         if _text(r.get("status")) in _UNPROVEN
     ]
-
-
-def _snip(text: str, limit: int) -> str:
-    text = " ".join(text.split())
-    return text if len(text) <= limit else text[: limit - 1] + "…"
-
-
-def _count(n: int, noun: str) -> str:
-    return f"{n} {noun}" if n == 1 else f"{n} {noun}s"
 
 
 def _num(value: float) -> str:

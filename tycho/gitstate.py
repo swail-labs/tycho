@@ -9,13 +9,21 @@ from pathlib import Path
 
 
 def _git(repo: Path, *args: str) -> tuple[int, str]:
-    """Run a git command in `repo`; return (returncode, stdout). Never raises on
-    non-zero — callers decide what a failure means."""
-    proc = subprocess.run(
-        ["git", "-C", str(repo), *args],
-        capture_output=True,
-        text=True,
-    )
+    """Run a git command in `repo`; return (returncode, stdout). Never raises.
+
+    Git missing from PATH must read as "git said no", not as an exception: this is reachable
+    from `review.inspect` and from the commit hook, both of which promise never to raise.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo), *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except (OSError, ValueError):
+        return 1, ""
     return proc.returncode, proc.stdout
 
 
@@ -97,7 +105,6 @@ class Hunk:
     added: int
     removed: int
     status: str = "modified"
-    old_path: str | None = None
 
     @property
     def ref(self) -> str:
@@ -139,7 +146,6 @@ def parse_hunks(text: str, limit: int = MAX_HUNKS) -> tuple[Hunk, ...]:
     """
     hunks: list[Hunk] = []
     path: str | None = None
-    old_path: str | None = None
     status = "modified"
     produced = False
 
@@ -148,7 +154,7 @@ def parse_hunks(text: str, limit: int = MAX_HUNKS) -> tuple[Hunk, ...]:
         # emit it with no range rather than dropping it.
         nonlocal produced
         if path and not produced and status in ("renamed", "deleted", "added"):
-            hunks.append(Hunk(path, 0, 0, 0, 0, status, old_path))
+            hunks.append(Hunk(path, 0, 0, 0, 0, status))
         produced = False
 
     lines = text.splitlines()
@@ -158,7 +164,7 @@ def parse_hunks(text: str, limit: int = MAX_HUNKS) -> tuple[Hunk, ...]:
         i += 1
         if line.startswith("diff --git "):
             flush()
-            path, old_path = _header_paths(line)
+            path = _header_paths(line)
             status = "modified"
             continue
         if line.startswith("new file mode"):
@@ -168,32 +174,31 @@ def parse_hunks(text: str, limit: int = MAX_HUNKS) -> tuple[Hunk, ...]:
             status = "deleted"
             continue
         if line.startswith("rename from "):
-            old_path, status = line[len("rename from "):], "renamed"
+            status = "renamed"
             continue
         if line.startswith("rename to "):
             path, status = line[len("rename to "):], "renamed"
             continue
         if line.startswith("--- "):
-            old_path = _strip_prefix(line[4:]) or old_path
             continue
         if line.startswith("+++ "):
             path = _strip_prefix(line[4:]) or path
             continue
         if line.startswith(("Binary files ", "GIT binary patch")):
             if path:
-                hunks.append(Hunk(path, 0, 0, 0, 0, "binary", old_path))
+                hunks.append(Hunk(path, 0, 0, 0, 0, "binary"))
                 produced = True
             continue
         m = _HUNK_RE.match(line)
         if m is None:
             if line.startswith("@@") and path and not produced:
                 # A combined diff (`@@@`, from a merge) or a shape we don't know. Say so.
-                hunks.append(Hunk(path, 0, 0, 0, 0, "unparsed", old_path))
+                hunks.append(Hunk(path, 0, 0, 0, 0, "unparsed"))
                 produced = True
             continue
         if not path:
             continue
-        hunk, i = _read_body(lines, i, m, path, old_path, status)
+        hunk, i = _read_body(lines, i, m, path, status)
         if hunk is not None:
             hunks.append(hunk)
             produced = True
@@ -201,7 +206,7 @@ def parse_hunks(text: str, limit: int = MAX_HUNKS) -> tuple[Hunk, ...]:
     return tuple(hunks)
 
 
-def _read_body(lines, i, m, path, old_path, status):
+def _read_body(lines, i, m, path, status):
     """Consume one hunk body, returning (hunk|None, next index).
 
     Walks both cursors at once so a deletion is addressable on the new side too — where a
@@ -241,16 +246,14 @@ def _read_body(lines, i, m, path, old_path, status):
     else:
         start, end = n_first or new_start, n_last or new_start
     start = max(1, start)
-    return Hunk(path, start, max(start, end), added, removed, status, old_path), i
+    return Hunk(path, start, max(start, end), added, removed, status), i
 
 
-def _header_paths(line: str) -> tuple[str | None, str | None]:
-    """Best-effort (new, old) from `diff --git a/x b/y`; the `---`/`+++` lines correct it."""
+def _header_paths(line: str) -> str | None:
+    """Best-effort new path from `diff --git a/x b/y`; the `+++` line corrects it."""
     rest = line[len("diff --git "):]
     cut = rest.rfind(" b/")
-    if cut <= 0:
-        return None, None
-    return _strip_prefix(rest[cut + 1:]), _strip_prefix(rest[:cut])
+    return _strip_prefix(rest[cut + 1:]) if cut > 0 else None
 
 
 def _strip_prefix(raw: str) -> str | None:

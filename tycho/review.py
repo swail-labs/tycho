@@ -33,8 +33,8 @@ prevent.
 
 **Advisory, always.** `review` ranks and prints; it does not gate. The strategy doc
 demotes PR-blocking CI as a distraction that drags the roadmap toward "AI code review
-vendor" (§6), so the default exit is OK regardless of what it found. `unexercised()` is
-here for a caller that wants to opt into a non-zero exit; nothing calls it today.
+vendor" (§6), so the default exit is OK regardless of what it found. `unexercised()` backs
+the opt-in `--exit-code` gate in `cli.py`.
 """
 
 from __future__ import annotations
@@ -144,11 +144,7 @@ def classify(repo: Path, hunks, now: float | None = None) -> list[Finding]:
 
 
 def unexercised(findings) -> int:
-    """How many findings are the ones a caller might want a non-zero exit for.
-
-    Not used by `tycho review` itself, which is advisory by design (see the module
-    docstring). Here so opting in is a flag in `cli.py`, not a rewrite of this module.
-    """
+    """How many findings `--exit-code` should exit non-zero for."""
     return sum(1 for f in findings if f.level in (UNEXERCISED, UNTESTED))
 
 
@@ -182,12 +178,7 @@ def _facts(repo: Path, paths: set[str]) -> _Facts:
                 last_test = ts if last_test is None else max(last_test, ts)
             if passed_any:
                 last_command = ts if last_command is None else max(last_command, ts)
-        files = row.get("files")
-        if not isinstance(files, list):
-            continue
-        for entry in files:
-            if not isinstance(entry, dict):
-                continue
+        for entry in record_mod._rows(row, "files"):
             path = entry.get("path")
             ts = _num(entry.get("ts")) or _num(row.get("ended_at"))
             if isinstance(path, str) and path in paths and ts is not None:
@@ -207,12 +198,9 @@ def _run_ts(row: dict) -> tuple[bool, bool, float] | None:
     side of the trade that under-claims coverage. The two can't disagree, because this
     reads that check's own result rather than re-deriving it.
     """
-    commands = row.get("commands")
-    if not isinstance(commands, list):
-        return None
     passed_test = passed_any = False
-    for c in commands:
-        if not isinstance(c, dict) or c.get("outcome") != "passed":
+    for c in record_mod._rows(row, "commands"):
+        if c.get("outcome") != "passed":
             continue
         passed_any = True
         passed_test = passed_test or bool(c.get("runner"))
@@ -226,12 +214,9 @@ def _run_ts(row: dict) -> tuple[bool, bool, float] | None:
 
 def _stale(row: dict) -> bool:
     """Did this turn's own `test_freshness` say a source outran the passing run?"""
-    checks = row.get("checks")
-    if not isinstance(checks, list):
-        return False
     return any(
-        isinstance(c, dict) and c.get("name") == "test_freshness" and c.get("status") == "STALE"
-        for c in checks
+        c.get("name") == "test_freshness" and c.get("status") == "STALE"
+        for c in record_mod._rows(row, "checks")
     )
 
 

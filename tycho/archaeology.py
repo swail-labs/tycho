@@ -144,7 +144,7 @@ def blame(repo: Path, target: str, limit: int = 10, cwd: Path | None = None,
     path = resolve(repo, parsed.path, cwd)
     if not path:
         return ["tycho blame: give it a path, e.g. `tycho blame src/app.py`."]
-    records = _touching(repo, path, max(0, limit))
+    records = record_mod.touching(repo, path, limit=max(0, limit))
     if not records:
         return _nothing_here(repo, path)
     now = time.time() if now is None else now
@@ -162,19 +162,6 @@ def blame(repo: Path, target: str, limit: int = 10, cwd: Path | None = None,
         lines.append("  " + _pad(row, widths))
         lines.append("    " + _sentence(record, indent=4))
     return lines
-
-
-def _touching(repo: Path, path: str, limit: int) -> list[dict]:
-    """Records whose `files` include `path`, newest first.
-
-    A thin pass-through to `record.touching` — kept as a seam only so the dotfile
-    regression that once lived here has somewhere to be pinned (see
-    `test_blame_finds_a_dotfile_path`). The normalization bug it used to work around is
-    fixed at the source now: `record.touching` uses `removeprefix("./")`, not `lstrip`.
-    """
-    if limit <= 0:
-        return []
-    return record_mod.touching(repo, path, limit=limit)
 
 
 def log(repo: Path, limit: int = 20, verdict: str | None = None,
@@ -294,16 +281,13 @@ def _evidence(record: dict) -> str:
     4. **"never verified"** — no check could conclude *and* nothing ran. The floor, and
        distinct from 3: "nobody tested it" and "nobody could even look" are different news.
     """
-    checks = record.get("checks")
-    checks = [c for c in checks if isinstance(c, dict)] if isinstance(checks, list) else []
+    checks = record_mod._rows(record, "checks")
     for check in checks:
         if str(check.get("status")) in _ADVERSE:
             name = str(check.get("name") or "check")
             detail = str(check.get("evidence") or "").strip()
             return f"{name}: {detail}" if detail else f"{name} failed"
-    commands = record.get("commands")
-    commands = [c for c in commands if isinstance(c, dict)] if isinstance(commands, list) else []
-    runners = [c for c in commands if c.get("runner")]
+    runners = [c for c in record_mod._rows(record, "commands") if c.get("runner")]
     if runners:
         # Prefer the one that says the most: a failure over an unknown over a pass.
         for outcome, phrasing in (("failed", "{} failed"), ("unknown", "{} ran, exit status unknown"),
@@ -324,8 +308,7 @@ def _claim(record: dict, budget: int) -> str:
     the closing message is the summary a human means by "what did it say it did" — the
     earlier ones are usually narration mid-work.
     """
-    claims = record.get("claims")
-    claims = [c for c in claims if isinstance(c, str) and c.strip()] if isinstance(claims, list) else []
+    claims = record_mod._claims(record)
     if not claims:
         return _NO_CLAIM
     first_line = next((ln.strip() for ln in claims[-1].splitlines() if ln.strip()), "")

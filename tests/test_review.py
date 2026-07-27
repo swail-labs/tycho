@@ -31,6 +31,19 @@ def _git(repo: Path, *args: str) -> None:
     )
 
 
+def test_a_machine_without_git_degrades_instead_of_raising(tmp_path: Path, monkeypatch):
+    """`review.inspect` promises it never raises, and it is reachable from the Stop hook and
+    the commit hook. Without the guard in `gitstate._git`, a missing git binary raises
+    FileNotFoundError straight through it."""
+    def no_git(*args, **kwargs):
+        raise FileNotFoundError(2, "No such file or directory: 'git'")
+
+    monkeypatch.setattr(gitstate.subprocess, "run", no_git)
+    lines, findings = review.inspect(tmp_path, "HEAD")
+    assert findings == []
+    assert "not a git repository" in lines[0]
+
+
 def repo_with_commit(tmp_path: Path) -> Path:
     _git(tmp_path, "init")
     (tmp_path / "src.py").write_text("".join(f"line{i}\n" for i in range(1, 31)))
@@ -129,8 +142,7 @@ def test_parses_new_deleted_renamed_and_binary_files():
     assert (new.path, new.status, new.start, new.end) == ("new.py", "added", 1, 2)
     # A deleted file is addressed on the side that still has line numbers: the old one.
     assert (gone.path, gone.status, gone.start, gone.end) == ("gone.py", "deleted", 1, 2)
-    assert (moved.path, moved.status, moved.old_path, moved.ref) == (
-        "moved.py", "renamed", "old.py", "moved.py")
+    assert (moved.path, moved.status, moved.ref) == ("moved.py", "renamed", "moved.py")
     assert (pic.path, pic.status, pic.ref) == ("pic.png", "binary", "pic.png")
 
 

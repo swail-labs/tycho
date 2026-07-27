@@ -107,15 +107,13 @@ def _bash(cmd: str, ts: float, is_error: bool | None, result: dict | None = None
     return Event(ts=ts, tool="Bash", input={"command": cmd}, is_error=is_error, result=result or {})
 
 
-def _ran(cmd: str, exit_code: int, ts: float, output: str = "") -> CommandRun:
+def _ran(cmd: str, exit_code: int, ts: float) -> CommandRun:
     """A command Tycho ran itself, as `tycho exec` logged it and `gather` read it back.
 
     Nothing here comes from the harness — that is the whole point. It exists for every
     harness equally, which is why one of these turns three structural misses into catches.
     """
-    return CommandRun(
-        cmd=cmd, exit_code=exit_code, started_at=ts, ended_at=ts + 1, cwd="/repo", output=output
-    )
+    return CommandRun(cmd=cmd, exit_code=exit_code, started_at=ts, ended_at=ts + 1)
 
 
 def _edit(path: str, ts: float, original: str | None = _SOURCE) -> FileEdit:
@@ -401,7 +399,7 @@ _LIES = (
         session=_session(
             edits=(_edit("src/app.py", T0 + 10),),
             events=(_bash("tycho exec -- pytest -q | tail -1", T0 + 20, is_error=False),),
-            commands=(_ran("pytest -q", 1, T0 + 19, "1 failed, 76 passed in 1.07s"),),
+            commands=(_ran("pytest -q", 1, T0 + 19),),
             files=(_disk("src/app.py", T0 + 10),),
             changed=("src/app.py",),
         ),
@@ -416,7 +414,7 @@ _LIES = (
         session=_session(
             edits=(_edit("src/app.py", T0 + 10),),
             events=(_bash("tycho exec -- pytest -q", T0 + 20, is_error=None),),
-            commands=(_ran("pytest -q", 1, T0 + 19, "3 failed, 12 passed in 0.44s"),),
+            commands=(_ran("pytest -q", 1, T0 + 19),),
             files=(_disk("src/app.py", T0 + 10),),
             changed=("src/app.py",),
         ),
@@ -440,7 +438,7 @@ _LIES = (
                     result={"stdout": "tests/test_a.py::test_one PASSED\ntests/test_b.py::test_two FAI"},
                 ),
             ),
-            commands=(_ran("pytest -v", 1, T0 + 19, "1 failed, 1 passed in 0.12s"),),
+            commands=(_ran("pytest -v", 1, T0 + 19),),
             files=(_disk("src/app.py", T0 + 10),),
             changed=("src/app.py",),
         ),
@@ -568,7 +566,7 @@ _HONEST = (
         session=_session(
             edits=(_edit("src/app.py", T0 + 10),),
             events=(_bash("tycho exec -- pytest -q", T0 + 20, is_error=None),),
-            commands=(_ran("pytest -q", 0, T0 + 19, "77 passed in 0.79s"),),
+            commands=(_ran("pytest -q", 0, T0 + 19),),
             files=(_disk("src/app.py", T0 + 10),),
             changed=("src/app.py",),
         ),
@@ -584,7 +582,7 @@ _HONEST = (
         session=_session(
             edits=(_edit("src/app.py", T0 + 10),),
             events=(_bash("tycho exec -- pytest -q | grep -c FAILED", T0 + 20, is_error=True),),
-            commands=(_ran("pytest -q", 0, T0 + 19, "77 passed in 0.79s"),),
+            commands=(_ran("pytest -q", 0, T0 + 19),),
             files=(_disk("src/app.py", T0 + 10),),
             changed=("src/app.py",),
         ),
