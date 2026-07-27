@@ -1,8 +1,9 @@
 """The Stop-hook entrypoint: stdin JSON → verify → print, never block.
 
 Wired by ``tycho init`` (next milestone) into the harness's Stop hook. Reads the
-hook payload on stdin, locates the transcript + repo, runs the engine, and emits
-the verdict as the harness's JSON output.
+hook payload on stdin, locates the transcript + repo, runs the engine, records the
+turn, and emits — *when the turn is worth mentioning* — the digest as the harness's
+JSON output. Most turns emit nothing: see ``_digest_output`` and ``digest.speaks``.
 
 A verifier must never break the agent: any bad input, missing transcript, or
 internal error exits 0 with no output. Unlike ``tycho verify`` (which exits 1 on
@@ -17,6 +18,7 @@ import sys
 import time
 from pathlib import Path
 
+from . import digest as digest_mod
 from . import harness as harness_mod
 from . import record
 from . import state
@@ -75,9 +77,13 @@ def run(stdin_text: str) -> dict | None:
         # above (nothing to verify, no transcript, unreadable session) writes no record, so
         # the file can never claim a turn was verified when it wasn't. `append` never
         # raises; `build` is pure, so the clock is read here and passed in.
-        record.append(
-            repo, record.build(session, results, verdict.name, harness.name, time.time())
-        )
+        # Read the repo's prior turns *before* appending this one: the digest's signals are
+        # relative to what this repo normally does, and a history containing the turn being
+        # judged would compare it against itself (a wide turn would raise its own norm, a
+        # standing failure would decay itself into silence on its first occurrence).
+        history = record.read(repo, limit=digest_mod.HISTORY)
+        turn = record.build(session, results, verdict.name, harness.name, time.time())
+        record.append(repo, turn)
     except Exception:
         # broad catch is the correct behavior here — fail open, never
         # break the agent's Stop over an unreadable transcript or git hiccup. Clear the
@@ -97,8 +103,55 @@ def run(stdin_text: str) -> dict | None:
     # reading (TYCHO-116). Cache-only — never a network call on the hot Stop path.
     update = _update_suffix(harness)
     override_notice = _override_notice(repo, harness, verdict, results)
+    # THE SEAM (strategy §9.1 vs §11.1). Two channels, two different questions:
+    #
+    #   model channel  — "should the agent fix this?"     → `_relay_output`, verdict-driven.
+    #   human channel  — "should we interrupt a person?"  → `_digest_output`, anomaly-driven.
+    #
+    # They are computed independently and on purpose. The relay is the *first* branch and is
+    # untouched by selectivity: it still fires on every non-VERIFIED verdict, so a turn whose
+    # digest stays silent (an INDETERMINATE that isn't news, a failure that has been standing
+    # for three turns) still pushes the agent to fix it. The digest never writes into
+    # `additionalContext` / `reason`; the relay never consults `digest.speaks`.
     relayed = _relay_output(repo, harness, verdict, report, agent_report, update)
-    return relayed if relayed is not None else harness.format_output(report + override_notice + update)
+    if relayed is not None:
+        return relayed
+    body = _digest_output(repo, turn, history, report, verdict)
+    if not body and not update:
+        return None  # routine turn — say nothing at all (§11.1: talk less, be read)
+    # `lstrip` because `update`/`override_notice` lead with blank lines to separate them from a
+    # body that, on a silent turn, isn't there.
+    return harness.format_output((body + override_notice + update).lstrip("\n"))
+
+
+def _digest_output(
+    repo: Path, turn: dict, history: list[dict], report: str, verdict: Verdict
+) -> str:
+    """The human-facing Stop output: a four-line digest, or "" for silence (strategy §11.1).
+
+    Selectivity lives in `digest.speaks`, which reads this repo's own recent turns — so the
+    hook stays quiet on turns that are normal *here* and speaks on the ones that aren't.
+
+    **The relay opt-in overrides the silence, and only for unproven verdicts.** Turning the
+    relay on is an operator saying "keep the agent working until this is VERIFIED", so on a
+    non-VERIFIED turn they get told every time — including the turn where the relay itself goes
+    quiet because the leash ran out, which is precisely when a standing failure would otherwise
+    end the turn with nobody informed. Novelty decay is the *human's* filter; the relay opt-in
+    is the human electing out of it. With the relay off (the default) nothing changes.
+
+    Never raises, and fails toward the old behaviour rather than toward silence: a digest bug on
+    an unproven turn falls back to the full verdict block, because losing an adverse verdict to
+    a rendering error is the one outcome worse than being noisy. A routine turn stays silent
+    either way — there was nothing to lose.
+    """
+    try:
+        insistent = verdict is not Verdict.VERIFIED and state.relay_enabled(repo)
+        signal = digest_mod.speaks(turn, history, decay=not insistent)
+        if signal is None and not insistent:
+            return ""
+        return digest_mod.brief(turn, signal)
+    except Exception:
+        return "" if verdict is Verdict.VERIFIED else report
 
 
 def _update_suffix(harness) -> str:
