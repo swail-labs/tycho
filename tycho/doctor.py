@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import __version__
+from . import gitstate
 from . import harness as harness_mod
 from . import init as init_mod
 from . import state
@@ -34,6 +35,10 @@ INFO = "INFO"
 # Advisory only (not in _ADVERSE), but louder than INFO: whether the harness still reads
 # our output is the one thing doctor structurally can't check for itself.
 DRIFT = "HARNESS DRIFT"
+# `.tycho/` is exposed to git. Not adverse (Tycho is still verifying), but the turn record
+# carries the agent's own prose and every command it ran, so it outranks INFO.
+EXPOSED = "TURN RECORD NOT IGNORED"
+TRACKED = "TURN RECORD TRACKED BY GIT"
 
 _ADVERSE = (BROKEN, OUTDATED)
 
@@ -74,6 +79,8 @@ def diagnose(repo: Path) -> list[Finding]:
     if note:
         findings.append(Finding(INFO, note, "run `tycho update`"))
     wired = _wired_harnesses(repo, findings)
+    findings.extend(_exposure(repo))
+    findings.extend(_upgrade_notes(repo))
 
     if not wired:
         findings.append(Finding(
@@ -178,6 +185,56 @@ def _schema_finding(repo: Path) -> Finding | None:
     return None
 
 
+def _exposure(repo: Path) -> list[Finding]:
+    """Is `.tycho/` exposed to git here?
+
+    0.1.0 shipped no gitignore step, so an upgraded repo can be writing `turns.jsonl` — the
+    agent's prose, every command it ran, and check evidence — into a directory `git add -A`
+    will happily commit. Two distinct faults: not ignored (init fixes it) and already tracked
+    (init cannot: an ignore rule does not untrack what git already follows).
+
+    Fails silent on every "can't tell": no git, not a repo, unreadable index. A privacy alarm
+    that fires on a machine without git is a privacy alarm nobody reads."""
+    entry = init_mod._IGNORE_ENTRY
+    if not gitstate.is_repo(repo):
+        return []
+    findings: list[Finding] = []
+    code, out = gitstate._git(repo, "ls-files", "--error-unmatch", "--", entry)
+    if code == 0 and out.strip():
+        findings.append(Finding(
+            TRACKED,
+            f"{entry} is tracked by git — the turn record (the agent's prose, its commands and "
+            f"check evidence) is being committed and pushed",
+            "untrack it yourself, then commit: `git rm -r --cached .tycho/` — `tycho init` "
+            "cannot repair this, and Tycho will not run it for you (already-pushed history "
+            "stays exposed; that call is yours)",
+        ))
+    ignored, _ = gitstate._git(repo, "check-ignore", "-q", entry)
+    if ignored == 1:  # 0 = ignored, 128 = git couldn't tell → say nothing
+        findings.append(Finding(
+            EXPOSED,
+            f"{entry} is not gitignored here — `git add -A` will pick up the turn record",
+            "run `tycho init` — one run adds the ignore rule and repairs anything else "
+            "outdated above",
+        ))
+    return findings
+
+
+def _upgrade_notes(repo: Path) -> list[Finding]:
+    """Said once to an upgrader, and only here: an install still stamped with an older schema
+    predates 0.2.0's silence, and "I updated and Tycho stopped working" is the ticket that
+    release earns. `tycho init` clears the stamp, and with it this note."""
+    stamped = state.installed_schema(repo)
+    if stamped is None or stamped >= state.SCHEMA:
+        return []
+    return [Finding(
+        INFO,
+        "0.2.0 is quiet by design — where 0.1.0 printed a verdict after every turn, the hook "
+        "now prints a digest only when a turn is unusual. Silence means it verified.",
+        "`tycho show` for the last turn, `tycho log` for history",
+    )]
+
+
 def _heartbeat_finding(repo: Path, wired: list[str]) -> Finding:
     """The liveness answer, hedged as the module docstring requires."""
     beat = state.last_run(repo)
@@ -253,7 +310,7 @@ def render(findings: list[Finding]) -> str:
         head = f"tycho doctor (v{__version__})"  # index unreachable / opted out
     lines = [head]
     for f in findings:
-        mark = {OK: "✓", INFO: "•", DRIFT: "⚠"}.get(f.level, "✗")
+        mark = {OK: "✓", INFO: "•", DRIFT: "⚠", EXPOSED: "⚠"}.get(f.level, "✗")
         label = "" if f.level in (OK, INFO, DRIFT) else f"{f.level}: "
         lines.append(f"  {mark} {label}{f.text}")
         if f.fix:

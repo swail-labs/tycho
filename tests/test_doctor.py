@@ -198,6 +198,108 @@ def test_malformed_config_is_broken_not_a_traceback(tmp_path: Path):
     assert doctor.BROKEN in _levels(doctor.diagnose(tmp_path))
 
 
+# --- the turn record's exposure to git ---------------------------------------
+#
+# 0.1.0 shipped no gitignore step. An upgraded repo can therefore be committing turns.jsonl —
+# the agent's own prose, every command it ran, check evidence — and `tycho init` cannot undo
+# the tracked half of that, because an ignore rule does not untrack what git already follows.
+
+
+def _repo(tmp_path: Path) -> Path:
+    import subprocess
+
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "config", "user.email", "t@t"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "config", "user.name", "t"], check=True)
+    return tmp_path
+
+
+def _commit_tycho_dir(repo: Path) -> None:
+    """What a 0.1.0-era `git add -A` did: .tycho/ committed, no ignore rule anywhere."""
+    import subprocess
+
+    state.dir_for(repo).mkdir(parents=True, exist_ok=True)
+    (state.dir_for(repo) / "turns.jsonl").write_text('{"claims":["I hardcoded the creds"]}\n')
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "work"], check=True)
+
+
+def test_an_unignored_tycho_dir_is_reported(tmp_path: Path):
+    repo = _repo(tmp_path)
+    state.dir_for(repo).mkdir(parents=True)
+    findings = doctor._exposure(repo)
+    assert _levels(findings) == [doctor.EXPOSED]
+    assert "tycho init" in findings[0].fix
+
+
+def test_a_tracked_tycho_dir_is_reported_louder_and_init_is_not_the_fix(tmp_path: Path):
+    # The one init cannot repair. Doctor names the command and refuses to run it: untracking
+    # someone's files is their call, not a diagnostic's.
+    repo = _repo(tmp_path)
+    _commit_tycho_dir(repo)
+    findings = doctor._exposure(repo)
+    assert doctor.TRACKED in _levels(findings)
+    tracked = next(f for f in findings if f.level == doctor.TRACKED)
+    assert "git rm -r --cached .tycho/" in tracked.fix
+    assert "cannot repair" in tracked.fix
+
+
+def test_init_leaves_an_already_tracked_tycho_dir_tracked(tmp_path: Path):
+    # The reason the finding is distinct: adding the ignore rule fixes only half of it.
+    repo = _repo(tmp_path)
+    _commit_tycho_dir(repo)
+    _install(repo)
+    assert doctor.TRACKED in _levels(doctor._exposure(repo))
+
+
+def test_an_ignored_untracked_tycho_dir_says_nothing(tmp_path: Path):
+    repo = _repo(tmp_path)
+    (repo / ".gitignore").write_text(".tycho/\n")
+    state.dir_for(repo).mkdir(parents=True)
+    assert doctor._exposure(repo) == []
+
+
+def test_exposure_is_silent_outside_a_git_repo(tmp_path: Path):
+    # Fail safe: no git, no repo, no unreadable index may produce a privacy alarm.
+    assert doctor._exposure(tmp_path) == []
+
+
+def test_exposure_never_makes_doctor_unhealthy(tmp_path: Path):
+    # It is a privacy finding, not a "Tycho isn't verifying" one — the footer must not lie.
+    repo = _repo(tmp_path)
+    _commit_tycho_dir(repo)
+    _install(repo)
+    findings = doctor.diagnose(repo)
+    assert doctor.TRACKED in _levels(findings)
+    assert doctor.healthy(findings)
+
+
+def test_diagnose_reports_exposure(tmp_path: Path):
+    repo = _repo(tmp_path)
+    state.dir_for(repo).mkdir(parents=True)
+    assert doctor.EXPOSED in _levels(doctor.diagnose(repo))
+
+
+# --- the upgrade note: 0.2.0 went quiet --------------------------------------
+
+
+def test_an_old_schema_install_is_told_that_0_2_0_is_quiet(tmp_path: Path):
+    # "I updated and Tycho stopped working" is this release's likeliest ticket. Said once,
+    # to the upgrader who is already running doctor to find out, alongside the same
+    # `tycho init` the schema finding asks for — not per turn.
+    _install(tmp_path)
+    path = state.dir_for(tmp_path) / "install.json"
+    data = json.loads(path.read_text())
+    path.write_text(json.dumps({**data, "schema": 1}))
+    text = doctor.render(doctor.diagnose(tmp_path))
+    assert "quiet by design" in text and "tycho show" in text
+
+
+def test_a_current_install_is_not_told_anything_about_the_quiet(tmp_path: Path):
+    _install(tmp_path)
+    assert "quiet by design" not in doctor.render(doctor.diagnose(tmp_path))
+
+
 # --- what doctor must NOT cry wolf about -------------------------------------
 
 def test_a_fresh_install_that_has_not_fired_yet_is_not_broken(tmp_path: Path):
