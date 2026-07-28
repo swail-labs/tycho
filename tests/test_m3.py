@@ -187,10 +187,14 @@ def test_provenance_web_claim_backed_by_search_passes():
     assert checks.tool_call_provenance(s).status == CheckStatus.PASS
 
 
-def test_provenance_web_claim_with_no_search_fails():
+def test_provenance_web_claim_with_no_search_is_advisory():
+    # Advisory: an unbacked claim is reported, never FAILed — the prose may be quoted or
+    # injected, and a verdict-bearing FAIL there is attacker-controllable.
     s = make_session(messages=[_msg("I searched the web for the API docs.")], events=[_tool("Bash")])
     r = checks.tool_call_provenance(s)
-    assert r.status == CheckStatus.FAIL and "web search/fetch" in r.evidence
+    assert r.status == CheckStatus.UNSUPPORTED
+    assert "web search/fetch" in r.evidence and "advisory" in r.evidence
+    assert engine.verdict_of([r]) is not Verdict.FAILED
 
 
 def test_provenance_issue_claim_backed_by_jira_tool_passes():
@@ -201,9 +205,10 @@ def test_provenance_issue_claim_backed_by_jira_tool_passes():
     assert checks.tool_call_provenance(s).status == CheckStatus.PASS
 
 
-def test_provenance_issue_claim_with_no_tool_fails():
+def test_provenance_issue_claim_with_no_tool_is_advisory():
     s = make_session(messages=[_msg("I filed ACME-91 for that.")], events=[_tool("Bash")])
-    assert checks.tool_call_provenance(s).status == CheckStatus.FAIL
+    r = checks.tool_call_provenance(s)
+    assert r.status == CheckStatus.UNSUPPORTED and "issue-tracker action" in r.evidence
 
 
 def test_provenance_unsupported_without_prose():
@@ -246,15 +251,16 @@ def test_provenance_does_not_false_fail_on_reported_third_party_action():
         assert checks.tool_call_provenance(s).status != CheckStatus.FAIL, text
 
 
-def test_provenance_agent_claim_still_fails_beside_a_name():
+def test_provenance_agent_claim_still_reported_beside_a_name():
     # The guard must not swallow a real first-person claim just because a name is nearby: the
-    # agent's own subject-dropped/first-person claim still FAILs without a tool call.
+    # agent's own subject-dropped/first-person claim is still reported as unbacked.
     for text in (
         "I closed ACME-30 for Dan.",
         "Filed ACME-91; ACME-30 closed.",
     ):
         s = make_session(messages=[_msg(text)], events=[_tool("Bash")])
-        assert checks.tool_call_provenance(s).status == CheckStatus.FAIL, text
+        r = checks.tool_call_provenance(s)
+        assert r.status == CheckStatus.UNSUPPORTED and "no matching tool call" in r.evidence, text
 
 
 def test_provenance_issue_status_arrow_and_key_first_order_pass():
@@ -268,12 +274,13 @@ def test_provenance_issue_status_arrow_and_key_first_order_pass():
         assert checks.tool_call_provenance(s).status == CheckStatus.PASS, text
 
 
-def test_provenance_issue_status_arrow_no_tool_fails():
-    # a claimed transition ("Hold → In Review" next to a KEY) with no Jira call is fabricated
+def test_provenance_issue_status_arrow_no_tool_is_reported():
+    # a claimed transition ("Hold → In Review" next to a KEY) with no Jira call is reported
     s = make_session(
         messages=[_msg("Moved it: ACME-92 Hold → In Review.")], events=[_tool("Bash")],
     )
-    assert checks.tool_call_provenance(s).status == CheckStatus.FAIL
+    r = checks.tool_call_provenance(s)
+    assert r.status == CheckStatus.UNSUPPORTED and "no matching tool call" in r.evidence
 
 
 def test_provenance_observed_status_arrow_does_not_false_fail():
@@ -659,3 +666,64 @@ def test_wrapper_install_args_are_not_mistaken_for_a_run(cmd):
     # Reading these as test runs would fabricate a green, which is the one thing
     # this program must never do.
     assert checks._runner_segment(cmd) is None, f"false positive: {cmd}"
+
+
+# --- tool_call_provenance: injected prose (advisory) --------------
+
+def test_provenance_quoted_third_party_prose_cannot_sink_a_run():
+    # The attacker-controlled surface: a poisoned README, a Jira body, a fetched page the agent
+    # quotes back. The claim patterns cannot tell that from the agent's own words, so the check
+    # reports and the run is never FAILED by it.
+    for text in (
+        "I refactored the parser. The upstream README says: 'we searched the web for prior art'.",
+        "Dan moved ACME-99 to Done and searched the web for it. I did not do any of that.",
+        "> Searched the web for prior art.",
+    ):
+        s = make_session(messages=[_msg(text)], events=[_tool("Bash")])
+        r = checks.tool_call_provenance(s)
+        assert r.status != CheckStatus.FAIL, text
+        assert engine.verdict_of([r]) is not Verdict.FAILED, text
+
+
+def test_provenance_prose_cannot_launder_a_real_failure_into_a_pass():
+    # The asymmetry that makes advisory safe: prose can never conjure a tool call, and it can
+    # never turn another check's FAIL into a green.
+    s = make_session(messages=[_msg("I searched the web and it all passed.")], events=[_tool("Bash")])
+    assert checks.tool_call_provenance(s).status != CheckStatus.PASS
+    failing = checks._r("command_execution", CheckStatus.FAIL, "`pytest` reported an error")
+    assert engine.verdict_of([failing, checks.tool_call_provenance(s)]) is Verdict.FAILED
+
+
+def test_claim_patterns_are_bounded_on_adversarial_prose():
+    # An unbounded scan in _REPORTED_STATE took 80s on 192 KB of "it is " — on the Stop hook,
+    # over prose the agent (or anything it quotes) controls.
+    import time
+    prose = "it is " * 32000
+    s = make_session(messages=[_msg(prose)], events=[_tool("Bash")])
+    started = time.perf_counter()
+    checks.tool_call_provenance(s)
+    assert time.perf_counter() - started < 1.0
+
+
+# --- test_freshness: clock skew ----------------------------------
+
+def _freshness_session(mtime: float):
+    green = bash("pytest -q", ts=1000.0)
+    edit = FileEdit(path="src/a.py", ts=900.0, original="x", kind="edit")
+    return make_session(
+        events=[green],
+        edits=[edit],
+        files={"src/a.py": FileState("src/a.py", True, mtime, "x")},
+    )
+
+
+def test_freshness_ignores_an_mtime_from_the_future():
+    # A file out of a tarball, a NAS/VM clock or `touch -t` pinned the repo at STALE forever.
+    for ahead in (86500.0, 315360000.0):
+        r = checks.test_freshness(_freshness_session(1000.0 + ahead))
+        assert r.status == CheckStatus.UNSUPPORTED, ahead
+        assert "future" in r.evidence and "src/a.py" in r.evidence
+
+
+def test_freshness_still_reports_a_real_edit_after_the_run():
+    assert checks.test_freshness(_freshness_session(1060.0)).status == CheckStatus.STALE

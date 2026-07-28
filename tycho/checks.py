@@ -405,10 +405,15 @@ def test_freshness(session: Session) -> CheckResult:
     source_edits = [fe for fe in session.edits if _is_source_path(fe.path)]
     if not source_edits:
         return _r("test_freshness", CheckStatus.UNSUPPORTED, "no source edits to check against the run")
-    stale = []
+    horizon = _clock_horizon(session)
+    stale, skewed = [], []
     for fe in source_edits:
         fs = session.files.get(fe.path)
-        if fs and fs.mtime is not None and fs.mtime > green_ts:
+        if not (fs and fs.mtime is not None):
+            continue
+        if fs.mtime > horizon:
+            skewed.append(fe.path)
+        elif fs.mtime > green_ts:
             stale.append((fe.path, fs.mtime))
     if stale:
         path, mt = max(stale, key=lambda x: x[1])
@@ -419,7 +424,29 @@ def test_freshness(session: Session) -> CheckResult:
         else:
             evidence = f"{path} still uncovered since the last passing run (last edited in an earlier turn)"
         return _r("test_freshness", CheckStatus.STALE, evidence)
+    if skewed:
+        return _r(
+            "test_freshness",
+            CheckStatus.UNSUPPORTED,
+            f"{sorted(skewed)[0]} has an mtime in the future (clock skew, or a copied/extracted"
+            " file) — Tycho can't tell whether it postdates the last passing run",
+        )
     return _r("test_freshness", CheckStatus.PASS, "sources unchanged since the last passing run")
+
+
+# An mtime this far past everything the session actually recorded was not written by this
+# session — a tarball, a NAS clock, a VM clock, `touch -t`. Read as an edit it pins the repo
+# at STALE forever. The reference is the session's own latest timestamp, never the wall
+# clock, so the checks stay pure functions of the snapshot.
+_CLOCK_SLACK = 3600.0
+
+
+def _clock_horizon(session: Session) -> float:
+    stamps = [e.ts for e in session.events]
+    stamps += [fe.ts for fe in session.edits]
+    stamps += [m.ts for m in session.messages]
+    stamps += [c.ended_at for c in session.commands]
+    return max(stamps, default=0.0) + _CLOCK_SLACK
 
 
 def test_provenance(session: Session) -> CheckResult:
@@ -591,7 +618,9 @@ _STATE_VERB = r"(?i:sits?|stands?|shows?|reads?|remains?|stays?|is|are|'s|was|we
 _REPORTED_STATE = re.compile(
     rf"(?:{_ISSUE_ANCHOR}|\bit\b|\b[Tt]he\s+(?:ticket|card|board|issue))\s+"
     rf"(?i:already |just |now |currently |still )*{_STATE_VERB}\b"
-    rf"[^.\n]*?{_ISSUE_STATUS}\s*(?:→|-+>|↔)\s*{_ISSUE_STATUS}"
+    # Bounded, like every other span here: an unbounded `[^.\n]*?` re-scans the rest of the
+    # line from every "it is" in agent-controlled prose — 192 KB of it cost 80s.
+    rf"[^.\n]{{0,80}}?{_ISSUE_STATUS}\s*(?:→|-+>|↔)\s*{_ISSUE_STATUS}"
 )
 
 
@@ -605,10 +634,20 @@ def _claimed_families(session: Session) -> list[tuple[str, tuple[str, ...]]]:
 
 
 def tool_call_provenance(session: Session) -> CheckResult:
-    """Did the agent's prose claim a tool action that never happened?
+    """Did the agent's prose claim a tool action that never happened? **Advisory** — it
+    reports, it never sinks a run.
 
     Deterministic, never an LLM judge: a claimed family must be backed by *some* tool call of
-    that family. No prose captured, or no recognized claim, is UNSUPPORTED — never a false FAIL.
+    that family. No prose captured, or no recognized claim, is UNSUPPORTED.
+
+    An unbacked claim is UNSUPPORTED, not FAIL, and that is deliberate. The input is prose the
+    agent may be *quoting* — a dependency README, a Jira body, a fetched page — and one plain
+    sentence of it ("Searched the web for prior art.") is indistinguishable from the agent's
+    own claim to any pattern that keeps useful recall on subject-dropped agent prose
+    ("Filed ACME-91; ACME-30 closed."). That makes a verdict-bearing FAIL here attacker-
+    controllable, and a confident wrong FAIL is worse than "can't tell". The asymmetry is
+    kept: prose cannot conjure a tool call, so nothing here can launder a real failure into a
+    pass — PASS still requires a matching tool call that genuinely happened.
     """
     if not session.turn_messages:
         return _r("tool_call_provenance", CheckStatus.UNSUPPORTED, "no assistant prose captured to check")
@@ -620,8 +659,9 @@ def tool_call_provenance(session: Session) -> CheckResult:
     if unbacked:
         return _r(
             "tool_call_provenance",
-            CheckStatus.FAIL,
-            f"claimed {', '.join(unbacked)} with no matching tool call this turn",
+            CheckStatus.UNSUPPORTED,
+            f"claimed {', '.join(unbacked)} with no matching tool call this turn — advisory:"
+            " prose can be quoted or injected, so this is a hint to confirm, not a verdict",
         )
     backed = ", ".join(label for label, _ in claimed)
     return _r("tool_call_provenance", CheckStatus.PASS, f"claimed actions are backed by tool calls ({backed})")
