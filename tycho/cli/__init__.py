@@ -126,6 +126,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         from ..wire import hook
 
         return hook.prompt_submit()
+    if args.command == "pre-tool-use":
+        from ..wire import hook
+
+        return hook.pre_tool_use()
     if args.command == "init":
         from ..wire import install as init_mod
 

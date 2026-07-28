@@ -98,5 +98,6 @@ from .outcome import (  # noqa: E402
     _runner_events as _runner_events,
     _status_is_masked as _status_is_masked,
     _unresolved_reds as _unresolved_reds,
+    unmask as unmask,
 )
 from .prose import _claimed_families as _claimed_families  # noqa: E402

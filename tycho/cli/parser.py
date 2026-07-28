@@ -67,6 +67,7 @@ def build() -> argparse.ArgumentParser:
     sub.add_parser("hook", help=_COMMANDS["hook"])
     sub.add_parser("session-start", help="SessionStart-hook entrypoint (internal): update notice at agent bootup")
     sub.add_parser("prompt-submit", help="UserPromptSubmit-hook entrypoint (internal): mark a run in flight for the badge")
+    sub.add_parser("pre-tool-use", help="PreToolUse-hook entrypoint (internal): keep a piped runner's exit status readable")
     i = sub.add_parser("init", help=_COMMANDS["init"])
     i.add_argument(
         "--harness",

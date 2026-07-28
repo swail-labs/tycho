@@ -13,6 +13,7 @@ import sys
 import time
 from pathlib import Path
 
+from ..engine import checks
 from ..views import digest as digest_mod
 from ..read import harness as harness_mod
 from ..store import record
@@ -21,6 +22,7 @@ from ..store import state
 from ..read import session as engine
 from ..model import Verdict
 from ..views.report import render
+from .install import spelling
 
 
 def run(stdin_text: str) -> dict | None:
@@ -285,6 +287,46 @@ def prompt_submit() -> int:
             # re-fire UserPromptSubmit.
             state.reset_relay_streak(repo)
             state.clear_overrides(repo)  # a fresh turn drops any override from the last one
+    except Exception:
+        pass
+    return 0
+
+
+def pre_tool_use() -> int:
+    """PreToolUse hook on the shell tool: keep a piped runner's exit status from being lost.
+
+    `pytest | tail -20` hands the harness tail's status, and pytest's is gone before any hook
+    could read it. Reading the summary out of the output afterwards is inference — it works
+    only for runners whose verdict we can spell, and not at all once the capture is truncated.
+    The status itself is only available in one place: at the moment the runner exits. So the
+    command is rewritten to route the runner through `tycho exec`, which runs it on our own
+    stdio and forwards its code unchanged. What the agent sees is identical; the pipe still
+    pipes. Tycho just stops depending on it.
+
+    Rewrites only a command whose status *would* be masked, and never blocks: an unparseable
+    payload, an unfamiliar shape, an unwritable log — all exit 0 with no output, leaving the
+    command exactly as the agent wrote it.
+    """
+    try:
+        payload = json.loads(sys.stdin.read() or "{}")
+        if not isinstance(payload, dict):
+            return 0
+        tool_input = payload.get("tool_input")
+        if payload.get("tool_name") not in checks._SHELL_TOOLS or not isinstance(tool_input, dict):
+            return 0
+        command = tool_input.get("command")
+        if not isinstance(command, str):
+            return 0
+        rewritten = checks.unmask(command, tycho=spelling.exec_program())
+        if rewritten is None:
+            return 0
+        print(json.dumps({
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "updatedInput": {**tool_input, "command": rewritten},
+            },
+            "suppressOutput": True,
+        }))
     except Exception:
         pass
     return 0

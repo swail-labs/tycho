@@ -13,6 +13,7 @@ import shlex
 from .. import runlog
 from ...model import UNSTRUCTURED_RESULT, Session
 from .cmdread import (
+    _ENV_PREFIX,
     _MAX_CMD_LEN,
     _covers,
     _MAX_UNWRAP_DEPTH,
@@ -48,7 +49,14 @@ def _exec_run_for(event, commands) -> "CommandRun | None":  # noqa: F821 — mod
     """
     if not commands:
         return None
-    argv = _exec_argv(event.input.get("command") or "")
+    cmd = event.input.get("command") or ""
+    # `tycho exec` in the command text is the direct case — the agent typed it. The second is
+    # the PreToolUse rewrite: the harness runs the rewritten command but records the one the
+    # agent wrote, so the transcript says `go test ./... | tail -20` while the log says
+    # `go test ./...`. Without this the strongest evidence Tycho has sits in `commands.jsonl`
+    # attached to nothing, and the verdict falls back to reading output — which is the whole
+    # thing the rewrite exists to stop doing.
+    argv = _exec_argv(cmd) or _runner_argv(cmd)
     if not argv:
         return None
     # The event is stamped when the tool *finished*; a run that began after that is a
@@ -65,6 +73,23 @@ def _exec_run_for(event, commands) -> "CommandRun | None":  # noqa: F821 — mod
             continue  # a later run, by us or by another agent in this repo
         matches.append(run)
     return matches[-1] if len(matches) == 1 else None
+
+
+def _runner_argv(cmd: str) -> list[str] | None:
+    """The runner's argv as `tycho exec` would have logged it, or None.
+
+    The join key when the rewrite happened but the transcript kept the original text. Uses the
+    *normalized* segment — path and env prefix stripped, redirects removed — which is what the
+    rewrite hands `exec` in the common case. An unusual spelling (`./venv/bin/pytest -q`) does
+    not normalize to what was logged, so it simply doesn't match: no join, no claim.
+    """
+    segment = _runner_segment(cmd)
+    if segment is None:
+        return None
+    try:
+        return shlex.split(segment) or None
+    except ValueError:
+        return None
 
 
 def _status_is_masked(cmd: str, _depth: int = 0) -> bool:
@@ -101,6 +126,42 @@ def _status_is_masked(cmd: str, _depth: int = 0) -> bool:
                 return True  # something ran after; its status is what got recorded
         return False  # nothing after it can overwrite the status — trust the exit code
     return False  # no runner in this command at all
+
+
+def unmask(cmd: str, tycho: str = "tycho") -> str | None:
+    """`cmd` with its runner routed through `tycho exec`, or None when there is nothing to fix.
+
+    The root cause of a masked status is that the status was thrown away before anyone could
+    read it: `pytest | tail -20` hands the harness tail's exit code, and pytest's is gone. No
+    amount of reading the output afterwards recovers it — that is inference from what the
+    runner said, not the status itself, and it is only ever as good as the summary vocabulary.
+
+    So take the status where it still exists. `tycho exec` runs the child with our own stdio
+    and forwards its code unchanged, which makes `tycho exec -- pytest | tail -20` behave
+    exactly as the agent wrote it while putting pytest's real status on the record. The pipe
+    still does what the pipe does; it just no longer decides what Tycho knows.
+
+    Inserted after any environment prefix — `FOO=1 pytest` prefixed at the start would ask
+    `exec` to run a program named `FOO=1` — and only into the first runner segment, since the
+    text around it must survive verbatim. Returns None when the command is already routed
+    through `exec`, when nothing masks the status, and when the runner is inside a wrapper
+    (`sh -c '...'`), where rewriting means editing a string this does not own.
+    """
+    if len(cmd) > _MAX_CMD_LEN or not _status_is_masked(cmd):
+        return None
+    parts = _SEGMENT_TOKENS.split(cmd)
+    for i in range(0, len(parts), 2):
+        seg = parts[i]
+        if not _is_runner(_normalize_segment(seg)):
+            continue
+        head = len(seg) - len(seg.lstrip())
+        env = _ENV_PREFIX.match(seg[head:])
+        at = head + (env.end() if env else 0)
+        if seg[at:].lstrip().startswith((f"{tycho} exec", "tycho exec")):
+            return None
+        parts[i] = f"{seg[:at]}{tycho} exec -- {seg[at:]}"
+        return "".join(parts)
+    return None
 
 
 def _captured_output(event) -> str:

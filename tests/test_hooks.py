@@ -1,9 +1,12 @@
 """Stop hooks + Claude Code, Cursor, and Codex adapters."""
 
+import io
 import json
 import os
 import sqlite3
 from pathlib import Path
+
+import pytest
 
 from tycho.engine import checks
 from tycho.read import events, harness
@@ -704,5 +707,50 @@ def test_init_preserves_existing_config(tmp_path: Path):
     _init_all(tmp_path)
     data = json.loads(settings.read_text())
     assert data["model"] == "opus"  # untouched
-    assert data["hooks"]["PreToolUse"] == [{"x": 1}]  # untouched
+    # Tycho appends its own PreToolUse group; the user's unrecognized entry survives verbatim,
+    # `hooks` key absent as they wrote it.
+    assert data["hooks"]["PreToolUse"][0] == {"x": 1}
+    assert init_mod._is_tycho_owned(data["hooks"]["PreToolUse"][-1]["hooks"][0]["command"])
     assert init_mod._is_tycho_hook(data["hooks"]["Stop"][0]["hooks"][0]["command"])
+
+
+def test_pre_tool_use_reroutes_a_masked_runner(capsys, monkeypatch):
+    from tycho.wire import hook as hook_mod
+
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Bash",
+        "tool_input": {"command": "pytest -q 2>&1 | tail -5", "description": "run tests"},
+    })))
+    assert hook_mod.pre_tool_use() == 0
+    out = json.loads(capsys.readouterr().out)
+    updated = out["hookSpecificOutput"]["updatedInput"]
+    assert updated["command"].startswith("tycho exec -- pytest -q") or " exec -- pytest -q" in updated["command"]
+    # Everything else the harness sent back untouched: dropping a field would silently
+    # discard part of the call the agent made.
+    assert updated["description"] == "run tests"
+
+
+@pytest.mark.parametrize("payload", [
+    {"tool_name": "Bash", "tool_input": {"command": "pytest -q"}},   # nothing masks it
+    {"tool_name": "Read", "tool_input": {"file_path": "x"}},         # not a shell tool
+    {"tool_name": "Bash", "tool_input": {"command": 42}},            # not even a string
+    {"tool_name": "Bash"},                                           # no input at all
+    {},
+])
+def test_pre_tool_use_says_nothing_rather_than_guessing(capsys, monkeypatch, payload):
+    """Silence leaves the command exactly as the agent wrote it. This hook is the only one
+    that can change what runs, so every uncertain path has to end in no output."""
+    from tycho.wire import hook as hook_mod
+
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+    assert hook_mod.pre_tool_use() == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_pre_tool_use_survives_junk_on_stdin(capsys, monkeypatch):
+    from tycho.wire import hook as hook_mod
+
+    monkeypatch.setattr("sys.stdin", io.StringIO("not json at all"))
+    assert hook_mod.pre_tool_use() == 0
+    assert capsys.readouterr().out == ""

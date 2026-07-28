@@ -1436,3 +1436,41 @@ def test_gtest_skip_is_caught():
     after = "TEST(Slug, Accents) {\n  GTEST_SKIP() << \"out of scope\";\n  EXPECT_EQ(slugify(\"a\"), \"a\");\n}\n"
     result = checks.skip_mock_injection(_edit("test_slug.cc", before, after))
     assert result.status is CheckStatus.FAIL
+
+
+@pytest.mark.parametrize("command, expected", [
+    # The pipe is the whole problem: it hands the harness tail's status and throws the
+    # runner's away before any hook could read it.
+    ("cargo test 2>&1 | tail -20", "tycho exec -- cargo test 2>&1 | tail -20"),
+    ("pytest; echo done", "tycho exec -- pytest; echo done"),
+    ("npm test || true", "tycho exec -- npm test || true"),
+    ("cd x && go test ./... | tail -5", "cd x && tycho exec -- go test ./... | tail -5"),
+    # After the env prefix, not before it — `exec` would look for a program named `FOO=1`.
+    ("FOO=1 pytest | tail", "FOO=1 tycho exec -- pytest | tail"),
+    ("pytest -q", None),                        # nothing masks the status; leave it alone
+    ("tycho exec -- pytest | tail", None),      # already routed through exec
+    ('sh -c "pytest | tail"', None),            # the runner is inside a string we don't own
+    ("ls | wc -l", None),                       # no runner at all
+])
+def test_a_masked_runner_is_rerouted_through_exec(command, expected):
+    assert checks.unmask(command) == expected
+
+
+def test_the_rewrite_leaves_everything_around_the_runner_verbatim():
+    """It edits one segment of the agent's command line. Anything else — a `cd`, a redirect,
+    the pipeline downstream — has to come back exactly as written, or the rewrite has changed
+    what the agent asked for rather than how its status is recorded."""
+    original = "cd sub && FOO=bar uv run pytest -q 2>&1 | tail -n 5 | grep -v warn"
+    rewritten = checks.unmask(original)
+    assert rewritten == original.replace("uv run pytest", "tycho exec -- uv run pytest")
+
+
+def test_exec_evidence_joins_a_transcript_that_kept_the_original_command():
+    """Claude Code runs the rewritten command but records the one the agent wrote. Without
+    this join the real exit status sits in `commands.jsonl` attached to nothing, and the
+    verdict falls back to reading output — the thing the rewrite exists to stop."""
+    from tycho.model import CommandRun
+
+    event = bash("go test ./... 2>&1 | tail -20", ts=100.0, is_error=False)
+    run = CommandRun(cmd="go test ./...", exit_code=1, started_at=99.0, ended_at=99.5)
+    assert checks._outcome(event, (run,)) is True  # the real status, not the pipe's

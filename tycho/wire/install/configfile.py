@@ -145,9 +145,12 @@ def _strip_claude_tycho(groups: list) -> tuple[list, bool]:
         entries = (group.get("hooks") or []) if isinstance(group, dict) else []
         kept = [h for h in entries if not (isinstance(h, dict) and _is_tycho_owned(h.get("command")))]
         existed = existed or len(kept) != len(entries)
-        if not isinstance(group, dict):
+        if not isinstance(group, dict) or not entries:
+            # Nothing of ours in here, and possibly no `hooks` key at all — a group we don't
+            # recognize goes back byte-for-byte. Rebuilding it added an empty `hooks: []` to
+            # entries the user wrote, which is a rewrite of something Tycho does not own.
             out.append(group)
-        elif kept or not entries:
+        elif kept:
             out.append({**group, "hooks": kept})
     return out, existed
 

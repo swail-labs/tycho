@@ -57,6 +57,29 @@ def status_command() -> str:
     return _command_for("statusline")
 
 
+def exec_program() -> str:
+    """How to spell Tycho inside a command the *agent's* shell will run.
+
+    A different question from `hook_command`, and it took a broken session to see why. That
+    one is written into a settings file and run by the harness; this one is spliced into the
+    agent's own command line, in the agent's own environment. Resolving it with
+    `which("tycho")` found a *different* install than the one running this hook, in a shell
+    carrying a stray `PYTHONHOME` — so the rewritten command died with `No module named
+    'encodings'` and the agent reported a Go build failure that was entirely Tycho's doing.
+    A verifier that breaks the command it was inspecting has done the worst thing it can do.
+
+    So: this exact interpreter, by absolute path, with `-E`. Self-referential on purpose —
+    if this hook is running, that interpreter works and `tycho.cli` imports for it. `-E` makes
+    it ignore `PYTHONHOME`/`PYTHONPATH` from the agent's shell, and applies to Tycho alone:
+    the test command underneath inherits the environment the agent actually has, untouched,
+    which unsetting those variables outright would not have preserved.
+
+    A frozen build has no interpreter to insulate and no `-m` to give it.
+    """
+    program = _quote_program(sys.executable.replace("\\", "/"))
+    return program if getattr(sys, "frozen", False) else f"{program} -E -m tycho.cli"
+
+
 def _command_for(subcommand: str) -> str:
     # Claude Code runs hook commands through Git Bash, which eats unquoted backslashes, so a
     # native Windows path never fires. A blunt swap, not Path.as_posix (host-flavored).
@@ -124,12 +147,18 @@ def _is_tycho_prompt_submit(command: object) -> bool:
 
 
 def _is_tycho_owned(command: object) -> bool:
-    """Any hook command Tycho installs into a matcher-group: Stop, SessionStart or
-    UserPromptSubmit."""
+    """Any hook command Tycho installs into a matcher-group: Stop, SessionStart,
+    UserPromptSubmit or PreToolUse.
+
+    Every entry must be listed here. This is what a re-install strips before writing, so a
+    missing spelling does not fail loudly — it appends a second copy of that hook on every
+    `tycho init`, quietly, in the user's config.
+    """
     return (
         _is_tycho_hook(command)
         or _is_tycho_session_start(command)
         or _is_tycho_prompt_submit(command)
+        or _is_ours(command, "pre-tool-use")
     )
 
 

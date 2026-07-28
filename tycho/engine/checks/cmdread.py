@@ -424,6 +424,14 @@ def _runner_segment(cmd: str, _depth: int = 0) -> str | None:
     return None
 
 
+def _after_tycho_module(parts: list[str]) -> int:
+    """Index just past `-m tycho.cli` in an interpreter invocation, else 0."""
+    for i, token in enumerate(parts[:-1]):
+        if token == "-m" and parts[i + 1] in ("tycho.cli", "tycho"):
+            return i + 2
+    return 0
+
+
 def _exec_argv(cmd: str, _depth: int = 0) -> list[str] | None:
     """The argv `tycho exec` was given inside `cmd`, or None — the join between the two
     evidence streams, the only thing the transcript and the exec log both know."""
@@ -438,9 +446,13 @@ def _exec_argv(cmd: str, _depth: int = 0) -> list[str] | None:
             continue
         if not parts:
             continue
+        # `tycho exec -- x`, or the module spelling the PreToolUse rewrite uses:
+        # `<python> -E -m tycho.cli exec -- x`. Same command, and an agent that repeats what
+        # it saw in its own scrollback writes the second one.
         head = _EXE_SUFFIX.sub("", parts[0].rsplit("/", 1)[-1]).lower()
-        if head == "tycho" and len(parts) >= 2 and parts[1] == "exec":
-            rest = parts[2:]
+        at = 1 if head == "tycho" else _after_tycho_module(parts)
+        if at and len(parts) > at and parts[at] == "exec":
+            rest = parts[at + 1:]
             if rest and rest[0] == "--":
                 rest = rest[1:]
             if rest:

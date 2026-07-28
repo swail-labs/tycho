@@ -67,6 +67,13 @@ def _install_claude(repo: Path, scope: str = REPO) -> str:
     ups_groups, ups_existed = _strip_claude_tycho(_groups_of(hooks, "UserPromptSubmit", path))
     ups_groups.append({"hooks": [{"type": "command", "command": ups_command}]})
     hooks["UserPromptSubmit"] = ups_groups
+    # PreToolUse on the shell tool: rewrite a piped runner so its real exit status survives.
+    # Matcher-scoped to Bash — every other tool's input is passed through untouched, and this
+    # hook is the only one of the four that can change what the agent runs.
+    ptu_command = _command_for_scope("pre-tool-use", scope)
+    ptu_groups, ptu_existed = _strip_claude_tycho(_groups_of(hooks, "PreToolUse", path))
+    ptu_groups.append({"matcher": "Bash", "hooks": [{"type": "command", "command": ptu_command}]})
+    hooks["PreToolUse"] = ptu_groups
     merged, statusline = _with_statusline(repo, {**data, "hooks": hooks}, path, scope)
     changed = _write(path, merged)
     if scope == REPO:
@@ -75,8 +82,9 @@ def _install_claude(repo: Path, scope: str = REPO) -> str:
     hook_line = _status(label, "Stop hook", path, command, existed, changed)
     ss_line = _status(label, "SessionStart hook", path, ss_command, ss_existed, changed)
     ups_line = _status(label, "UserPromptSubmit hook", path, ups_command, ups_existed, changed)
+    ptu_line = _status(label, "PreToolUse hook", path, ptu_command, ptu_existed, changed)
     slash = _install_slash_commands(repo, scope)
-    return "\n".join(filter(None, (hook_line, ss_line, ups_line, statusline, slash)))
+    return "\n".join(filter(None, (hook_line, ss_line, ups_line, ptu_line, statusline, slash)))
 
 
 # One flat file per subcommand, so each gets its own `/` autocomplete description.
@@ -319,6 +327,7 @@ def _uninstall_claude(repo: Path, scope: str = REPO) -> str:
     groups, had_hook = _strip_claude_tycho(_groups_of(hooks, "Stop", path))
     ss_groups, had_ss = _strip_claude_tycho(_groups_of(hooks, "SessionStart", path))
     ups_groups, had_ups = _strip_claude_tycho(_groups_of(hooks, "UserPromptSubmit", path))
+    ptu_groups, had_ptu = _strip_claude_tycho(_groups_of(hooks, "PreToolUse", path))
     current = data.get("statusLine")
     had_statusline = isinstance(current, dict) and _is_tycho_status(current.get("command"))
     slash = _uninstall_slash_commands(repo, scope)
@@ -328,11 +337,12 @@ def _uninstall_claude(repo: Path, scope: str = REPO) -> str:
     if scope == REPO:
         state.clear_statusline_wrap(repo)  # forget the compose target either way
         _remember_statusline(repo, None)
-    if not had_hook and not had_ss and not had_ups and not had_statusline:
+    if not had_hook and not had_ss and not had_ups and not had_ptu and not had_statusline:
         return slash or f"{label}: nothing to remove"
     _prune(data, hooks, "Stop", groups)  # mutates `hooks` in place…
     _prune(data, hooks, "SessionStart", ss_groups)  # …then the second key…
-    merged = _prune(data, hooks, "UserPromptSubmit", ups_groups)  # …then the third
+    _prune(data, hooks, "UserPromptSubmit", ups_groups)  # …then the third…
+    merged = _prune(data, hooks, "PreToolUse", ptu_groups)  # …then the fourth
     restored = False
     if had_statusline:
         merged = {k: v for k, v in merged.items() if k != "statusLine"}
