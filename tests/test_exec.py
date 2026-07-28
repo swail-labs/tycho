@@ -24,10 +24,11 @@ from pathlib import Path
 
 import pytest
 
-from tycho import checks, command
-from tycho import verify as engine
+from tycho.engine import checks
+from tycho.store import command
+from tycho.read import session as engine
 from tycho.model import CommandRun, Event, Session
-from tycho.config import Config
+from tycho.store.config import Config
 
 PY = sys.executable
 WINDOWS = os.name == "nt"
@@ -404,7 +405,7 @@ def test_gather_survives_a_missing_or_unreadable_evidence_log(tmp_path: Path):
 def test_the_turn_record_reports_what_tycho_observed(tmp_path: Path):
     """The receipt and the verdict must read the same evidence, or `tycho show` will say
     "passed" next to a FAILED verdict for the same command."""
-    from tycho import record
+    from tycho.store import record
 
     session = _session([_event("tycho exec -- pytest -q | tail -1", 100.0, is_error=False)],
                        [_ran("pytest -q", 1, ts=99.0)], turn_start=50.0)

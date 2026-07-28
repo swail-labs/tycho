@@ -14,10 +14,10 @@ from enum import IntEnum
 from pathlib import Path
 
 from . import __version__
-from . import harness as harness_mod
-from . import verify as engine
+from .read import harness as harness_mod
+from .read import session as engine
 from .model import CheckResult, CheckStatus, Verdict
-from .report import render
+from .views.report import render
 
 
 class ExitCode(IntEnum):
@@ -256,8 +256,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "run":
         return _run(args.cmd)
     if args.command == "exec":
-        from . import command as command_mod
-        from . import state
+        from .store import command as command_mod
+        from .store import state
 
         return command_mod.execute(state.root_for(Path.cwd()), args.cmd)
     if args.command == "show":
@@ -282,23 +282,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _override(Path.cwd(), check=args.check, reason=args.reason,
                          on=args.on, off=args.off, veto=args.veto, unveto=args.unveto)
     if args.command in ("statusline", "status"):
-        from . import status
+        from .wire import status
 
         return status.main(off=args.off, on=args.on)
     if args.command == "hook":
-        from . import hook
+        from .wire import hook
 
         return hook.main()
     if args.command == "session-start":
-        from . import hook
+        from .wire import hook
 
         return hook.session_start()
     if args.command == "prompt-submit":
-        from . import hook
+        from .wire import hook
 
         return hook.prompt_submit()
     if args.command == "init":
-        from . import install as init_mod
+        from .wire import install as init_mod
 
         rc = _install(
             init_mod.init_global(assume_yes=args.yes) if args.globally
@@ -307,14 +307,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         _print_update_notice()  # tell them if a newer Tycho exists
         return rc
     if args.command == "doctor":
-        from . import doctor
+        from .views import doctor
 
         _offer_first_run(Path.cwd())
         findings = doctor.diagnose(Path.cwd())
         print(doctor.render(findings))
         return ExitCode.OK if doctor.healthy(findings) else ExitCode.UNHEALTHY
     if args.command == "uninstall":
-        from . import install as init_mod
+        from .wire import install as init_mod
 
         return _install(
             init_mod.uninstall_global() if args.globally
@@ -335,7 +335,7 @@ def _run(argv: list[str]) -> int:
     if not cmd:
         print("tycho run: give a command, e.g. tycho run -- pytest -q", file=sys.stderr)
         return ExitCode.USAGE
-    from .command import launchable  # npm/yarn/npx are .cmd shims on Windows
+    from .store.command import launchable  # npm/yarn/npx are .cmd shims on Windows
 
     try:
         return subprocess.call(launchable(cmd))  # inherits stdio; child's real exit code
@@ -348,9 +348,9 @@ def _run(argv: list[str]) -> int:
 
 def _show(cwd: Path, turn: str | None) -> int:
     """`tycho show [TURN]` — the full digest of a turn, on demand."""
-    from . import digest as digest_mod
-    from . import record as record_mod
-    from . import state
+    from .views import digest as digest_mod
+    from .store import record as record_mod
+    from .store import state
 
     repo = state.root_for(cwd)
     records = record_mod.read(repo, limit=1) if not turn else [
@@ -366,8 +366,8 @@ def _show(cwd: Path, turn: str | None) -> int:
 def _archaeology(action: str, cwd: Path, target: str | None, limit: int,
                  verdict: str | None = None, since: str | None = None) -> int:
     """`tycho blame <path>` / `tycho log` — what the agent did here."""
-    from . import archaeology
-    from . import state
+    from .views import archaeology
+    from .store import state
 
     repo = state.root_for(cwd)
     lines = (
@@ -381,8 +381,8 @@ def _archaeology(action: str, cwd: Path, target: str | None, limit: int,
 
 def _review(cwd: Path, since: str, exit_code: bool = False) -> int:
     """`tycho review` — which changes nothing exercised. Advisory unless `--exit-code`."""
-    from . import review as review_mod
-    from . import state
+    from .views import review as review_mod
+    from .store import state
 
     lines, findings = review_mod.inspect(state.root_for(cwd), since)
     for line in lines:
@@ -397,8 +397,8 @@ def _attest(cwd: Path, verify: str | None = None, write: list[str] | None = None
     """`tycho attest [--verify REF | --write MSGFILE [SOURCE]]`. Bare: print the trailer for
     what's staged. `--verify` exits MISMATCH only on a genuine mismatch, never on "cannot tell" —
     a pruned record must not read as a forged one. `--write` can never fail a commit."""
-    from . import attest as attest_mod
-    from . import state
+    from .wire import attest as attest_mod
+    from .store import state
 
     repo = state.root_for(cwd)
     if write:
@@ -418,7 +418,7 @@ def _attest(cwd: Path, verify: str | None = None, write: list[str] | None = None
 def _help(cwd: Path) -> int:
     """One screen: what Tycho is, whether it's live *here*, and every command. The liveness
     line is the reason this exists — `-h` can't answer "is it on?"."""
-    from . import doctor
+    from .views import doctor
 
     print(f"tycho {__version__} — verify what an agent claims it did.")
     print(f"\n{_ABOUT}\n")
@@ -434,7 +434,7 @@ def _count(cwd: Path, show_ledger: bool = False) -> int:
     """`tycho count [--ledger]` — the running tally of what Tycho caught, read straight off what
     the hook wrote (no engine, no verification). "Caught" is FAILED + STALE; INDETERMINATE folds
     into *blind*, because a blind spot isn't a save."""
-    from . import state
+    from .store import state
 
     totals = state.totals(cwd)
     here = _caught(state.counts(cwd), totals)
@@ -503,7 +503,7 @@ def _ledger_lines(data: dict, repo_runs: int | None = None) -> list[str]:
     # `count` and the ledger legitimately differ; name why. Do NOT close the gap by recording a
     # turn from `tycho verify` — it audits a whole session, so it would invent a turn boundary.
     if repo_runs is not None and repo_runs > turns:
-        from .record import max_records
+        from .store.record import max_records
 
         out.append(
             f"  ({repo_runs - turns} of this repo's {repo_runs} runs aren't turns here: "
@@ -549,7 +549,7 @@ def _scope(cwd: Path, action: str, paths: list[str], exclude_globs: list[str] | 
     bounds in `.tycho.toml`. Positional globs edit the include allowlist, `--exclude` the
     denylist (exclude wins). An empty include leaves scope_drift UNSUPPORTED (zero-config).
     Globs are stored verbatim, so quote them at the shell."""
-    from . import config as config_mod
+    from .store import config as config_mod
 
     exclude = exclude_globs is not None  # --exclude carries its own globs; its presence is the mode
     globs = exclude_globs if exclude else paths
@@ -588,7 +588,7 @@ def _relay(cwd: Path, on: bool, off: bool) -> int:
     """`tycho relay [--on|--off]` — the opt-in verdict relay, off by default. On, the Stop hook
     feeds a non-VERIFIED verdict back to the agent, bounded by ``TYCHO_RELAY_MAX`` (default 3)
     so it can't loop forever. Bare ``tycho relay`` just reports the setting."""
-    from . import state
+    from .store import state
 
     repo = state.root_for(cwd)
     if on or off:
@@ -613,7 +613,7 @@ def _override(cwd: Path, check: str | None, reason: str | None,
     """`tycho override [--on|--off|--veto|--unveto] | <check> "<reason>"` — toggle the
     capability, record a per-check override (agent), or veto one (operator). Off by default;
     overrides and vetoes are logged to .tycho/overrides.json."""
-    from . import state
+    from .store import state
 
     repo = state.root_for(cwd)
     if veto:
@@ -654,7 +654,7 @@ def _override(cwd: Path, check: str | None, reason: str | None,
               "/tycho-override-off   ·   stored in .tycho.toml [override].")
         return ExitCode.OK
     # record action
-    from . import checks as checks_mod
+    from .engine import checks as checks_mod
 
     known = {c.__name__ for c in checks_mod.CHECKS}
     if not check.strip():
@@ -685,7 +685,7 @@ def _override(cwd: Path, check: str | None, reason: str | None,
 def _print_update_notice() -> None:
     """Print the 'newer version available' line, if any. Never the reason a command fails."""
     try:
-        from . import version as version_mod
+        from .wire import version as version_mod
 
         note = version_mod.notice(refresh_first=True)
         if note:
@@ -713,7 +713,7 @@ def _upgrade_command(force: bool = False) -> list[str]:
     stays within it. A standalone binary can't infer its channel from `sys.prefix`, so its
     installer announces itself via ``TYCHO_INSTALL`` (npm does; Homebrew is path-detected).
     """
-    from . import version as version_mod
+    from .wire import version as version_mod
 
     channel = os.environ.get("TYCHO_INSTALL", "").strip().lower()
     if channel == "npm":
@@ -736,8 +736,8 @@ def _update(skip: bool, force: bool = False) -> int:
     """`tycho update` — check the index and upgrade in place, or `--skip` to dismiss the
     notice for this version. `--force` reinstalls the latest across a pinned version (uv/pipx);
     plain update respects the pin. Offline/failure is reported, never fatal."""
-    from . import state
-    from . import version as version_mod
+    from .store import state
+    from .wire import version as version_mod
 
     newest = version_mod.refresh(force=True)  # explicit command — never trust the daily cache
     behind = bool(newest) and version_mod.is_newer(newest, __version__)
@@ -806,7 +806,7 @@ def _spawn_deferred_upgrade(cmd: Sequence[str]) -> None:
 def _install(lines: Sequence[str]) -> int:
     """Print init/uninstall status lines; exit non-zero if we refused to touch a file — a
     refusal is an unfinished install, and `tycho init --yes` in CI must fail loudly."""
-    from .install import REFUSED
+    from .wire.install import REFUSED
 
     for line in lines:
         print(line)
@@ -818,7 +818,7 @@ def _warn_if_hook_broken(cwd: Path) -> None:
     identical whether the Stop hook has been running all week or dead since the venv moved.
     Stderr so it can't pollute a piped report, and never fatal."""
     try:
-        from . import doctor
+        from .views import doctor
 
         for f in doctor.hook_health(cwd):
             print(f"tycho: {f.level} — {f.text}", file=sys.stderr)
@@ -831,7 +831,7 @@ def _warn_if_hook_broken(cwd: Path) -> None:
 def _offer_first_run(cwd: Path) -> None:
     """First-run 'set up Tycho here?' offer, printed for the manual commands. Never fatal."""
     try:
-        from . import install as init_mod
+        from .wire import install as init_mod
 
         for line in init_mod.offer_first_run(cwd):
             print(line)
@@ -840,7 +840,7 @@ def _offer_first_run(cwd: Path) -> None:
 
 
 def _verify(args: argparse.Namespace) -> int:
-    from . import state
+    from .store import state
 
     # The repo root, not wherever the user stands: harnesses store transcripts under the
     # *project* path, so discovery from a subdirectory would find no session.

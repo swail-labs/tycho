@@ -16,7 +16,9 @@ from pathlib import Path
 # Bump when an install no longer satisfies what init writes; `doctor` reports HOOK OUTDATED
 # and routes the user to `tycho init`. Upgrading the package does not re-run init.
 # 2 (0.2.0): prepare-commit-msg trailer hook + the `.gitignore` entry.
-SCHEMA = 2
+# 3 (0.2.0): `attest.py` moved to `tycho.wire.attest`, so an existing trailer hook runs a
+#            module that no longer imports. Fails open, but silently — hence the bump.
+SCHEMA = 3
 
 _DIR = ".tycho"
 _INSTALL = "install.json"

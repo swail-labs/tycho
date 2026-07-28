@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from tycho import cli
-from tycho import install as init_mod
+from tycho.wire import install as init_mod
 
 CLAUDE = Path(".claude/settings.json")
 CURSOR = Path(".cursor/hooks.json")
@@ -283,8 +283,8 @@ def test_init_refuses_json_that_is_not_an_object(tmp_path: Path):
 
 
 def test_uninstall_purge_removes_repo_local_state_and_config(tmp_path: Path):
-    from tycho import config as config_mod
-    from tycho import state
+    from tycho.store import config as config_mod
+    from tycho.store import state
 
     (tmp_path / ".claude").mkdir()
     init_mod.init(tmp_path, only="claude", assume_yes=True)  # drops .tycho.toml

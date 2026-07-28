@@ -4,9 +4,10 @@ scope_drift UNSUPPORTED, exactly as with no file at all."""
 
 from pathlib import Path
 
-from tycho import checks, cli
-from tycho import config as config_mod
-from tycho import install as init_mod
+from tycho.engine import checks
+from tycho import cli
+from tycho.store import config as config_mod
+from tycho.wire import install as init_mod
 from tycho.model import FileEdit, GitSnapshot, Session
 
 CLAUDE = Path(".claude/settings.json")

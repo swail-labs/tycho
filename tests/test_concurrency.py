@@ -46,7 +46,7 @@ def preamble(tmp_path: Path) -> str:
         sys.path.insert(0, {PKG_ROOT!r})
         os.environ["TYCHO_HOME"] = {str(tmp_path / "home")!r}
         from pathlib import Path
-        from tycho import record, state
+        from tycho.store import record, state
         repo = Path({str(tmp_path / "repo")!r})
     """
 
@@ -95,7 +95,7 @@ def test_concurrent_json_writers_never_publish_a_corrupt_file(tmp_path: Path):
 def test_a_veto_survives_concurrent_writers(tmp_path: Path):
     """The verdict-integrity half of A1: a corrupt `vetoes.json` reads as *no vetoes*, so the
     agent's override applies again and a FAILED turn is relabelled OVERRIDDEN."""
-    from tycho import state
+    from tycho.store import state
 
     repo = tmp_path / "repo"
     state.veto_override(repo, "tests_pass")
@@ -188,7 +188,7 @@ def test_a_killed_append_costs_one_record_not_two(tmp_path: Path):
     """A process killed mid-write leaves a line with no `\\n`; the next append lands on the
     same line and *both* records become one unparseable one. A harness that times the Stop
     hook out repeatedly loses every other record this way."""
-    from tycho import record
+    from tycho.store import record
 
     repo = tmp_path / "repo"
     record.append(repo, {"schema": 1, "id": "a", "ended_at": 1.0})
@@ -234,7 +234,7 @@ def test_the_relay_leash_cannot_be_exceeded_by_concurrent_hooks(tmp_path: Path):
     ]
     run_all(scripts, tmp_path)
 
-    from tycho import state
+    from tycho.store import state
     assert state.relay_streak(tmp_path / "repo") == per_worker * workers
 
 
@@ -243,7 +243,7 @@ def test_the_relay_leash_cannot_be_exceeded_by_concurrent_hooks(tmp_path: Path):
 
 def test_a_stale_lock_is_stolen_rather_than_waited_out(tmp_path: Path, monkeypatch):
     """A process killed while holding the lock must not stop the next one for ever."""
-    from tycho import state
+    from tycho.store import state
 
     path = tmp_path / "f.json"
     lock = path.with_name(path.name + ".lock")
@@ -258,7 +258,7 @@ def test_a_stale_lock_is_stolen_rather_than_waited_out(tmp_path: Path, monkeypat
 def test_a_held_lock_does_not_block_the_turn(tmp_path: Path, monkeypatch):
     """Timing out on the lock still records the turn — losing a turn is worse than losing the
     prune, and nothing here may raise into the Stop hook."""
-    from tycho import record, state
+    from tycho.store import record, state
 
     monkeypatch.setattr(state, "_LOCK_TIMEOUT", 0.1)
     repo = tmp_path / "repo"

@@ -26,10 +26,10 @@ from pathlib import Path
 
 import pytest
 
-from tycho import checks
-from tycho import events as events_mod
-from tycho import verify as engine
-from tycho.config import Config
+from tycho.engine import checks
+from tycho.read import events as events_mod
+from tycho.read import session as engine
+from tycho.store.config import Config
 from tycho.model import CommandRun, Event, FileEdit, FileState, GitSnapshot, Session, Verdict
 
 # What "caught" means, kept in step with state._ADVERSE: a proven-wrong claim, or sources

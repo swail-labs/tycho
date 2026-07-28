@@ -6,8 +6,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from .. import harness as harness_mod
-from .. import state
+from ...read import harness as harness_mod
+from ...store import state
 from .configfile import (
     _current_text,
     _prune,

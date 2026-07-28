@@ -24,9 +24,9 @@ import pytest
 from conftest import git as _git
 from conftest import turn_record
 
-from tycho import attest
-from tycho import install as init_mod
-from tycho import record as record_mod
+from tycho.wire import attest
+from tycho.wire import install as init_mod
+from tycho.store import record as record_mod
 
 MSG = "commit-message.txt"
 
@@ -528,7 +528,7 @@ def test_the_installed_hook_uses_a_path_git_bash_can_resolve():
     backslashes — the same trap `_command_for` exists for."""
     command = init_mod.attest_command()
     assert "\\" not in command
-    assert command.startswith('"') or " -m tycho.attest" in command or " attest --write" in command
+    assert command.startswith('"') or " -m tycho.wire.attest" in command or " attest --write" in command
 
 
 def test_a_frozen_build_falls_back_to_the_console_script(monkeypatch):

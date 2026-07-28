@@ -11,7 +11,7 @@ from __future__ import annotations
 import shlex
 
 from .. import runlog
-from ..model import Session
+from ...model import Session
 from .cmdread import (
     _MAX_CMD_LEN,
     _covers,

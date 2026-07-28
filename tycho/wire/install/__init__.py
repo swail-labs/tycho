@@ -21,10 +21,10 @@ import shutil
 import sys
 from pathlib import Path
 
-from .. import config as config_mod
-from .. import harness as harness_mod
-from .. import opencode as opencode_mod
-from .. import state
+from ...store import config as config_mod
+from ...read import harness as harness_mod
+from ...read import opencode as opencode_mod
+from ...store import state
 from .claude import (
     _install_claude,
     _install_slash_commands as _install_slash_commands,

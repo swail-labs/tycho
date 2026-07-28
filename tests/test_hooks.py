@@ -5,11 +5,13 @@ import os
 import sqlite3
 from pathlib import Path
 
-from tycho import checks, events, harness, hook
-from tycho import install as init_mod
-from tycho import opencode
-from tycho import verify as engine
-from tycho.config import Config
+from tycho.engine import checks
+from tycho.read import events, harness
+from tycho.wire import hook
+from tycho.wire import install as init_mod
+from tycho.read import opencode
+from tycho.read import session as engine
+from tycho.store.config import Config
 from tycho.model import CheckStatus, Event, FileEdit, FileState, GitSnapshot, Session
 
 FIXTURES = Path(__file__).parent / "fixtures"

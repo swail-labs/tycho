@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from fnmatch import fnmatchcase
 
-from ..model import CheckResult, CheckStatus, Session
+from ...model import CheckResult, CheckStatus, Session
 from .common import _is_in_repo, _r, _scope
 
 

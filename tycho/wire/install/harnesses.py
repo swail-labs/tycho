@@ -11,7 +11,7 @@ import shlex
 from pathlib import Path
 
 from . import spelling
-from .. import state
+from ...store import state
 from .configfile import (
     ConfigRefused,
     _current_text,

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ..model import CheckResult, CheckStatus, Session
+from ...model import CheckResult, CheckStatus, Session
 from .cmdread import _runner_segment
 from .common import _r, _scope, _short
 from .outcome import _exec_run_for, _outcome, _runner_events, _status_is_masked, _unresolved_reds

@@ -9,7 +9,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from .. import gitstate
+from ...read import gitstate
 from .configfile import _current_text, _drop_backup, _write_text
 
 

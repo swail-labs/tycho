@@ -28,7 +28,8 @@ from pathlib import Path
 import pytest
 from conftest import turn_record
 
-from tycho import archaeology, record
+from tycho.views import archaeology
+from tycho.store import record
 
 NOW = 1_800_000_000.0  # a fixed clock: relative times are asserted, so they can't float
 
@@ -619,7 +620,7 @@ def test_no_colour_to_a_pipe(tmp_path: Path, monkeypatch, capsys):
 
 def test_colour_on_a_tty_uses_the_status_palette(tmp_path: Path, monkeypatch):
     """Same verdict, same colour, wherever Tycho draws it."""
-    from tycho import status
+    from tycho.wire import status
 
     monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.setattr(archaeology, "_colour", lambda: True)

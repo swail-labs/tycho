@@ -25,21 +25,30 @@ from pathlib import Path
 
 import pytest
 
-from tycho import checks as checks_mod
-from tycho import digest, record, review
-from tycho import verify as engine
+from tycho.engine import checks as checks_mod
+from tycho.views import digest, review
+from tycho.store import record
+from tycho.read import session as engine
 from tycho.model import Verdict
 
 FIXTURE = Path(__file__).parent / "fixtures" / "transcript_sample.jsonl"
 
-# Every module that can influence a verdict. `version` and `init` are deliberately absent:
+# Every module that can influence a verdict. `version` and `install` are deliberately absent:
 # the update check is a real (opt-out, off-hot-path) network call, and neither can move a
 # verdict. If a module is added to the trust path, add it here.
+#
+# Modules, not layer packages. Naming `tycho.engine` instead of its members would turn this
+# allowlist into a directory scan — every module added under it afterwards would be admitted
+# without anyone deciding it should be, which is the opposite of what the list is for.
+# `tycho.engine.checks` is the one package entry, and it is deliberate: every check is in the
+# trust path by construction, so a new one must be covered the day it lands.
 TRUST_PATH = (
-    "tycho.verify", "tycho.checks", "tycho.astdiff", "tycho.events", "tycho.runlog",
-    "tycho.model", "tycho.record", "tycho.report", "tycho.digest", "tycho.state",
-    "tycho.gitstate", "tycho.fsstate", "tycho.config", "tycho.harness", "tycho.hook",
-    "tycho.review", "tycho.archaeology", "tycho.attest", "tycho.command", "tycho.opencode",
+    "tycho.read.session", "tycho.engine.checks", "tycho.engine.verdict",
+    "tycho.engine.astdiff", "tycho.engine.runlog", "tycho.read.events", "tycho.model",
+    "tycho.store.record", "tycho.views.report", "tycho.views.digest", "tycho.store.state",
+    "tycho.read.gitstate", "tycho.read.fsstate", "tycho.store.config", "tycho.read.harness",
+    "tycho.wire.hook", "tycho.views.review", "tycho.views.archaeology", "tycho.wire.attest",
+    "tycho.store.command", "tycho.read.opencode",
 )
 
 # Import names that would mean a model is being consulted. Substring match, so
@@ -77,7 +86,10 @@ def no_network(monkeypatch):
 def test_nothing_a_user_can_invoke_opens_a_socket(tmp_path, no_network):
     """gather -> checks -> verdict -> build -> append, then every surface that reads it back:
     digest / review / blame / log / attest / the decay ledger."""
-    from tycho import archaeology, attest, cli, state
+    from tycho.views import archaeology
+    from tycho.wire import attest
+    from tycho import cli
+    from tycho.store import state
 
     session = engine.gather(FIXTURE, tmp_path)
     results = engine.run_checks(session)
@@ -102,7 +114,7 @@ def test_nothing_a_user_can_invoke_opens_a_socket(tmp_path, no_network):
 
 def test_the_stop_hook_opens_no_socket(tmp_path, no_network):
     """The hook is the hot path: it runs after every single turn."""
-    from tycho import hook
+    from tycho.wire import hook
 
     payload = json.dumps({
         "transcript_path": str(FIXTURE),
@@ -148,6 +160,38 @@ def test_no_trust_path_source_mentions_a_model_endpoint():
     assert scanned >= len(TRUST_PATH)
 
 
+def test_the_engine_imports_nothing_that_can_do_io():
+    """The purity claim, enforced by the import graph rather than by discipline.
+
+    `engine/` may import `model` and its own submodules. It may not import `read/`, `store/`,
+    `wire/` or `views/` — so a check cannot reach git, the filesystem or the network, because
+    the package holding it cannot import the packages that can. Without this the layer names
+    are a suggestion, and the first `from ..store import state` added under a deadline would
+    pass every other test in this suite.
+    """
+    import ast
+
+    import tycho
+
+    engine = Path(tycho.__file__).parent / "engine"
+    forbidden = {"read", "store", "wire", "views"}
+    offenders = []
+    for source in sorted(engine.rglob("*.py")):
+        depth = len(source.relative_to(engine).parts)  # 1 = engine/x.py, 2 = engine/pkg/x.py
+        for node in ast.walk(ast.parse(source.read_text(encoding="utf-8"))):
+            if not isinstance(node, ast.ImportFrom):
+                continue
+            # `level` dots: engine/x.py needs 2 to reach `tycho`, engine/pkg/x.py needs 3.
+            reaches_tycho = node.level >= depth + 1
+            head = (node.module or "").split(".")[0]
+            if reaches_tycho and head in forbidden:
+                offenders.append(f"{source.name}:{node.lineno} -> {'.' * node.level}{node.module}")
+            if node.level == 0 and node.module and node.module.startswith("tycho."):
+                if node.module.split(".")[1] in forbidden:
+                    offenders.append(f"{source.name}:{node.lineno} -> {node.module}")
+    assert not offenders, f"engine/ reached a package that does I/O: {offenders}"
+
+
 def test_checks_are_pure_functions_of_the_session(tmp_path, no_network):
     """The seam that lets Pro/Enterprise swap the evidence source without touching a check.
 
@@ -168,7 +212,7 @@ def test_the_suite_never_reads_the_developers_real_claude_home():
     one laptop, for a reason nothing points at. Pinned here because the override lives in
     conftest, where it is easy to delete without noticing what it was for.
     """
-    from tycho import install as init_mod
+    from tycho.wire import install as init_mod
 
     global_dir = init_mod.claude_dir(Path.cwd(), init_mod.GLOBAL).resolve()
     real = (Path.home() / ".claude").resolve()
@@ -222,7 +266,7 @@ def test_every_git_call_disables_path_quoting():
     nothing Tycho stores — so `attest` silently lost its trailer on any commit touching one
     and `review` dropped the file. The flag belongs in the shared wrapper, not per-call."""
     import subprocess as sp
-    from tycho import gitstate
+    from tycho.read import gitstate
 
     seen = []
 

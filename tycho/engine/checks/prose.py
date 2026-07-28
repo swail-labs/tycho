@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 
-from ..model import CheckResult, CheckStatus, Session
+from ...model import CheckResult, CheckStatus, Session
 from .common import _r
 
 

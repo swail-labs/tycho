@@ -8,9 +8,11 @@ import json
 import os
 from pathlib import Path
 
-from tycho import checks, events, harness, hook
-from tycho import verify as engine
-from tycho.config import Config
+from tycho.engine import checks
+from tycho.read import events, harness
+from tycho.wire import hook
+from tycho.read import session as engine
+from tycho.store.config import Config
 from tycho.model import CheckStatus, Event, FileEdit, FileState, GitSnapshot, Session
 
 FIXTURE = Path(__file__).parent / "fixtures" / "transcript_multiturn.jsonl"

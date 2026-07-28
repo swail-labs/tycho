@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from tycho import record
+from tycho.store import record
 
 
 def git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:

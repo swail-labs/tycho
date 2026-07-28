@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from .model import CheckResult, CheckStatus, Verdict
+from ..model import CheckResult, CheckStatus, Verdict
 
 _MARK = {
     CheckStatus.PASS: "✓",

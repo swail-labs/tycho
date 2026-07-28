@@ -10,7 +10,7 @@ import tycho
 from tycho import cli
 from tycho.cli import ExitCode
 from tycho.model import CheckResult, CheckStatus, Verdict
-from tycho.report import render
+from tycho.views.report import render
 
 FIXTURES = Path(__file__).parent / "fixtures"
 CLAUDE_FIXTURE = FIXTURES / "transcript_sample.jsonl"

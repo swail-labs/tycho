@@ -14,8 +14,8 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-from . import runlog
-from .model import Attribution, Event, FileEdit, Message
+from ..engine import runlog
+from ..model import Attribution, Event, FileEdit, Message
 
 _EDIT_TOOLS = frozenset({"Edit", "Write", "MultiEdit"})
 

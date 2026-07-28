@@ -4,7 +4,7 @@ test rather than fixing the code? Both are AST diffs against the pre-session bas
 from __future__ import annotations
 
 from ..astdiff import assertion_delta, skip_or_mock_added
-from ..model import CheckResult, CheckStatus, Session
+from ...model import CheckResult, CheckStatus, Session
 from .common import _is_test_path, _r
 
 

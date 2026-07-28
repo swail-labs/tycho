@@ -23,7 +23,7 @@ import time
 from pathlib import Path
 
 from . import state
-from .model import CommandRun
+from ..model import CommandRun
 
 SCHEMA = 1
 FILE = "commands.jsonl"

@@ -1,30 +1,33 @@
-"""The engine: gather a session, run the checks, reduce their results to a verdict.
+"""Gather a session from the transcript, git and the filesystem.
 
-`gather()` is the only I/O boundary — everything downstream is pure over a frozen `Session`.
+`gather()` is the only inbound I/O boundary in Tycho: everything it returns is a frozen
+`Session`, and everything downstream of it is pure. That is why this module lives in `read/`
+and the checks live in `engine/`, which cannot import this package back.
+
+The verdict half of the pipeline is re-exported below, so a caller that wants the whole
+sequence still has one module to reach for.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from dataclasses import replace
 import os
 from pathlib import Path, PurePosixPath
 
-from . import checks as checks_mod
-from . import command as command_mod
-from . import config as config_mod
+from ..engine import checks as checks_mod
+from ..store import command as command_mod
+from ..store import config as config_mod
 from . import events as events_mod
-from . import fsstate, gitstate, state
-from .config import Config
-from .model import (
+from . import fsstate, gitstate
+from ..store import state
+from ..store.config import Config
+from ..model import (
     Attribution,
-    CheckResult,
-    CheckStatus,
     FileEdit,
     FileState,
     GitSnapshot,
     Session,
-    Verdict,
 )
 
 
@@ -199,40 +202,7 @@ def _git_snapshot(repo: Path, since: str) -> GitSnapshot:
     )
 
 
-# Only these can carry a VERIFIED alone: only these PASS on the *presence* of evidence. Every
-# other check passes on the ABSENCE of a problem ("the files exist", "no assertion was
-# neutralized"), which is equally true of a turn that ran nothing. Those corroborate a claim;
-# they can't carry one.
-#
-# An allowlist, so a new check must be argued INTO minting greens. The denylist this replaced
-# had exactly the failure the shape invites: `scope_drift` was never added to it, so setting a
-# scope flipped a turn that ran no tests and claimed "all tests pass" to VERIFIED.
-_SUBSTANTIVE_CHECKS = frozenset({"command_execution", "test_freshness", "test_provenance"})
-
-
-def verdict_of(results: Sequence[CheckResult]) -> Verdict:
-    """Reduce per-check statuses to one run verdict.
-
-    Any FAIL sinks the run; else any STALE; else one `_SUBSTANTIVE_CHECKS` PASS verifies.
-    Nothing conclusive: all-UNSUPPORTED -> UNSUPPORTED, otherwise INDETERMINATE (including the
-    empty case)."""
-    statuses = {r.status for r in results}
-    if CheckStatus.FAIL in statuses:
-        return Verdict.FAILED
-    if CheckStatus.STALE in statuses:
-        return Verdict.STALE
-    if any(r.status is CheckStatus.PASS and r.name in _SUBSTANTIVE_CHECKS for r in results):
-        return Verdict.VERIFIED
-    if statuses and statuses <= {CheckStatus.UNSUPPORTED}:
-        return Verdict.UNSUPPORTED
-    return Verdict.INDETERMINATE
-
-
-def run_checks(session: Session) -> list[CheckResult]:
-    """Run the enabled checks over the gathered snapshot (pure)."""
-    return checks_mod.run_checks(session)
-
-
-def has_verifiable_activity(session: Session) -> bool:
-    """True when a Stop hook has edits or a recognized test/build command."""
-    return checks_mod.has_verifiable_activity(session)
+from ..engine import has_verifiable_activity as has_verifiable_activity  # noqa: E402
+from ..engine import run_checks as run_checks  # noqa: E402
+from ..engine import verdict_of as verdict_of  # noqa: E402
+from ..engine.verdict import _SUBSTANTIVE_CHECKS as _SUBSTANTIVE_CHECKS  # noqa: E402

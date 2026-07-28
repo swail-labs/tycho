@@ -38,10 +38,10 @@ from collections import deque
 from collections.abc import Iterator
 from pathlib import Path
 
-from . import checks as checks_mod
+from ..engine import checks as checks_mod
 from . import state
-from . import verify as engine
-from .model import CheckResult, Session, Stage, Verdict
+from .. import engine
+from ..model import CheckResult, Session, Stage, Verdict
 
 SCHEMA = 1
 FILE = "turns.jsonl"

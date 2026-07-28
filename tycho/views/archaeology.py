@@ -34,7 +34,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 
-from . import record as record_mod
+from ..store import record as record_mod
 
 # ponytail: fixed, not the real terminal width — that makes output depend on the window and
 # on `COLUMNS` leaking into a test run.
@@ -406,7 +406,7 @@ def _paint(verdict: str) -> str:
     """
     if not _colour():
         return verdict
-    from . import status
+    from ..wire import status
 
     return status._VERDICT_COLOUR.get(verdict, "") + verdict + status._RESET
 

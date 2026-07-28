@@ -15,7 +15,7 @@ from pathlib import Path
 
 from . import events
 from . import opencode as opencode_mod
-from .model import Attribution
+from ..model import Attribution
 
 
 @dataclass(frozen=True)

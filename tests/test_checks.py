@@ -7,9 +7,9 @@ from pathlib import Path
 
 from conftest import git
 
-from tycho import astdiff, checks
-from tycho import verify as engine
-from tycho.config import Config
+from tycho.engine import astdiff, checks
+from tycho.read import session as engine
+from tycho.store.config import Config
 from tycho.model import CheckStatus, Event, FileEdit, FileState, GitSnapshot, Message, Session, Verdict
 
 

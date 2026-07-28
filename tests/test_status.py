@@ -20,8 +20,10 @@ from pathlib import Path
 
 import pytest
 
-from tycho import cli, state, status
-from tycho import install as init_mod
+from tycho import cli
+from tycho.store import state
+from tycho.wire import status
+from tycho.wire import install as init_mod
 
 CLAUDE = Path(".claude/settings.json")
 
@@ -427,7 +429,7 @@ def test_the_walk_stops_at_the_git_root(tmp_path: Path):
 def test_config_resolves_from_a_subdirectory(tmp_path: Path):
     # `.tycho.toml` is `.tycho/`'s sibling and must follow the same root, or `scope` run one
     # directory down reports "no scope set" and silently widens what the agent may edit.
-    from tycho import config as config_mod
+    from tycho.store import config as config_mod
 
     config_mod.set_scope(tmp_path, ["src/**"])
     deep = tmp_path / "src" / "inner"
@@ -441,7 +443,7 @@ def test_doctor_from_a_subdirectory_does_not_cry_wolf(tmp_path: Path):
     # State and harness-config resolution must agree. If only the former walks, doctor finds
     # the root's install record, looks for `.claude/settings.json` one directory down, and
     # reports the hook ripped out — a false alarm about wiring that is fine.
-    from tycho import doctor
+    from tycho.views import doctor
 
     _install(tmp_path)
     deep = tmp_path / "tycho"

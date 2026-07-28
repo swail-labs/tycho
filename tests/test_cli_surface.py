@@ -17,8 +17,8 @@ from pathlib import Path
 import pytest
 from conftest import git, turn_record
 
-from tycho import record as record_mod
-from tycho import review as review_mod
+from tycho.store import record as record_mod
+from tycho.views import review as review_mod
 from tycho.cli import ExitCode, main
 
 
@@ -172,7 +172,7 @@ def test_require_verified_reaches_attest(repo, monkeypatch, capsys):
     whose every turn came back FAILED matches its own record perfectly. Only a gate that
     asks the stronger question should get the stronger answer.
     """
-    from tycho import attest as attest_mod
+    from tycho.wire import attest as attest_mod
 
     seen = {}
 

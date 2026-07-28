@@ -34,9 +34,9 @@ import re
 import sys
 from pathlib import Path
 
-from . import gitstate
-from . import record as record_mod
-from . import state
+from ..read import gitstate
+from ..store import record as record_mod
+from ..store import state
 
 TRAILER = "Tycho-Attestation"
 # The body shape written today: bound to the tree the commit records.

@@ -13,7 +13,7 @@ promise kept: callers and tests name `checks.X`, and where X lives is this packa
 
 from __future__ import annotations
 
-from ..model import CheckResult, CheckStatus as CheckStatus, Session
+from ...model import CheckResult, CheckStatus as CheckStatus, Session
 from .execution import command_execution
 from .freshness import test_freshness, test_provenance
 from .prose import tool_call_provenance

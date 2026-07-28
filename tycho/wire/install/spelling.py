@@ -12,8 +12,8 @@ import shutil
 import sys
 from pathlib import Path
 
-from .. import harness as harness_mod
-from .. import state
+from ...read import harness as harness_mod
+from ...store import state
 
 
 # Proof a generated file is ours; uninstall deletes only files carrying the marker.
@@ -69,11 +69,16 @@ def attest_command() -> str:
     """The command the git `prepare-commit-msg` hook runs to stamp the trailer. Module form
     because `attest.py` owns that entrypoint outright; absolute interpreter and forward
     slashes as in `hook_command` (git uses Git Bash on Windows too). A frozen build has no
-    importable interpreter, so it uses the console-script form."""
+    importable interpreter, so it uses the console-script form.
+
+    The module path is baked into an installed hook, so moving `attest.py` means an existing
+    hook points at a module that no longer imports. It fails open — no trailer, never a
+    broken commit — and the `state.SCHEMA` bump is what routes the upgrader to `tycho init`.
+    """
     program = _quote_program(sys.executable.replace("\\", "/"))
     if getattr(sys, "frozen", False):
         return f"{program} attest --write"
-    return f"{program} -m tycho.attest"
+    return f"{program} -m tycho.wire.attest"
 
 
 def hook_argv(command: str) -> list[str]:

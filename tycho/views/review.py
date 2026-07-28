@@ -27,11 +27,11 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import checks as checks_mod
-from . import config as config_mod
-from . import gitstate
-from . import record as record_mod
-from . import state
+from ..engine import checks as checks_mod
+from ..store import config as config_mod
+from ..read import gitstate
+from ..store import record as record_mod
+from ..store import state
 
 # Risk levels, worst first — the list order *is* the ranking.
 UNEXERCISED = "UNEXERCISED"    # nothing Tycho recorded ran after this was written

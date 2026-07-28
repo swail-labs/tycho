@@ -7,8 +7,8 @@ import pytest
 
 from conftest import git
 
-from tycho import events, fsstate, gitstate
-from tycho import verify as engine
+from tycho.read import events, fsstate, gitstate
+from tycho.read import session as engine
 from tycho.model import Event, FileEdit
 
 FIXTURE = Path(__file__).parent / "fixtures" / "transcript_sample.jsonl"

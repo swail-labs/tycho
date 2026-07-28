@@ -17,7 +17,8 @@ from pathlib import Path
 
 from conftest import turn_record
 from test_record import make_session
-from tycho import cli, record, state
+from tycho import cli
+from tycho.store import record, state
 from tycho.model import Attribution, CheckResult, CheckStatus, Verdict
 
 

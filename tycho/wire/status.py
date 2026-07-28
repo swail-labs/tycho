@@ -17,7 +17,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import state
+from ..store import state
 
 _RESET = "\033[0m"
 

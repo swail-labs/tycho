@@ -15,9 +15,11 @@ from pathlib import Path
 
 import pytest
 
-from tycho import cli, doctor, hook
-from tycho import install as init_mod
-from tycho import state
+from tycho import cli
+from tycho.views import doctor
+from tycho.wire import hook
+from tycho.wire import install as init_mod
+from tycho.store import state
 
 CLAUDE = Path(".claude/settings.json")
 

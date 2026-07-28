@@ -5,7 +5,7 @@ Both reason across turns, which is why they read the whole session rather than t
 
 from __future__ import annotations
 
-from ..model import CheckResult, CheckStatus, Session
+from ...model import CheckResult, CheckStatus, Session
 from .common import _is_source_path, _is_test_path, _r
 from .outcome import _last_green_run_ts
 

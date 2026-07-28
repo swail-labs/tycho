@@ -10,7 +10,10 @@ from pathlib import Path
 
 import pytest
 
-from tycho import cli, config, hook, install as init_mod, report, state, status
+from tycho import cli
+from tycho.store import config, state
+from tycho.wire import hook, install as init_mod, status
+from tycho.views import report
 from tycho.model import CheckResult, CheckStatus, Verdict
 from tycho.model import Verdict as V
 
@@ -347,7 +350,8 @@ def test_cli_override_still_records_a_known_check(tmp_path, monkeypatch, capsys)
 def test_overridden_verdict_tells_user_how_to_veto_or_disable(tmp_path, monkeypatch):
     # relay + override ON, agent overrode the only adverse check -> verdict OVERRIDDEN.
     # The Stop output the HUMAN sees must explain the veto/disable escape hatches.
-    from tycho import hook, state
+    from tycho.wire import hook
+    from tycho.store import state
     from tycho.model import Verdict
 
     # Arrange state: enable relay+override, record an override on "test_freshness".

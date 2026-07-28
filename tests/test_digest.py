@@ -20,7 +20,9 @@ from pathlib import Path
 import pytest
 from conftest import turn_record
 
-from tycho import digest, hook, record, state
+from tycho.views import digest
+from tycho.wire import hook
+from tycho.store import record, state
 from tycho.model import Stage, Verdict
 
 # --- record builders ---------------------------------------------------------

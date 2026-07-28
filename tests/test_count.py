@@ -10,7 +10,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from tycho import cli, state
+from tycho import cli
+from tycho.store import state
 from tycho.model import CheckResult, CheckStatus
 
 ZERO = {"FAILED": 0, "STALE": 0, "INDETERMINATE": 0}

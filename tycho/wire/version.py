@@ -15,7 +15,8 @@ import os
 import time
 import urllib.request
 
-from . import __version__, state
+from .. import __version__
+from ..store import state
 
 # `tycho` is taken on PyPI, so we publish and check as `tycho-cli`; the import package and
 # CLI command stay `tycho`. None makes the check inert (queries nothing, never notifies).

@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from tycho import cli
-from tycho import install as init_mod
+from tycho.wire import install as init_mod
 
 CLAUDE = Path(".claude/settings.json")
 CURSOR = Path(".cursor/hooks.json")

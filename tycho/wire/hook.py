@@ -13,13 +13,13 @@ import sys
 import time
 from pathlib import Path
 
-from . import digest as digest_mod
-from . import harness as harness_mod
-from . import record
-from . import state
-from . import verify as engine
-from .model import Verdict
-from .report import render
+from ..views import digest as digest_mod
+from ..read import harness as harness_mod
+from ..store import record
+from ..store import state
+from ..read import session as engine
+from ..model import Verdict
+from ..views.report import render
 
 
 def run(stdin_text: str) -> dict | None:

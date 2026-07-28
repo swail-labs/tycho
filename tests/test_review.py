@@ -20,7 +20,9 @@ from pathlib import Path
 import pytest
 from conftest import git, turn_record
 
-from tycho import gitstate, record, review
+from tycho.read import gitstate
+from tycho.store import record
+from tycho.views import review
 
 NOW = 1_000_000.0
 
@@ -417,7 +419,7 @@ def test_review_ignores_everything_tycho_init_wrote(tmp_path: Path):
     `.claude/` (settings + 19 slash-command docs) and `.tycho.toml` are ours to install, not
     the user's code to review — measured at 21 of 24 hunks on a freshly-initialised repo.
     """
-    from tycho import review as review_mod
+    from tycho.views import review as review_mod
 
     for path in (".tycho/turns.jsonl", ".claude/settings.json",
                  ".claude/commands/tycho-verify.md", ".tycho.toml"):
@@ -508,7 +510,7 @@ def test_disabling_tycho_is_not_reported_as_no_changes(repo: Path):
 
 
 def test_the_filter_covers_our_files_and_not_the_agents(tmp_path: Path):
-    from tycho import review as review_mod
+    from tycho.views import review as review_mod
 
     for path in (".tycho/turns.jsonl", ".claude/settings.json",
                  ".claude/commands/tycho-verify.md", ".tycho.toml"):

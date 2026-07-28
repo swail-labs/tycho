@@ -13,8 +13,9 @@ import time
 import pytest
 
 import tycho
-from tycho import cli, state
-from tycho import version as version_mod
+from tycho import cli
+from tycho.store import state
+from tycho.wire import version as version_mod
 
 
 @pytest.fixture
@@ -256,7 +257,7 @@ def _stdin(monkeypatch, text="{}"):
 def test_session_start_emits_systemmessage_when_behind(_online, monkeypatch, capsys):
     import json
 
-    from tycho import hook
+    from tycho.wire import hook
 
     _fetches(monkeypatch, "9.9.9")
     _stdin(monkeypatch)
@@ -270,7 +271,7 @@ def test_session_start_uses_opencode_message_field(_online, monkeypatch, capsys)
     # not Claude's `systemMessage`.
     import json
 
-    from tycho import hook
+    from tycho.wire import hook
 
     _fetches(monkeypatch, "9.9.9")
     _stdin(monkeypatch, '{"harness": "opencode", "sessionID": "s1"}')
@@ -283,7 +284,7 @@ def test_session_start_uses_opencode_message_field(_online, monkeypatch, capsys)
 def test_session_start_is_silent_on_cursor_no_human_channel(_online, monkeypatch, capsys):
     # Cursor has no human-only sink (notice_output is None) — a notice there would be
     # model-facing, which the rule forbids, so it emits nothing.
-    from tycho import hook
+    from tycho.wire import hook
 
     _fetches(monkeypatch, "9.9.9")
     _stdin(monkeypatch, '{"workspace_roots": ["/tmp/x"], "cursor_version": "1"}')
@@ -292,7 +293,7 @@ def test_session_start_is_silent_on_cursor_no_human_channel(_online, monkeypatch
 
 
 def test_session_start_is_silent_when_up_to_date(_online, monkeypatch, capsys):
-    from tycho import hook
+    from tycho.wire import hook
 
     _fetches(monkeypatch, tycho.__version__)
     _stdin(monkeypatch)
@@ -301,7 +302,7 @@ def test_session_start_is_silent_when_up_to_date(_online, monkeypatch, capsys):
 
 
 def test_session_start_never_raises_and_prints_nothing_on_error(monkeypatch, capsys):
-    from tycho import hook
+    from tycho.wire import hook
 
     monkeypatch.delenv("TYCHO_NO_UPDATE_CHECK", raising=False)
     monkeypatch.setattr(version_mod, "_fetch", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
@@ -325,7 +326,7 @@ def _claude_stop(repo) -> str:
 
 
 def test_stop_hook_appends_update_line_to_human_output(_online, tmp_path):
-    from tycho import hook
+    from tycho.wire import hook
     state.write_update_cache(latest="9.9.9", checked_at=time.time())
     out = hook.run(_claude_stop(tmp_path))
     assert out is not None and "9.9.9" in out["systemMessage"]  # verdict + update line, together
@@ -334,7 +335,7 @@ def test_stop_hook_appends_update_line_to_human_output(_online, tmp_path):
 def test_stop_hook_update_line_is_never_model_facing(_online, tmp_path):
     # With the relay on there IS an additionalContext (model-facing) copy — the update line must
     # ride only the human systemMessage, never that (: don't tell the model to self-update).
-    from tycho import hook
+    from tycho.wire import hook
     state.set_relay_enabled(tmp_path, True)
     state.write_update_cache(latest="9.9.9", checked_at=time.time())
     out = hook.run(_claude_stop(tmp_path))
@@ -343,14 +344,14 @@ def test_stop_hook_update_line_is_never_model_facing(_online, tmp_path):
 
 
 def test_stop_hook_silent_when_up_to_date(_online, tmp_path):
-    from tycho import hook
+    from tycho.wire import hook
     state.write_update_cache(latest=tycho.__version__, checked_at=time.time())
     out = hook.run(_claude_stop(tmp_path))
     assert "newer Tycho" not in out["systemMessage"]
 
 
 def test_stop_hook_respects_dismissal(_online, tmp_path):
-    from tycho import hook
+    from tycho.wire import hook
     state.write_update_cache(latest="9.9.9", checked_at=time.time())
     state.dismiss_update("9.9.9")  # `tycho update --skip` waved this version off
     out = hook.run(_claude_stop(tmp_path))
@@ -359,14 +360,14 @@ def test_stop_hook_respects_dismissal(_online, tmp_path):
 
 def test_stop_hook_silent_when_opted_out(tmp_path):
     # conftest sets TYCHO_NO_UPDATE_CHECK=1; even a fresh cache with a newer version stays silent.
-    from tycho import hook
+    from tycho.wire import hook
     state.write_update_cache(latest="9.9.9", checked_at=time.time())
     out = hook.run(_claude_stop(tmp_path))
     assert out is not None and "9.9.9" not in out["systemMessage"]
 
 
 def test_stop_hook_update_notice_never_hits_the_network(_online, monkeypatch, tmp_path):
-    from tycho import hook
+    from tycho.wire import hook
     monkeypatch.setattr(version_mod, "_fetch", lambda: pytest.fail("Stop path must not hit the network"))
     state.write_update_cache(latest="9.9.9", checked_at=time.time())
     out = hook.run(_claude_stop(tmp_path))
@@ -378,6 +379,6 @@ def test_stop_hook_suffix_suppressed_without_a_human_channel(_online):
     # model — suppress it, exactly as the bootup notice does.
     from types import SimpleNamespace
 
-    from tycho import hook
+    from tycho.wire import hook
     state.write_update_cache(latest="9.9.9", checked_at=time.time())
     assert hook._update_suffix(SimpleNamespace(notice_output=None)) == ""

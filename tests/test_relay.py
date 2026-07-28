@@ -23,8 +23,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from tycho import cli, config, hook, state
-from tycho import install as init_mod
+from tycho import cli
+from tycho.store import config, state
+from tycho.wire import hook
+from tycho.wire import install as init_mod
 
 CLAUDE_FIXTURE = Path(__file__).parent / "fixtures" / "transcript_sample.jsonl"
 CODEX_FIXTURE = Path(__file__).parent / "fixtures" / "codex_transcript_sample.jsonl"

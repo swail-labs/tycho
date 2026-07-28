@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from pathlib import Path, PurePosixPath
 
-from ..model import CheckResult, CheckStatus, Session
+from ...model import CheckResult, CheckStatus, Session
 
 
 # --- helpers ----------------------------------------------------------------

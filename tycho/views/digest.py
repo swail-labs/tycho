@@ -20,8 +20,8 @@ from dataclasses import dataclass
 from statistics import median
 
 from .archaeology import _ago, _count, _trunc
-from .model import Stage, Verdict
-from .record import _claims, _rows
+from ..model import Stage, Verdict
+from ..store.record import _claims, _rows
 
 # ponytail: fixed window, not a decay curve; widen if the norms prove twitchy.
 HISTORY = 12

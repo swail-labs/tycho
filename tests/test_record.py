@@ -11,9 +11,11 @@ from pathlib import Path
 
 import pytest
 
-from tycho import events, harness, hook, record, state
-from tycho import verify as engine
-from tycho.config import Config
+from tycho.read import events, harness
+from tycho.wire import hook
+from tycho.store import record, state
+from tycho.read import session as engine
+from tycho.store.config import Config
 from tycho.model import (
     Attribution,
     CheckResult,
