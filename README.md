@@ -240,12 +240,12 @@ The filters run *inside* the bounded stream, so `--verdict FAILED -n 20` gives y
 failures — not the failures among the last twenty turns.
 
 ```sh
-tycho blame tycho/cli.py         # which turns touched this file
-tycho blame tycho/cli.py:42      # a line works too — see the note it prints
+tycho blame tycho/engine/checks/cmdread.py   # which turns touched this file
+tycho blame tycho/engine/checks/cmdread.py:42   # a line works too
 ```
 
 ```
-tycho/cli.py — 1 turn, newest first
+tycho/engine/checks/cmdread.py — 1 turn, newest first
   note: asked for :42 — attribution is file-level. Tycho records which turns touched a file, not which lines.
   35m ago  VERIFIED  claim_supported  turn 5bf74f88  claude-opus-5
     "Now the `.gitignore` gap and the verify/record inconsistency. First, what does…" — no test ran
@@ -299,7 +299,7 @@ tycho review --exit-code         # exit 6 if a recorded change had nothing run a
 tycho review — 41 hunk(s) in 6 file(s) changed against HEAD
 
   ⚠ NO TEST RUN — a command ran after these, but no test runner did
-      tycho/archaeology.py:1-23   edited 1h ago; a command ran after it, but no test runner
+      tycho/views/archaeology.py:1-23   edited 1h ago; a command ran after it, but no test runner
       tycho/review.py:1-21        edited 50m ago; a command ran after it, but no test runner
       tycho/record.py:230-242     edited 1h ago; a command ran after it, but no test runner
 
