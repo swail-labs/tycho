@@ -75,6 +75,8 @@ from .cmdread import (  # noqa: E402
     _runner_segment as _runner_segment,
     _runner_span as _runner_span,
     _runner_family as _runner_family,
+    _OPAQUE as _OPAQUE,
+    _selection as _selection,
     _selects_whole_suite as _selects_whole_suite,
     _unwrap as _unwrap,
 )

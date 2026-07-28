@@ -146,12 +146,33 @@ _ENV_PREFIX = re.compile(r"^(?:\s*\w+=\S+\s+)+")
 # pytest's verdict is the last line; the slack absorbs the trailing warnings block. Small on
 
 
+# A redirection is plumbing, not an argument. Left in, `2>&1` reads as a positional — which
+# is to say as a test selector — and `pytest -q 2>&1` answers "narrowed" for a run that was
+# the whole suite. That is how a green whole-suite run failed to supersede an earlier red on
+# Tycho's own repo. `2>&1` and `>out.txt` carry their target; a bare `>` takes the next token.
+_REDIRECT = re.compile(r"^\d*(?:>>|[<>])")
+_BARE_REDIRECT = re.compile(r"^\d*(?:>>|[<>])$")
+
+
+def _strip_redirects(parts: list[str]) -> list[str]:
+    kept, skip = [], False
+    for part in parts:
+        if skip:
+            skip = False
+            continue
+        if _REDIRECT.match(part):
+            skip = bool(_BARE_REDIRECT.match(part))  # the filename is the next token
+            continue
+        kept.append(part)
+    return kept
+
+
 def _normalize_segment(segment: str) -> str:
-    """Strip env prefixes and the leading path, so `.venv/bin/python -m pytest` reads as
-    `python -m pytest`."""
+    """Strip env prefixes, redirections and the leading path, so `.venv/bin/python -m pytest`
+    reads as `python -m pytest`."""
     segment = _ENV_PREFIX.sub("", segment.strip())
     try:
-        parts = shlex.split(segment)
+        parts = _strip_redirects(shlex.split(segment))
     except ValueError:
         parts = []
     if parts:
@@ -353,7 +374,9 @@ def _exec_argv(cmd: str, _depth: int = 0) -> list[str] | None:
         return None
     for segment in _SEGMENT_SEP.split(cmd):
         try:
-            parts = shlex.split(segment)
+            # Redirects out too, or `tycho exec -- pytest 2>&1` never matches the argv the
+            # exec log recorded, and the strongest evidence Tycho has goes unused.
+            parts = _strip_redirects(shlex.split(segment))
         except ValueError:
             continue
         if not parts:
@@ -374,17 +397,54 @@ def _exec_argv(cmd: str, _depth: int = 0) -> list[str] | None:
 
 
 def _covers(green: str | None, red: str | None) -> bool:
-    """Did `green` run at least everything `red` did? Both are normalized runner segments."""
+    """Did `green` run at least everything `red` did? Both are normalized runner segments.
+
+    The relation is containment of what each run *selected*, and "the whole suite" is just the
+    case where green selected everything. Asking only whether green was the whole suite made
+    `pytest tests/` fail to supersede `pytest tests/test_one.py` — a run that did strictly more
+    work, reported as "a different command, so it can't stand in for it". That is the
+    cried-wolf failure: a red nobody can discharge without starting a new session.
+
+    It still only ever loosens where containment is *provable*. An unreadable command, an
+    opaque selector (`-k`, `--lf`), a red that ran the whole suite, or a different runner
+    family all supersede nothing — the honest answer, not a fallback.
+    """
     if green is None or red is None:
         return False
     if green == red:
         return True
     # Different runners are different suites: a green `pytest` says nothing about a red `npm test`.
-    return (
-        _runner_family(green) is not None
-        and _runner_family(green) == _runner_family(red)
-        and _selects_whole_suite(green) is True
-    )
+    if _runner_family(green) is None or _runner_family(green) != _runner_family(red):
+        return False
+    picked = _selection(green)
+    if picked is None or picked is _OPAQUE:
+        return False
+    if not picked:
+        return True  # green selected nothing in particular, which is everything
+    covered = _selection(red)
+    if covered is None or covered is _OPAQUE or not covered:
+        return False  # unreadable, opaque, or red *was* the whole suite — the narrowed-rerun lie
+    return all(any(_target_covers(p, c) for p in picked) for c in covered)
+
+
+def _target_covers(outer: str, inner: str) -> bool:
+    """Does running `outer` run `inner` too? Directory over file, file over node id.
+
+    Separator-anchored, never a bare prefix: `tests/test_one.py` must not read as covering
+    `tests/test_one_helpers.py`.
+    """
+    outer, inner = _norm_target(outer), _norm_target(inner)
+    if outer == inner:
+        return True
+    if outer.endswith("/..."):  # go's recursive form
+        outer = outer[:-4]
+    else:
+        outer = outer.rstrip("/")
+    return any(inner.startswith(outer + sep) for sep in ("/", "::"))
+
+
+def _norm_target(target: str) -> str:
+    return target[2:] if target.startswith("./") else target
 
 
 # Runner families sharing an argument grammar. Anything unlisted answers "can't tell".
@@ -415,8 +475,25 @@ _VALUE_OPTIONS = {
                      "--reporters", "--config", "-c"}),
 }
 
-# Options that narrow the run to part of the suite. A run carrying one is never whole-suite.
-
+# Options taking no value, so the bare word after one is a test target rather than its value.
+# The complement of `_VALUE_OPTIONS`, and load-bearing for the same reason: without `-q` here,
+# `pytest -q tests/` is "an unmodelled option followed by an ambiguous word" and the whole
+# coverage relation declines to read the single most common way people run pytest.
+_FLAG_OPTIONS = {
+    "pytest": frozenset({"-q", "-qq", "-v", "-vv", "-vvv", "-x", "-s", "-l", "--quiet",
+                         "--verbose", "--exitfirst", "--no-header", "--no-summary",
+                         "--showlocals", "--strict-markers", "--strict-config",
+                         "--disable-warnings", "--cache-clear", "--full-trace", "-ra", "-rA"}),
+    "unittest": frozenset({"-v", "-q", "-f", "-b", "--verbose", "--quiet", "--failfast",
+                           "--buffer", "--locals"}),
+    "go": frozenset({"-v", "-race", "-cover", "-short", "-failfast", "-json", "-bench"}),
+    "cargo": frozenset({"-v", "-q", "--verbose", "--quiet", "--release", "--all", "--workspace",
+                        "--all-features", "--no-default-features", "--all-targets",
+                        "--no-fail-fast", "--locked", "--offline"}),
+    "tox": frozenset({"-v", "-q", "-r", "--recreate", "--notest", "--parallel-no-spinner"}),
+    "js": frozenset({"--ci", "--coverage", "--silent", "--verbose", "--runInBand", "--bail",
+                     "--passWithNoTests", "--watchAll", "-u", "--updateSnapshot", "--run"}),
+}
 
 # Options that narrow the run to part of the suite. A run carrying one is never whole-suite.
 _NARROWING_OPTIONS = {
@@ -459,20 +536,30 @@ def _runner_family(segment: str) -> str | None:
     return None
 
 
-def _selects_whole_suite(segment: str) -> bool | None:
-    """True = the whole suite, False = narrowed, None = the arguments can't be read.
+# Narrowed by something that is not a path: `-k auth` runs an unknown subset, so nothing but an
+# identical command or a whole-suite run can be shown to have covered it.
+_OPAQUE = object()
+
+
+def _selection(segment: str) -> frozenset[str] | object | None:
+    """What this run selected: a set of targets, empty for the whole suite, `_OPAQUE` when
+    narrowed by a non-path selector, None when the arguments can't be read.
 
     None is an answer, not a failure mode: an unrecognized option followed by a bare word could
     be that option's value or a test selector. Callers treat None as "does not supersede".
+    That rule is why `_FLAG_OPTIONS` has to exist — without the options we *know* take no
+    value, `pytest -q tests/` is unreadable, and unreadable is the most common shape there is.
     """
     family = _runner_family(segment)
     span = _runner_span(segment)
     if family is None or span is None:
         return None
     value_opts = _VALUE_OPTIONS[family]
+    flag_opts = _FLAG_OPTIONS[family]
     narrowing = _NARROWING_OPTIONS[family]
     whole = _WHOLE_SUITE_POSITIONALS[family]
 
+    targets: set[str] = set()
     tokens = segment.split()[span[1]:]
     i = 0
     while i < len(tokens):
@@ -481,14 +568,14 @@ def _selects_whole_suite(segment: str) -> bool | None:
             i += 1
             continue
         if not token.startswith("-"):
-            if token in whole:
-                i += 1
-                continue
-            return False  # a test path, node id or pattern
+            if token not in whole:
+                targets.add(token)  # a test path or node id
+            i += 1
+            continue
         name = token.split("=", 1)[0]
         if name in narrowing:
-            return False
-        if "=" in token:  # self-contained, never consumes the next token
+            return _OPAQUE
+        if "=" in token or name in flag_opts:  # self-contained, never consumes the next token
             i += 1
             continue
         if name in value_opts:
@@ -499,4 +586,12 @@ def _selects_whole_suite(segment: str) -> bool | None:
         if i + 1 < len(tokens) and not tokens[i + 1].startswith("-"):
             return None
         i += 1
-    return True
+    return frozenset(targets)
+
+
+def _selects_whole_suite(segment: str) -> bool | None:
+    """True = the whole suite, False = narrowed, None = the arguments can't be read."""
+    picked = _selection(segment)
+    if picked is None:
+        return None
+    return picked is not _OPAQUE and not picked

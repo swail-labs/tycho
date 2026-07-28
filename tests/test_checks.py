@@ -864,6 +864,51 @@ def test_a_whole_suite_green_supersedes_an_earlier_red(red, green):
 
 
 @pytest.mark.parametrize("red,green", [
+    # The shape that fired on this repo: narrow the failure to one file, fix it, re-run the
+    # directory. Asking only "was green the whole suite?" called that a different command.
+    ("pytest -q tests/test_update.py", "pytest -q tests/"),
+    ("pytest tests/test_one.py::test_a", "pytest tests/test_one.py"),
+    ("pytest tests/test_one.py", "pytest tests/test_one.py tests/test_two.py"),
+    ("pytest ./tests/test_one.py", "pytest tests"),          # ./ and a trailing slash are noise
+    ("go test ./pkg/auth", "go test ./pkg/..."),
+    # A redirect is plumbing, not a selector — with `2>&1` read as a positional, a genuine
+    # whole-suite green superseded nothing. Straight out of `.tycho/turns.jsonl`.
+    ("python -m pytest -q 2>&1", "python -m pytest -q --cov=tycho 2>&1"),
+    ("pytest -q tests/test_update.py 2>&1", "pytest -q tests/ 2>&1"),
+    ("pytest tests/test_one.py", "pytest > out.log"),
+])
+def test_a_green_that_ran_a_superset_supersedes_an_earlier_red(red, green):
+    """Coverage is containment of what each run selected; the whole suite is just the case
+    where green selected everything. `pytest tests/` ran strictly more than
+    `pytest tests/test_update.py`, and reporting that as "a different command, so it can't
+    stand in for it" is the cried-wolf failure — a red no work in the session can discharge."""
+    s = make_session(events=[
+        bash(red, 100.0, is_error=True),
+        bash(green, 200.0, is_error=False),
+    ])
+    assert checks._last_green_run_ts(s) == 200.0, f"{green!r} should supersede {red!r}"
+    assert checks.command_execution(s).status == CheckStatus.PASS
+
+
+@pytest.mark.parametrize("red,green", [
+    ("pytest tests/test_one.py", "pytest tests/test_one_helpers.py"),  # prefix, not containment
+    ("pytest tests/", "pytest tests/test_one.py"),        # the same lie, one level up
+    ("pytest tests/a.py tests/b.py", "pytest tests/a.py"),  # only half the red re-ran
+    ("pytest -k auth", "pytest tests/"),                  # opaque red: containment unprovable
+    ("pytest tests/a.py", "pytest -k auth"),              # opaque green proves nothing either
+    ("go test ./pkg/auth", "go test ./pkg/authz"),
+])
+def test_containment_never_reaches_past_what_it_can_prove(red, green):
+    """The loosening is the whole risk: a green wrongly read as covering a red manufactures a
+    VERIFIED on unrun work, which is the one thing Tycho must never do."""
+    s = make_session(events=[
+        bash(red, 100.0, is_error=True),
+        bash(green, 200.0, is_error=False),
+    ])
+    assert checks._last_green_run_ts(s) is None, f"{green!r} must not supersede {red!r}"
+
+
+@pytest.mark.parametrize("red,green", [
     ("pytest -q", "pytest tests/test_one.py"),   # the narrowed-rerun lie, both directions
     ("pytest -q", "pytest -k test_one"),
     ("go test ./...", "go test -run TestOne ./..."),
@@ -892,9 +937,43 @@ def test_a_green_that_ran_less_never_supersedes_a_red(red, green):
     ("make test", None),                  # unmodelled family
     ("pytest --weirdflag value", None),   # can't tell a value from a selector
     ("pytest --weirdflag", True),         # nothing follows it, so nothing is ambiguous
+    ("pytest -q", True),                  # a known valueless flag, so nothing is ambiguous
+    ("pytest -q tests/", False),          # ...and `-q` no longer hides the target behind None
+    ("pytest -x -v --no-header", True),
 ])
 def test_whole_suite_detection(cmd, expected):
     assert checks._selects_whole_suite(cmd) is expected, cmd
+
+
+@pytest.mark.parametrize("cmd,expected", [
+    ("pytest -q 2>&1", "pytest -q"),
+    ("pytest -q > out.log", "pytest -q"),
+    ("pytest -q >out.log 2>&1", "pytest -q"),
+    ("pytest -q tests/ 2>/dev/null", "pytest -q tests/"),
+    ("python -m pytest 2>&1", "python -m pytest"),
+])
+def test_redirects_are_plumbing_not_arguments(cmd, expected):
+    """Normalization is the one place this is stripped, so every reader downstream — scope,
+    family, equality, and `tycho exec` argv matching — sees the same clean segment. Left in,
+    `2>&1` is a bare positional, which is to say a test selector, and a whole-suite green
+    reads as narrowed."""
+    assert checks._runner_segment(cmd) == expected, cmd
+    assert checks._selects_whole_suite(checks._runner_segment(cmd)) is not None, cmd
+
+
+@pytest.mark.parametrize("cmd,expected", [
+    ("pytest -q", frozenset()),                       # empty selection is the whole suite
+    ("pytest -q tests/ tests/x.py", frozenset({"tests/", "tests/x.py"})),
+    ("pytest -n 4 tests/x.py", frozenset({"tests/x.py"})),   # `4` is xdist's, not a target
+    ("go test ./...", frozenset()),
+    ("pytest -k auth", checks._OPAQUE),               # narrowed, but not by a path
+    ("pytest --weirdflag value", None),               # unreadable stays unreadable
+    ("make test", None),                              # unmodelled family
+])
+def test_selection_reads_targets_not_just_breadth(cmd, expected):
+    """`_covers` needs *what* a run selected, not merely whether it was everything — the
+    tri-state above is the lossy view of this one."""
+    assert checks._selection(cmd) == expected, cmd
 
 
 @pytest.mark.parametrize("cmd", [
