@@ -7,6 +7,7 @@ is that Tycho either does the right thing or does nothing, and says which.
 """
 
 import json
+import os
 import stat
 import subprocess
 import sys
@@ -969,3 +970,123 @@ def test_a_refused_commit_hook_does_not_cost_the_gitignore_entry(tmp_path: Path,
     lines = init_mod.init(repo, only="claude", assume_yes=True)
     assert any(init_mod.REFUSED in ln for ln in lines)
     assert ".tycho/" in _gitignore(repo).read_text().splitlines()
+def test_a_hooks_path_outside_the_repo_is_refused(tmp_path: Path, monkeypatch):
+    # `git config --global core.hooksPath ~/.githooks` makes `--git-path hooks` answer with a
+    # path shared by every repo on the machine. Installing there turns a repo-local init into
+    # a machine-wide one, and the next repo's uninstall takes it away from all of them.
+    shared = tmp_path / "githooks"
+    shared.mkdir()
+    gitconfig = tmp_path / "gitconfig"
+    gitconfig.write_text(f"[core]\n\thooksPath = {shared.as_posix()}\n")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(gitconfig))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    repo = _init_repo(tmp_path)
+
+    lines = init_mod.init(repo, only="claude", assume_yes=True)
+
+    assert not (shared / HOOK).exists(), "a repo-local init must not write a machine-wide hook"
+    assert any(init_mod.REFUSED in ln and "core.hooksPath" in ln for ln in lines), lines
+    assert (repo / CLAUDE).exists()  # …and the refusal doesn't take the harness install down
+
+
+@posix_only
+def test_init_does_not_make_a_foreign_inert_hook_executable(tmp_path: Path):
+    # A non-executable hook is not run by git at all. chmod +x on someone else's dead
+    # `exit 1` hook would make it live — Tycho breaking `git commit` on its way in.
+    repo = _init_repo(tmp_path)
+    hook = _hook_path(repo)
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    hook.write_text("#!/bin/sh\nexit 1\n")
+    hook.chmod(0o644)
+    init_mod.init(repo, only="claude", assume_yes=True)
+    assert not (hook.stat().st_mode & 0o111), "we don't decide their hook should start running"
+
+
+def test_a_damaged_fence_is_repaired_not_duplicated(tmp_path: Path):
+    # Someone deletes the closing marker by hand. Re-init must repair the block, not stack a
+    # second one — two blocks means `attest` runs twice per commit, and uninstall then takes
+    # out only one, leaving an orphan firing forever.
+    repo = _init_repo(tmp_path)
+    init_mod.init(repo, only="claude", assume_yes=True)
+    hook = _hook_path(repo)
+    damaged = "\n".join(ln for ln in hook.read_text().splitlines()
+                        if ln.strip() != init_mod._GIT_END) + "\necho theirs\n"
+    hook.write_text(damaged)
+
+    init_mod.init(repo, only="claude", assume_yes=True)
+
+    text = hook.read_text()
+    assert text.count(init_mod._GIT_BEGIN) == 1
+    assert "echo theirs" in text  # repairing our block is not licence to eat their lines
+    init_mod.uninstall(repo, only="claude")
+    assert init_mod.attest_command() not in hook.read_text()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="runs the hook through a POSIX /bin/sh")
+def test_a_commit_still_succeeds_when_the_hook_runs_under_set_u(tmp_path: Path):
+    # `set -eu` is ordinary hygiene in a hand-written hook, and git passes no second argument
+    # to `prepare-commit-msg` for an editor commit. Under `set -u` the unset expansion kills
+    # the shell *before* our `|| :` is reached, so the fail-open guard doesn't hold and the
+    # commit is refused outright. `git commit -m` would hide it — that one does pass `$2`.
+    from conftest import git
+
+    repo = _init_repo(tmp_path)
+    hook = _hook_path(repo)
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    hook.write_text("#!/bin/sh -eu\n# theirs\n")
+    hook.chmod(0o755)
+    init_mod.init(repo, only="claude", assume_yes=True)
+
+    editor = tmp_path / "editor.sh"
+    editor.write_text('#!/bin/sh\necho one > "$1"\n')
+    editor.chmod(0o755)
+    (repo / "a.txt").write_text("hi\n")
+    git(repo, "add", "a.txt")
+    done = subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t",
+         "-c", "commit.gpgsign=false", "commit"],
+        capture_output=True, text=True,
+        # No global config: a `commit.template` there would hand the hook a `$2` of its own
+        # and hide the very thing this test is about.
+        env={**os.environ, "GIT_EDITOR": str(editor), "GIT_CONFIG_NOSYSTEM": "1",
+             "GIT_CONFIG_GLOBAL": str(tmp_path / "gitconfig-none")},
+    )
+    assert done.returncode == 0, done.stderr
+    assert git(repo, "log", "--oneline").stdout.strip(), "the commit must exist"
+
+
+def test_a_tracked_hook_is_refused(tmp_path: Path):
+    # husky keeps `.husky/prepare-commit-msg` in the repo. Rewriting it would commit this
+    # machine's absolute python path for everyone on the team.
+    from conftest import git
+
+    repo = _init_repo(tmp_path)
+    husky = repo / ".husky"
+    husky.mkdir()
+    original = "#!/bin/sh\necho theirs\n"
+    (husky / HOOK).write_text(original)
+    git(repo, "config", "core.hooksPath", ".husky")
+    git(repo, "add", ".husky")
+    git(repo, "commit", "-qm", "husky")
+
+    lines = init_mod.init(repo, only="claude", assume_yes=True)
+
+    assert (husky / HOOK).read_text() == original
+    assert any(init_mod.REFUSED in ln and "tracked by git" in ln for ln in lines), lines
+    assert (repo / CLAUDE).exists()  # the harness install still lands
+
+
+@posix_only
+def test_a_symlinked_hook_is_refused(tmp_path: Path):
+    repo = _init_repo(tmp_path)
+    real = tmp_path / "elsewhere-hook.sh"
+    real.write_text("#!/bin/sh\necho theirs\n")
+    hook = _hook_path(repo)
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    hook.symlink_to(real)
+
+    lines = init_mod.init(repo, only="claude", assume_yes=True)
+
+    assert real.read_text() == "#!/bin/sh\necho theirs\n"
+    assert hook.is_symlink()
+    assert any(init_mod.REFUSED in ln and "symlink" in ln for ln in lines), lines
