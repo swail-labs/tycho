@@ -543,11 +543,14 @@ def uninstall(repo: Path, only: str | None = None, purge: bool = False) -> list[
         except ConfigRefused as exc:
             # Same rule as install: a config we can't parse is one we can't safely rewrite.
             lines.append(f"{name}{REFUSED}{exc}")
-    # The commit-trailer hook is harness-agnostic, so it comes out on any uninstall here.
-    try:
-        lines += filter(None, [_uninstall_git_hook(repo), _uninstall_gitignore(repo)])
-    except ConfigRefused as exc:
-        lines.append(f"git{REFUSED}{exc}")
+    # The commit-trailer hook and the gitignore entry are shared by every harness, so they
+    # only come out once nothing is wired here any more — otherwise `uninstall --harness x`
+    # would silently strip the commit trailer the harness you kept still relies on.
+    if not state.read_install(repo):
+        try:
+            lines += filter(None, [_uninstall_git_hook(repo), _uninstall_gitignore(repo)])
+        except ConfigRefused as exc:
+            lines.append(f"git{REFUSED}{exc}")
     if purge:
         lines += _purge_repo_local(repo)
     return lines
@@ -602,6 +605,36 @@ def _load(path: Path) -> dict:
     return data
 
 
+def _hooks_of(data: dict, path: Path) -> dict:
+    """The config's `hooks` object, or {} when there is none. Anything else is a shape we
+    can't merge into: replacing it wholesale would delete hooks the user wrote."""
+    hooks = data.get("hooks")
+    if hooks is None or hooks == {}:
+        return {}
+    if not isinstance(hooks, dict):
+        raise ConfigRefused(
+            f"{path}: `hooks` holds {type(hooks).__name__}, not an object — Tycho can't merge "
+            f"into that. Fix or move it, then re-run"
+        )
+    return dict(hooks)
+
+
+def _groups_of(hooks: dict, key: str, path: Path) -> list:
+    """The list under `hooks.<key>`, or [] when absent. A string here would be merged
+    character by character and a bare group object flattened to its own key names, so
+    refuse anything that isn't a list of groups."""
+    groups = hooks.get(key)
+    if groups is None:
+        return []
+    nested = [g.get("hooks") for g in groups if isinstance(g, dict)] if isinstance(groups, list) else []
+    if not isinstance(groups, list) or any(e is not None and not isinstance(e, list) for e in nested):
+        raise ConfigRefused(
+            f"{path}: `hooks.{key}` isn't the list of hook groups Tycho understands — fix or "
+            f"move it, then re-run"
+        )
+    return groups
+
+
 def _write_text(path: Path, text: str, backup: bool = True) -> bool:
     """Write `text` to `path` atomically; return False if it was already correct. Resolves
     symlinks first, so a settings file symlinked into a dotfiles repo stays a symlink. Temp
@@ -634,6 +667,15 @@ def _write_text(path: Path, text: str, backup: bool = True) -> bool:
     return True
 
 
+def _drop_backup(path: Path) -> None:
+    """A clean uninstall leaves nothing behind — including the `.bak` of the state we just
+    reverted. Best-effort: a backup we can't delete is litter, not a failed uninstall."""
+    try:
+        path.with_name(path.name + _BACKUP_SUFFIX).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def _write(path: Path, data: dict) -> bool:
     return _write_text(path, json.dumps(data, indent=2) + "\n")
 
@@ -655,19 +697,19 @@ def _install_claude(repo: Path, scope: str = REPO) -> str:
     path = settings_path(repo, scope)
     data = _load(path)
     command = _command_for_scope("hook", scope)
-    hooks = dict(data.get("hooks") or {}) if isinstance(data.get("hooks"), dict) else {}
-    groups, existed = _strip_claude_tycho(hooks.get("Stop") or [])
+    hooks = _hooks_of(data, path)
+    groups, existed = _strip_claude_tycho(_groups_of(hooks, "Stop", path))
     groups.append({"hooks": [{"type": "command", "command": command}]})
     hooks["Stop"] = groups
     # SessionStart: surface a newer-version notice to the user at agent bootup.
     ss_command = _command_for_scope("session-start", scope)
-    ss_groups, ss_existed = _strip_claude_tycho(hooks.get("SessionStart") or [])
+    ss_groups, ss_existed = _strip_claude_tycho(_groups_of(hooks, "SessionStart", path))
     ss_groups.append({"hooks": [{"type": "command", "command": ss_command}]})
     hooks["SessionStart"] = ss_groups
     # UserPromptSubmit: mark a run in flight at prompt time so the badge shows "verifying"
     # for the whole turn, not just a flicker at Stop. The Stop hook clears it to the verdict.
     ups_command = _command_for_scope("prompt-submit", scope)
-    ups_groups, ups_existed = _strip_claude_tycho(hooks.get("UserPromptSubmit") or [])
+    ups_groups, ups_existed = _strip_claude_tycho(_groups_of(hooks, "UserPromptSubmit", path))
     ups_groups.append({"hooks": [{"type": "command", "command": ups_command}]})
     hooks["UserPromptSubmit"] = ups_groups
     merged, statusline = _with_statusline(repo, {**data, "hooks": hooks}, path, scope)
@@ -831,6 +873,32 @@ def _user_statusline_command(repo: Path) -> str | None:
     return cmd if isinstance(cmd, str) and not _is_tycho_status(cmd) else None
 
 
+_WRAPPED_STATUSLINE = "statusline-wrapped.json"
+
+
+def _remember_statusline(repo: Path, statusline: dict | None) -> None:
+    """Keep the whole statusLine object we displaced, so uninstall gives back `padding` and
+    anything else the user set. `state`'s wrap record holds only the command, because that is
+    all `tycho statusline` needs to run it. Best-effort: our own state dir, never a refusal."""
+    path = state.dir_for(repo) / _WRAPPED_STATUSLINE
+    try:
+        if statusline is None:
+            path.unlink(missing_ok=True)
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(statusline, indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _recall_statusline(repo: Path) -> dict | None:
+    try:
+        data = json.loads((state.dir_for(repo) / _WRAPPED_STATUSLINE).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def _global_statusline(data: dict, path: Path) -> tuple[dict, str]:
     """The user-level status bar: take the slot only if it is empty. Repo scope can compose
     with a foreign line because it owns the write and uninstall puts the original back;
@@ -866,10 +934,17 @@ def _with_statusline(repo: Path, data: dict, path: Path, scope: str = REPO) -> t
 
     if isinstance(foreign, str):
         state.write_statusline_wrap(repo, foreign, origin="repo")
-    elif (user_cmd := _user_statusline_command(repo)) is not None:
-        state.write_statusline_wrap(repo, user_cmd, origin="user")
-    else:
-        state.clear_statusline_wrap(repo)
+        _remember_statusline(repo, current)
+    elif not (ours and (state.read_statusline_wrap(repo) or {}).get("origin") == "repo"):
+        # A re-init sees its own line where the user's used to be, so re-deriving here would
+        # clear the only record of what the first init wrapped — and the `.bak` by then holds
+        # Tycho's own line, making their status line unrecoverable. A "user" record is
+        # re-derived freely: that one is still readable from their own config.
+        if (user_cmd := _user_statusline_command(repo)) is not None:
+            state.write_statusline_wrap(repo, user_cmd, origin="user")
+        else:
+            state.clear_statusline_wrap(repo)
+        _remember_statusline(repo, None)
 
     base = current if (ours and isinstance(current, dict)) else {}  # keep our own extra keys only
     merged = {**base, "type": "command", "command": command}
@@ -900,9 +975,9 @@ def _install_cursor(repo: Path) -> str:
     # .cursor/hooks.json → hooks.stop is a flat list of {command, ...}; needs `version`.
     path = config_path(repo, "cursor")
     data = _load(path)
-    hooks = dict(data.get("hooks") or {}) if isinstance(data.get("hooks"), dict) else {}
+    hooks = _hooks_of(data, path)
     command = hook_command()
-    stop = list(hooks.get("stop") or [])
+    stop = list(_groups_of(hooks, "stop", path))
     kept = [h for h in stop if not (isinstance(h, dict) and _is_tycho_hook(h.get("command")))]
     existed = len(kept) != len(stop)
     kept.append({"command": command})
@@ -919,13 +994,13 @@ def _install_codex(repo: Path) -> str:
     """
     path = config_path(repo, "codex")
     data = _load(path)
-    hooks = dict(data.get("hooks") or {}) if isinstance(data.get("hooks"), dict) else {}
+    hooks = _hooks_of(data, path)
     command = hook_command()
-    groups, existed = _strip_claude_tycho(hooks.get("Stop") or [])
+    groups, existed = _strip_claude_tycho(_groups_of(hooks, "Stop", path))
     groups.append({"hooks": [{"type": "command", "command": command}]})
     hooks["Stop"] = groups
     ss_command = _command_for("session-start")
-    ss_groups, ss_existed = _strip_claude_tycho(hooks.get("SessionStart") or [])
+    ss_groups, ss_existed = _strip_claude_tycho(_groups_of(hooks, "SessionStart", path))
     ss_groups.append({"hooks": [{"type": "command", "command": ss_command}]})
     hooks["SessionStart"] = ss_groups
     changed = _write(path, {**data, "hooks": hooks})
@@ -1162,8 +1237,10 @@ def _install_gitignore(repo: Path) -> str | None:
     if current is None:
         text = _IGNORE_BLOCK
     else:
-        tail = "" if current.endswith("\n") else "\n"  # don't glue onto their last line
-        text = f"{current}{tail}\n{_IGNORE_BLOCK}"     # blank line, then ours
+        # One newline, then ours. A file that already ended in one therefore gets a blank
+        # separator line and one that didn't gets none — which is exactly how uninstall
+        # tells the two apart and puts the missing trailing newline back (or doesn't).
+        text = f"{current}\n{_IGNORE_BLOCK}"
     if not _write_text(path, text, backup=current is not None):
         return None
     return f"git: ignored {_IGNORE_ENTRY} → {path}"
@@ -1176,8 +1253,9 @@ def _uninstall_gitignore(repo: Path) -> str | None:
     if not current or _IGNORE_BLOCK not in current:
         return None
     # Longest match first, so the blank separator we added comes out with the block —
-    # `init; uninstall` must restore the file byte-for-byte.
-    for pattern, replacement in ((f"\n\n{_IGNORE_BLOCK}", "\n"), (f"\n{_IGNORE_BLOCK}", "\n"),
+    # `init; uninstall` must restore the file byte-for-byte. A single newline before the
+    # block means the file had no trailing one, so that newline is ours to take back too.
+    for pattern, replacement in ((f"\n\n{_IGNORE_BLOCK}", "\n"), (f"\n{_IGNORE_BLOCK}", ""),
                                  (_IGNORE_BLOCK, "")):
         if pattern in current:
             text = current.replace(pattern, replacement, 1)
@@ -1190,9 +1268,11 @@ def _uninstall_gitignore(repo: Path) -> str | None:
             path.unlink()
         except OSError:
             return None
+        _drop_backup(path)
         return f"git: removed the {path.name} Tycho created → {path}"
     if not _write_text(path, text, backup=True):
         return None
+    _drop_backup(path)
     return f"git: stopped ignoring {_IGNORE_ENTRY} → {path}"
 
 
@@ -1215,6 +1295,7 @@ def _uninstall_git_hook(repo: Path) -> str | None:
             raise ConfigRefused(f"cannot remove {path} ({exc.strerror}) — fix that, then re-run") from exc
         return f"git: removed {_GIT_HOOK} hook → {path}"
     _write_text(path, remainder)
+    _drop_backup(path)
     return f"git: removed the Tycho block from {path}"
 
 
@@ -1246,17 +1327,19 @@ def _uninstall_claude(repo: Path, scope: str = REPO) -> str:
     if not path.exists():
         return f"{label}: nothing to remove (no config)"
     data = _load(path)
-    hooks = dict(data.get("hooks") or {}) if isinstance(data.get("hooks"), dict) else {}
-    groups, had_hook = _strip_claude_tycho(hooks.get("Stop") or [])
-    ss_groups, had_ss = _strip_claude_tycho(hooks.get("SessionStart") or [])
-    ups_groups, had_ups = _strip_claude_tycho(hooks.get("UserPromptSubmit") or [])
+    hooks = _hooks_of(data, path)
+    groups, had_hook = _strip_claude_tycho(_groups_of(hooks, "Stop", path))
+    ss_groups, had_ss = _strip_claude_tycho(_groups_of(hooks, "SessionStart", path))
+    ups_groups, had_ups = _strip_claude_tycho(_groups_of(hooks, "UserPromptSubmit", path))
     current = data.get("statusLine")
     had_statusline = isinstance(current, dict) and _is_tycho_status(current.get("command"))
     slash = _uninstall_slash_commands(repo, scope)
     # A global install never wrote a compose record, and clearing the *repo's* would be wrong.
     wrap = state.read_statusline_wrap(repo) if scope == REPO else None
+    wrapped = _recall_statusline(repo) if scope == REPO else None
     if scope == REPO:
         state.clear_statusline_wrap(repo)  # forget the compose target either way
+        _remember_statusline(repo, None)
     if not had_hook and not had_ss and not had_ups and not had_statusline:
         return slash or f"{label}: nothing to remove"
     _prune(data, hooks, "Stop", groups)  # mutates `hooks` in place…
@@ -1268,9 +1351,12 @@ def _uninstall_claude(repo: Path, scope: str = REPO) -> str:
         # A foreign repo-level line we replaced is ours to put back; a user-level one
         # resurfaces on its own.
         if isinstance(wrap, dict) and wrap.get("origin") == "repo" and isinstance(wrap.get("command"), str):
-            merged = {**merged, "statusLine": {"type": "command", "command": wrap["command"]}}
+            # Their whole object if we still have it — `padding` and friends were never ours
+            # to drop — else the one key we know for certain.
+            merged = {**merged, "statusLine": wrapped or {"type": "command", "command": wrap["command"]}}
             restored = True
     _write(path, merged)
+    _drop_backup(path)
     lines = []
     if had_hook:
         lines.append(f"{label}: removed Stop hook → {path}")
@@ -1317,9 +1403,9 @@ def _uninstall_codex(repo: Path) -> str:
     if not path.exists():
         return "codex: nothing to remove (no config)"
     data = _load(path)
-    hooks = dict(data.get("hooks") or {}) if isinstance(data.get("hooks"), dict) else {}
-    groups, had_hook = _strip_claude_tycho(hooks.get("Stop") or [])
-    ss_groups, had_ss = _strip_claude_tycho(hooks.get("SessionStart") or [])
+    hooks = _hooks_of(data, path)
+    groups, had_hook = _strip_claude_tycho(_groups_of(hooks, "Stop", path))
+    ss_groups, had_ss = _strip_claude_tycho(_groups_of(hooks, "SessionStart", path))
     if not had_hook and not had_ss:
         return "codex: nothing to remove"
     _prune(data, hooks, "Stop", groups)  # mutates `hooks` in place…
@@ -1339,8 +1425,8 @@ def _uninstall_cursor(repo: Path) -> str:
     if not path.exists():
         return "cursor: nothing to remove (no config)"
     data = _load(path)
-    hooks = dict(data.get("hooks") or {}) if isinstance(data.get("hooks"), dict) else {}
-    stop = list(hooks.get("stop") or [])
+    hooks = _hooks_of(data, path)
+    stop = list(_groups_of(hooks, "stop", path))
     kept = [h for h in stop if not (isinstance(h, dict) and _is_tycho_hook(h.get("command")))]
     if len(kept) == len(stop):
         return "cursor: nothing to remove"

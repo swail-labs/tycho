@@ -970,6 +970,68 @@ def test_a_refused_commit_hook_does_not_cost_the_gitignore_entry(tmp_path: Path,
     lines = init_mod.init(repo, only="claude", assume_yes=True)
     assert any(init_mod.REFUSED in ln for ln in lines)
     assert ".tycho/" in _gitignore(repo).read_text().splitlines()
+
+
+# --- the adversarial install: nine ways a real machine bites back ------------
+#
+# Every case below was reproduced against a released build before it was fixed. They share
+# one rule: init runs against files the developer owns, so the worst outcome is not "Tycho
+# didn't install" — it is "Tycho changed something the developer can't get back".
+
+
+def _statusline(repo: Path) -> dict:
+    return json.loads((repo / CLAUDE).read_text()).get("statusLine")
+
+
+def test_a_second_init_does_not_forget_the_statusline_it_wrapped(tmp_path: Path):
+    # init; init; uninstall must still put the user's badge back. The second init used to
+    # clear the compose record, so uninstall had nothing to restore and the badge was gone
+    # — with the .bak holding only Tycho's own line, unrecoverably.
+    settings = tmp_path / CLAUDE
+    settings.parent.mkdir(parents=True)
+    settings.write_text(json.dumps({"statusLine": {"type": "command", "command": "my-badge"}}))
+    init_mod.init(tmp_path, only="claude", assume_yes=True)
+    init_mod.init(tmp_path, only="claude", assume_yes=True)
+    init_mod.uninstall(tmp_path, only="claude")
+    assert _statusline(tmp_path)["command"] == "my-badge"
+
+
+def test_uninstall_restores_every_key_of_a_wrapped_statusline(tmp_path: Path):
+    settings = tmp_path / CLAUDE
+    settings.parent.mkdir(parents=True)
+    original = {"type": "command", "command": "my-badge", "padding": 1}
+    settings.write_text(json.dumps({"statusLine": original}))
+    init_mod.init(tmp_path, only="claude", assume_yes=True)
+    init_mod.uninstall(tmp_path, only="claude")
+    assert _statusline(tmp_path) == original  # padding is theirs, not ours to drop
+
+
+@pytest.mark.parametrize("hooks", [
+    {"Stop": "echo hi"},                                   # a string, iterated per character
+    {"Stop": {"matcher": "*", "hooks": [{"command": "x"}]}},  # a group where a list belongs
+    {"Stop": [{"hooks": {"type": "command"}}]},            # a dict where the entry list belongs
+    ["a", "b"],                                            # `hooks` itself is not an object
+])
+def test_a_hooks_shape_we_cannot_parse_is_refused(tmp_path: Path, hooks):
+    settings = tmp_path / CLAUDE
+    settings.parent.mkdir(parents=True)
+    original = json.dumps({"hooks": hooks}) + "\n"
+    settings.write_text(original)
+    lines = init_mod.init(tmp_path, only="claude", assume_yes=True)
+    assert any(init_mod.REFUSED in ln for ln in lines), lines
+    assert settings.read_text() == original  # valid JSON, unknown shape: still don't guess
+
+
+def test_a_hooks_shape_we_cannot_parse_is_refused_on_uninstall_too(tmp_path: Path):
+    settings = tmp_path / CLAUDE
+    settings.parent.mkdir(parents=True)
+    original = json.dumps({"hooks": {"Stop": "echo hi"}}) + "\n"
+    settings.write_text(original)
+    lines = init_mod.uninstall(tmp_path, only="claude")
+    assert any(init_mod.REFUSED in ln for ln in lines), lines
+    assert settings.read_text() == original
+
+
 def test_a_hooks_path_outside_the_repo_is_refused(tmp_path: Path, monkeypatch):
     # `git config --global core.hooksPath ~/.githooks` makes `--git-path hooks` answer with a
     # path shared by every repo on the machine. Installing there turns a repo-local init into
@@ -1002,6 +1064,14 @@ def test_init_does_not_make_a_foreign_inert_hook_executable(tmp_path: Path):
     assert not (hook.stat().st_mode & 0o111), "we don't decide their hook should start running"
 
 
+def test_uninstalling_one_harness_keeps_the_shared_git_integration(tmp_path: Path):
+    repo = _init_repo(tmp_path)
+    init_mod.init(repo, only="claude", assume_yes=True)
+    init_mod.uninstall(repo, only="cursor")  # a harness that was never wired here
+    assert _hook_path(repo).is_file(), "the claude install still needs the commit trailer"
+    assert ".tycho/" in _gitignore(repo).read_text().splitlines()
+
+
 def test_a_damaged_fence_is_repaired_not_duplicated(tmp_path: Path):
     # Someone deletes the closing marker by hand. Re-init must repair the block, not stack a
     # second one — two blocks means `attest` runs twice per commit, and uninstall then takes
@@ -1020,6 +1090,31 @@ def test_a_damaged_fence_is_repaired_not_duplicated(tmp_path: Path):
     assert "echo theirs" in text  # repairing our block is not licence to eat their lines
     init_mod.uninstall(repo, only="claude")
     assert init_mod.attest_command() not in hook.read_text()
+
+
+def test_uninstall_restores_a_gitignore_that_had_no_trailing_newline(tmp_path: Path):
+    repo = _init_repo(tmp_path)
+    before = "dist"  # no trailing newline — the docstring promises byte-for-byte
+    _gitignore(repo).write_text(before)
+    init_mod.init(repo, only="claude", assume_yes=True)
+    init_mod.uninstall(repo, only="claude")
+    assert _gitignore(repo).read_text() == before
+
+
+def test_a_clean_uninstall_leaves_no_backup_files(tmp_path: Path):
+    repo = _init_repo(tmp_path)
+    settings = repo / CLAUDE
+    settings.write_text(json.dumps({"model": "opus"}))
+    _gitignore(repo).write_text("*.log\n")
+    hook = _hook_path(repo)
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    hook.write_text("#!/bin/sh\necho theirs\n")
+
+    init_mod.init(repo, only="claude", assume_yes=True)
+    init_mod.uninstall(repo, only="claude")
+
+    left = [p.name for p in (settings.parent, repo, hook.parent) for p in p.glob("*.tycho.bak")]
+    assert left == [], f"a clean uninstall leaves nothing behind: {left}"
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="runs the hook through a POSIX /bin/sh")
