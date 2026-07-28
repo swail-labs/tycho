@@ -67,6 +67,14 @@ _SHELL_TOOLS = frozenset({"Bash", "Shell", "sh", "PowerShell", "powershell", "pw
 # segment: a phrase is never a `--with` value, so `uv run --with pytest ruff check` can't fire.
 _RUN_WRAPPERS = ("uv run", "uvx", "poetry run", "pdm run", "hatch run", "rye run", "npx", "pnpm dlx", "bunx")
 _PHRASE_RUNNERS = tuple(r for r in _TEST_RUNNERS if " " in r)
+_BARE_RUNNERS = frozenset(r for r in _TEST_RUNNERS if " " not in r)
+# Wrapper flags whose *next* token is a value, not the command. `--with pytest` installs
+# pytest; it does not run it. Anything else starting with `-` is treated as a boolean flag,
+# so an unknown one never swallows the command that follows it.
+_WRAPPER_VALUE_FLAGS = frozenset({
+    "--with", "--from", "--python", "-p", "--index", "--index-url", "--extra-index-url",
+    "--constraint", "--override", "--package", "--project", "--directory", "--refresh-package",
+})
 
 # `<python> -m <module>` — the module IS the runner, so a variable-indirected interpreter
 # (`"$PY" -m pytest`) is still visible instead of counting as "no test ran".
@@ -130,10 +138,28 @@ def _is_runner(segment: str) -> bool:
         and _looks_like_interpreter(parts[0])
     ):
         return True
-    # `uv run …` with a multi-word runner phrase further along — see `_RUN_WRAPPERS`.
-    if any(segment == w or segment.startswith(f"{w} ") for w in _RUN_WRAPPERS):
-        padded = f" {segment} "
-        return any(f" {r} " in padded for r in _PHRASE_RUNNERS)
+    wrapper = next((w for w in _RUN_WRAPPERS if segment == w or segment.startswith(f"{w} ")), None)
+    if wrapper is None:
+        return False
+    # A multi-word runner phrase anywhere after the wrapper (`uv run … python -m pytest`).
+    if any(f" {r} " in f" {segment} " for r in _PHRASE_RUNNERS):
+        return True
+    # Otherwise find the wrapper's *own* command: skip its flags, and skip the value of a
+    # flag that takes one. That value is the whole difficulty — in `uv run --with pytest
+    # pytest -q` the first "pytest" is an install argument and the second is the command,
+    # and a plain substring search cannot tell them apart. Requiring a multi-word phrase
+    # used to be the guard against reading `--with pytest ruff check` as a test run; it also
+    # made every `uv run --with pytest pytest -q` invisible, which is how a real repo's whole
+    # test-check family went dark while the eval reported 100%.
+    skip = False
+    for token in segment[len(wrapper):].split():
+        if skip:
+            skip = False
+            continue
+        if token.startswith("-"):
+            skip = token in _WRAPPER_VALUE_FLAGS and "=" not in token
+            continue
+        return token in _BARE_RUNNERS  # the first non-flag token IS the command
     return False
 
 

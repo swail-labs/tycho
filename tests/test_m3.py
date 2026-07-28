@@ -1,6 +1,8 @@
 """M3: astdiff + the 8 checks + end-to-end run_checks."""
 
 import subprocess
+
+import pytest
 from dataclasses import replace
 from pathlib import Path
 
@@ -624,3 +626,43 @@ def test_run_checks_omits_test_checks_when_repo_has_no_tests():
     assert {r.name for r in engine.run_checks(session)} == {
         "file_state", "git_state", "scope_drift", "tool_call_provenance"
     }
+
+
+# --- runner detection on the commands people actually type --------------------
+#
+# The wrapper cases below are the ones that matter in practice and the ones that were
+# missed: measured on one real session, 29 commands genuinely ran tests and 2 were
+# recognized. The whole test-check family reported UNSUPPORTED on a repo whose suite ran
+# constantly, while the eval reported 100% — because the eval's fixtures type plain
+# `pytest`, and nobody types plain `pytest` any more.
+
+@pytest.mark.parametrize("cmd", [
+    "uv run --with pytest pytest -q",
+    "uv run --with pytest --with pytest-cov pytest -q -m 'not e2e'",
+    "uv run --python 3.12 --with pytest pytest -q",
+    "uv run --isolated pytest",                  # boolean flag must not swallow the command
+    "uvx --from pytest pytest tests/",
+    "uv run pytest -q",
+    "uv run --with pytest python -m pytest -q",  # the multi-word path, still working
+    "npx --yes jest",
+    "pnpm dlx vitest run",
+    "tycho exec -- uv run --with pytest pytest -q",   # exec's own evidence path
+    "uv run --with pytest pytest -q | tail -3",       # piped, as agents write it
+])
+def test_wrapped_runners_are_recognized(cmd):
+    assert checks._runner_segment(cmd) is not None, f"missed a real test run: {cmd}"
+
+
+@pytest.mark.parametrize("cmd", [
+    "uv run --with pytest ruff check",      # pytest is an INSTALL arg, not the command
+    "uv run --with pytest mypy tycho",      # same shape, different tool
+    "uv run --with pytest-cov coverage report",
+    "uv run ruff check",
+    "npx --yes prettier --write .",
+    'echo "uv run pytest"',                 # quoted, in a different segment
+])
+def test_wrapper_install_args_are_not_mistaken_for_a_run(cmd):
+    # The guard this fix had to preserve: `--with X` installs X, it does not run it.
+    # Reading these as test runs would fabricate a green, which is the one thing
+    # this program must never do.
+    assert checks._runner_segment(cmd) is None, f"false positive: {cmd}"
