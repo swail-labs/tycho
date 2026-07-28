@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import threading
 import time
 from contextlib import contextmanager
@@ -120,26 +121,44 @@ def _locked(path: Path, timeout: float | None = None):
     """Hold an exclusive lock on `path`; yields True if acquired. Callers must work when it
     yields False — never block a turn on a lock.
 
+    The timeout bounds waiting on a *stuck* holder, not waiting in a queue: every time the
+    lock changes hands the deadline resets, because someone is making progress and the wait is
+    finite. Bounding total wait instead conflated the two — enough concurrent writers and a
+    waiter starves out while the file is passing between them perfectly well, which is how a
+    catch went missing from the tally on a loaded Windows runner.
+
     ponytail: an O_EXCL sidecar, one mechanism on all three platforms instead of flock +
-    msvcrt. Ceiling: not atomic on old NFS, and a killed holder blocks until `_LOCK_STALE`.
+    msvcrt. Ceiling: not atomic on old NFS, a killed holder blocks until `_LOCK_STALE`, and
+    progress is read from the lock's mtime, so a filesystem with coarse mtime granularity
+    degrades to bounding the total wait.
     """
     lock = path.with_name(path.name + ".lock")
     fd = None
-    deadline = time.monotonic() + (_LOCK_TIMEOUT if timeout is None else timeout)
+    limit = _LOCK_TIMEOUT if timeout is None else timeout
+    deadline = time.monotonic() + limit
+    held_since = None
     while True:
         try:
             fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, _FILE_MODE)
             break
         except FileExistsError:
             try:
-                if time.time() - lock.stat().st_mtime > _LOCK_STALE:
+                stamp = lock.stat().st_mtime
+                if time.time() - stamp > _LOCK_STALE:
                     lock.unlink(missing_ok=True)
                     continue
+                if stamp != held_since:  # a new holder — the queue is moving, so keep waiting
+                    held_since = stamp
+                    deadline = time.monotonic() + limit
             except OSError:
                 pass
             if time.monotonic() >= deadline:
                 break
-            time.sleep(0.005)
+            # Jittered, never a fixed interval. A writer looping over records releases the lock
+            # and re-takes it microseconds later, while every waiter sleeps the same 5ms and
+            # wakes to find it held again — the barging process keeps it and the others starve
+            # out at the deadline. Spread wake-ups and a waiter lands in the gap.
+            time.sleep(random.uniform(0.001, 0.01))
         except OSError:
             break
     try:
@@ -281,7 +300,9 @@ def _bump(path: Path, verdict: str, entry: dict | None) -> None:
     # 4 of every 5 increments under four concurrent writers.
     try:
         _private_dir(path.parent)
-        with _locked(path):
+        with _locked(path) as held:
+            if not held:
+                return  # a read-modify-write without the lock is the clobber the lock prevents
             data = _read_catches(path)
             tally = _tally_of(data)
             tally["runs"] = _count_of(tally, "runs") + 1     # the denominator: every verdict
@@ -539,7 +560,9 @@ def bump_relay_streak(repo: Path) -> int:
     n = relay_streak(repo) + 1
     try:
         _private_dir(path.parent)
-        with _locked(path):
+        with _locked(path) as held:
+            if not held:
+                return n  # unlocked, both hooks write n+1 and the leash slips — the whole point
             n = relay_streak(repo) + 1
             path.write_text(str(n), encoding="utf-8")
     except OSError:

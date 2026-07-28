@@ -270,3 +270,52 @@ def test_a_held_lock_does_not_block_the_turn(tmp_path: Path, monkeypatch):
     finally:
         (path.parent / (path.name + ".lock")).unlink()
     assert [r["id"] for r in record.iter_records(repo)] == ["a"]
+
+
+def test_a_waiter_does_not_starve_while_the_lock_changes_hands(tmp_path: Path, monkeypatch):
+    """The timeout bounds a *stuck* holder, not a queue. Threads rather than processes because
+    the property under test is `_locked`'s own wait, not a read-modify-write race.
+
+    Under a deadline on total wait, contention beyond it starves a waiter out while the file is
+    passing between writers perfectly well — and `_bump` then did its read-modify-write unlocked
+    and clobbered someone. That is one catch missing from the tally, which is how it surfaced.
+    """
+    import threading
+    from tycho.store import state
+
+    monkeypatch.setattr(state, "_LOCK_TIMEOUT", 0.1)
+    path = tmp_path / "contended.json"
+    state._private_dir(path.parent)
+    stop = threading.Event()
+
+    def churn():  # hand the lock round for well past the timeout
+        while not stop.is_set():
+            with state._locked(path, timeout=0.05):
+                time.sleep(0.01)
+
+    hands = [threading.Thread(target=churn, daemon=True) for _ in range(3)]
+    for t in hands:
+        t.start()
+    try:
+        time.sleep(0.5)  # 5x the timeout of continuous, progressing contention
+        with state._locked(path) as held:
+            assert held, "starved out while the lock was changing hands"
+    finally:
+        stop.set()
+        for t in hands:
+            t.join(timeout=2)
+
+
+def test_a_stuck_holder_still_times_out(tmp_path: Path, monkeypatch):
+    """The other half: a lock whose mtime never moves is a dead holder, and waiting forever on
+    one would hang the turn. Reset the deadline on *progress* only, never unconditionally."""
+    from tycho.store import state
+
+    monkeypatch.setattr(state, "_LOCK_TIMEOUT", 0.1)
+    path = tmp_path / "stuck.json"
+    state._private_dir(path.parent)
+    (path.parent / (path.name + ".lock")).write_text("")
+    started = time.monotonic()
+    with state._locked(path) as held:
+        assert held is False
+    assert time.monotonic() - started < 2.0  # bounded, not hung
