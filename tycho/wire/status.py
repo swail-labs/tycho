@@ -22,6 +22,18 @@ from ..store import state
 from ..views.colour import _FROST, _GREY, _RESET, _VERDICT_COLOUR
 
 
+# The mark beside the name, so the badge does not encode its state in colour alone. Colour is
+# unavailable more often than it looks: `NO_COLOR` is honoured right below, a status bar may
+# strip ANSI, and red against green is the pair colourblind readers most often cannot separate
+# — worse here, since the harness renders status-line colour dimmed. Without a mark, all five
+# states rendered the identical string and the badge told those readers nothing at all.
+#
+# Keep every entry in step with `_VERDICT_COLOUR`; a test pins the two together.
+_VERDICT_MARK = {"VERIFIED": "✓", "FAILED": "✗", "STALE": "✗", "INDETERMINATE": "?",
+                 "OVERRIDDEN": "~"}
+_PENDING_MARK = "…"
+
+
 def line(repo: Path) -> str:
     """The indicator for `repo`, or "" when there's nothing honest to show."""
     if not state.read_install(repo):
@@ -32,13 +44,18 @@ def line(repo: Path) -> str:
         return ""  # hidden in this repo — the hook still runs, only the badge hides
     beat = state.last_run(repo) or {}
     if not isinstance(beat.get("at"), (int, float)):
-        return _paint(_GREY, "[TYCHO]")  # installed, never fired here
+        return _badge(_GREY, "")  # installed, never fired here
     verdict = beat.get("verdict")
     if verdict is None:
         # Mid-run is frost "verifying"; a completed run with nothing to verify is grey —
         # not a false "working forever".
-        return _paint(_FROST if beat.get("pending") else _GREY, "[TYCHO]")
-    return _paint(_VERDICT_COLOUR.get(verdict, _GREY), "[TYCHO]")
+        return _badge(_FROST, _PENDING_MARK) if beat.get("pending") else _badge(_GREY, "")
+    # An unrecognized verdict is no signal, and says so both ways rather than guessing a mark.
+    return _badge(_VERDICT_COLOUR.get(verdict, _GREY), _VERDICT_MARK.get(verdict, ""))
+
+
+def _badge(colour: str, mark: str) -> str:
+    return _paint(colour, f"[TYCHO {mark}]" if mark else "[TYCHO]")
 
 
 def _paint(colour: str, text: str) -> str:

@@ -60,14 +60,43 @@ def test_a_repo_without_tycho_shows_nothing(tmp_path: Path):
     assert status.line(tmp_path) == ""
 
 
-def test_the_line_is_just_bracket_tycho(tmp_path: Path):
-    # text is always `[TYCHO]`; the *colour* carries the status, not the text.
-    # (NO_COLOR from the fixture strips the codes, so the text shows bare here.)
+def test_the_text_carries_the_state_when_the_colour_cannot(tmp_path: Path):
+    """The badge encoded its state in colour alone, so with `NO_COLOR` — honoured right here —
+    every state rendered the identical `[TYCHO]` and said nothing. Same for a status bar that
+    strips ANSI, and for a colourblind reader looking at red against green, which the harness
+    renders dimmed on top. The mark is the channel that survives all three.
+
+    (NO_COLOR comes from the fixture, so these show bare.)"""
     _install(tmp_path)
-    assert status.line(tmp_path) == "[TYCHO]"                 # never fired → still [TYCHO]
+    assert status.line(tmp_path) == "[TYCHO]"  # never fired — no signal, and no mark to give
+    state.record_run(tmp_path, "claude", pending=True)
+    assert status.line(tmp_path) == "[TYCHO …]"
     state.record_run(tmp_path, "claude", verdict="VERIFIED")
-    assert status.line(tmp_path) == "[TYCHO]"
+    assert status.line(tmp_path) == "[TYCHO ✓]"
     state.record_run(tmp_path, "claude", verdict="FAILED")
+    assert status.line(tmp_path) == "[TYCHO ✗]"
+    state.record_run(tmp_path, "claude", verdict="STALE")
+    assert status.line(tmp_path) == "[TYCHO ✗]"          # adverse, like FAILED
+    state.record_run(tmp_path, "claude", verdict="INDETERMINATE")
+    assert status.line(tmp_path) == "[TYCHO ?]"
+    state.record_run(tmp_path, "claude", verdict="OVERRIDDEN")
+    assert status.line(tmp_path) == "[TYCHO ~]"
+
+
+def test_every_state_the_colour_distinguishes_the_text_distinguishes_too(tmp_path: Path):
+    """The point of the mark is parity with the colour, so a verdict added to one and not the
+    other silently puts that state back to colour-only."""
+    marks = {v: status._VERDICT_MARK.get(v) for v in colour._VERDICT_COLOUR}
+    assert all(marks.values()), f"verdict with a colour but no mark: {marks}"
+    # Distinct colours must stay distinct as text: FAILED and STALE share both, deliberately.
+    for a, b in ((a, b) for a in marks for b in marks if a < b):
+        if colour._VERDICT_COLOUR[a] != colour._VERDICT_COLOUR[b]:
+            assert marks[a] != marks[b], f"{a} and {b} differ in colour but not in text"
+
+
+def test_a_verdict_with_no_mark_shows_no_signal_rather_than_guessing(tmp_path: Path):
+    _install(tmp_path)
+    state.record_run(tmp_path, "claude", verdict="SOMETHING_NEW")
     assert status.line(tmp_path) == "[TYCHO]"
 
 
@@ -208,12 +237,12 @@ def _cp1252_write(text: str) -> int:
 def test_toggle_off_hides_the_line_but_keeps_the_install(tmp_path: Path):
     _install(tmp_path)
     state.record_run(tmp_path, "claude", verdict="VERIFIED")
-    assert status.line(tmp_path) == "[TYCHO]"       # NO_COLOR from the fixture
+    assert status.line(tmp_path) == "[TYCHO ✓]"     # NO_COLOR from the fixture
     state.set_status_enabled(tmp_path, False)
     assert status.line(tmp_path) == ""              # hidden...
     assert state.read_install(tmp_path)             # ...but the hook is still installed
     state.set_status_enabled(tmp_path, True)
-    assert status.line(tmp_path) == "[TYCHO]"       # and back
+    assert status.line(tmp_path) == "[TYCHO ✓]"     # and back
 
 
 def test_env_override_hides_it_everywhere(tmp_path: Path, monkeypatch):
@@ -401,7 +430,7 @@ def test_the_badge_survives_a_subdirectory(tmp_path: Path):
     deep = tmp_path / "tycho" / "checks"
     deep.mkdir(parents=True)
 
-    assert status.line(deep) == "[TYCHO]"                     # was "" — blank below the root
+    assert status.line(deep) == "[TYCHO ✓]"                   # was "" — blank below the root
     assert state.last_run(deep)["verdict"] == "VERIFIED"      # same state, not a fresh miss
 
 
