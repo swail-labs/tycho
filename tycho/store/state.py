@@ -172,6 +172,34 @@ def _locked(path: Path, timeout: float | None = None):
                 pass
 
 
+_UPDATE_ATTEMPTS = 3
+
+
+def _locked_update(path: Path, update) -> bool:
+    """Run `update()` holding the lock, retrying the whole read-modify-write. True if it ran.
+
+    Both ways this fails are transient and both silently lose a count: a waiter that timed out
+    while the lock was changing hands, and a Windows `replace` refused because something held
+    the target for longer than `retry_sharing` waits. Neither can be handled where it happens —
+    proceeding unlocked clobbers whoever holds the lock, and skipping writes a number that is
+    quietly wrong, which for a tally is the whole failure. Redoing the read and the write is
+    the only handling that keeps the count exact.
+
+    Never raises: nothing in this module may break the agent's Stop.
+    """
+    for _ in range(_UPDATE_ATTEMPTS):
+        try:
+            _private_dir(path.parent)
+            with _locked(path) as held:
+                if not held:
+                    continue  # someone else has it — try again with a fresh deadline
+                update()
+                return True
+        except OSError:
+            continue  # a refused write, retried from the read so the increment isn't lost
+    return False
+
+
 def _write_json(path: Path, data: dict) -> None:
     _private_dir(path.parent)
     tmp = _tmp_name(path)
@@ -298,23 +326,19 @@ def record_catch(repo: Path, harness: str, verdict: str, results) -> None:
 def _bump(path: Path, verdict: str, entry: dict | None) -> None:
     # Locked: the machine file is shared by every agent on the box, and unlocked this dropped
     # 4 of every 5 increments under four concurrent writers.
-    try:
-        _private_dir(path.parent)
-        with _locked(path) as held:
-            if not held:
-                return  # a read-modify-write without the lock is the clobber the lock prevents
-            data = _read_catches(path)
-            tally = _tally_of(data)
-            tally["runs"] = _count_of(tally, "runs") + 1     # the denominator: every verdict
-            tally[verdict] = _count_of(tally, verdict) + 1   # per-verdict, incl VERIFIED
-            out: dict = {"tally": tally}
-            if entry is not None:
-                prior = data.get("catches") if isinstance(data.get("catches"), list) else []
-                out["catches"] = [entry, *prior][:_CATCH_LIST_CAP]  # newest first, bounded
-            _write_json(path, out)
-            path.with_name(_LEGACY_COUNTS).unlink(missing_ok=True)  # migrated — drop the old
-    except OSError:
-        pass
+    def update() -> None:
+        data = _read_catches(path)
+        tally = _tally_of(data)
+        tally["runs"] = _count_of(tally, "runs") + 1     # the denominator: every verdict
+        tally[verdict] = _count_of(tally, verdict) + 1   # per-verdict, incl VERIFIED
+        out: dict = {"tally": tally}
+        if entry is not None:
+            prior = data.get("catches") if isinstance(data.get("catches"), list) else []
+            out["catches"] = [entry, *prior][:_CATCH_LIST_CAP]  # newest first, bounded
+        _write_json(path, out)
+        path.with_name(_LEGACY_COUNTS).unlink(missing_ok=True)  # migrated — drop the old
+
+    _locked_update(path, update)
 
 
 def counts(repo: Path) -> dict:
@@ -558,15 +582,13 @@ def bump_relay_streak(repo: Path) -> int:
     """Locked: two hooks reading the same value would each write n+1 and slip the leash."""
     path = dir_for(repo) / _RELAY_STREAK
     n = relay_streak(repo) + 1
-    try:
-        _private_dir(path.parent)
-        with _locked(path) as held:
-            if not held:
-                return n  # unlocked, both hooks write n+1 and the leash slips — the whole point
-            n = relay_streak(repo) + 1
-            path.write_text(str(n), encoding="utf-8")
-    except OSError:
-        pass
+
+    def update() -> None:
+        nonlocal n
+        n = relay_streak(repo) + 1
+        path.write_text(str(n), encoding="utf-8")
+
+    _locked_update(path, update)  # same read-modify-write, same reason it must not be lost
     return n
 
 

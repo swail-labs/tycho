@@ -17,7 +17,10 @@ import subprocess
 import sys
 import textwrap
 import time
+from contextlib import contextmanager
 from pathlib import Path
+
+import pytest
 
 import tycho
 
@@ -319,3 +322,52 @@ def test_a_stuck_holder_still_times_out(tmp_path: Path, monkeypatch):
     with state._locked(path) as held:
         assert held is False
     assert time.monotonic() - started < 2.0  # bounded, not hung
+
+
+@pytest.mark.parametrize("failure", ["refused_write", "lock_timeout"])
+def test_a_transient_failure_does_not_silently_lose_a_count(tmp_path: Path, monkeypatch, failure):
+    """The two ways a bump fails on Windows, and the reason both had to stop being swallowed:
+    a `replace` refused because something briefly held the target, and a waiter timing out
+    while the lock changed hands. Each cost exactly one increment, which is what
+    `test_the_machine_tally_counts_every_catch` read as 599 of 600 — silently, since neither
+    may raise into the Stop hook. A tally that is quietly one short is the failure itself."""
+    from tycho.store import state
+
+    monkeypatch.setenv("TYCHO_HOME", str(tmp_path / "home"))
+    repo = tmp_path / "repo"
+    state.record_catch(repo, "claude", "FAILED", [])
+
+    calls = {"n": 0}
+    if failure == "refused_write":
+        real = state._write_json
+
+        def flaky(path, data):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise PermissionError(5, "Access is denied")
+            return real(path, data)
+
+        monkeypatch.setattr(state, "_write_json", flaky)
+    else:
+        real_lock = state._locked
+
+        @contextmanager
+        def flaky_lock(path, timeout=None):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                yield False  # timed out waiting; the caller must not write unlocked
+                return
+            with real_lock(path, timeout) as held:
+                yield held
+
+        monkeypatch.setattr(state, "_locked", flaky_lock)
+
+    state.record_catch(repo, "claude", "FAILED", [])
+    assert calls["n"] > 1, "the failure was never exercised"
+
+    # Both tallies: `record_catch` bumps the repo file and then the machine file, and the
+    # injected failure lands on the first of them.
+    machine = json.loads((tmp_path / "home" / "catches.json").read_text(encoding="utf-8"))
+    assert machine["tally"]["FAILED"] == 2 and machine["tally"]["runs"] == 2
+    assert state.counts(repo)["FAILED"] == 2
+    assert state.totals(repo)["runs"] == 2
