@@ -212,8 +212,23 @@ ENABLED = tuple(h for h in ALL if h.name in ENABLED_NAMES)
 
 # The harness version each hook contract was last checked against, plus the local
 # `--version` probe; a test pins the two together. OpenCode has no CLI version to probe.
+#
+# Bumping one of these is a claim that someone re-read the harness's output, not that the
+# number looked old. What the claim covers, and how to repeat it:
+#
+#   1. `parse` finds tool events, and Bash events still carry `input.command`, an exit status
+#      (`is_error`) and `toolUseResult` — the exit status is what `command_execution` reads,
+#      and it going missing is the silent failure this pin exists to catch.
+#   2. `turn_start`, `assistant_messages` and `attribution` return real values, the last with
+#      model, agent version and session id.
+#   3. `repo_root` and `transcript_of` still read `cwd` and `transcript_path`, `detect` still
+#      routes the payload here, and `format_output`/`notice_output` still reach the human.
+#
+# Run those against a transcript the *new* version wrote, then capture rows from it into
+# `tests/fixtures/transcript_attribution.jsonl`; a test holds that fixture to the pin, so the
+# version here can only move when real data from that version moves with it.
 VERIFIED_AGAINST = {
-    "claude": {"version": "2.1.210", "probe": ("claude", "--version")},
+    "claude": {"version": "2.1.220", "probe": ("claude", "--version")},
     "cursor": {"version": "2026.07.09-a3815c0", "probe": ("cursor-agent", "--version")},
     "codex": {"version": "0.144.4", "probe": ("codex", "--version")},
 }

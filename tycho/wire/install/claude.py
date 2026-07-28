@@ -272,7 +272,7 @@ def _with_statusline(repo: Path, data: dict, path: Path, scope: str = REPO) -> t
     rather than hide a third-party badge we take the slot and run the other command too. A
     foreign line in this repo's file is recorded (origin "repo") and restored on uninstall;
     a user-level one (origin "user") is left untouched and resurfaces once ours is gone.
-    Shape verified against Claude Code 2.1.210: {"type": "command", "command": str}, plus
+    Shape verified against Claude Code 2.1.220: {"type": "command", "command": str}, plus
     optional padding/refreshInterval which are the user's to set — hence the merge.
     """
     if scope == GLOBAL:

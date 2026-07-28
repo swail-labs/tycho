@@ -324,15 +324,19 @@ def test_an_uninstalled_harness_is_not_diagnosed(tmp_path: Path):
 # --- harness version drift ----------------------------------------
 
 def test_drift_reports_when_the_harness_moved_past_the_verified_version(monkeypatch):
+    # Read the pin rather than restate it: these test the drift *rule*, and hardcoding the
+    # version made a legitimate re-verification look like a regression.
+    pinned = doctor.harness_mod.VERIFIED_AGAINST["claude"]["version"]
     monkeypatch.setattr(doctor, "_probe_version", lambda probe: "2.9.9 (Claude Code)")
     findings = doctor._harness_drift(["claude"])
     assert _levels(findings) == [doctor.DRIFT]
-    assert "verified against 2.1.210" in findings[0].text and "2.9.9" in findings[0].text
+    assert f"verified against {pinned}" in findings[0].text and "2.9.9" in findings[0].text
 
 
 def test_drift_is_silent_when_the_version_still_matches(monkeypatch):
     # The pinned version appearing anywhere in the --version line means "current".
-    monkeypatch.setattr(doctor, "_probe_version", lambda probe: "2.1.210 (Claude Code)")
+    pinned = doctor.harness_mod.VERIFIED_AGAINST["claude"]["version"]
+    monkeypatch.setattr(doctor, "_probe_version", lambda probe: f"{pinned} (Claude Code)")
     assert doctor._harness_drift(["claude"]) == []
 
 
@@ -501,3 +505,25 @@ def test_help_status_survives_a_doctor_that_blows_up(tmp_path: Path, monkeypatch
 
     assert cli.main(["help"]) == cli.ExitCode.OK
     assert "status unknown (RuntimeError) — run `tycho doctor`" in capsys.readouterr().out
+
+
+def test_the_claude_pin_has_real_transcript_data_behind_it():
+    """A version pin is a claim that someone re-read the harness's output at that version, and
+    a bare string cannot hold anyone to it — `2.1.210` sat here while the machine ran `2.1.220`
+    for a whole release, warning on every `doctor` and meaning nothing.
+
+    So the pin is tied to captured rows: bumping it requires a transcript the new version
+    actually wrote, and the reader tests then run against that data. See the procedure beside
+    `VERIFIED_AGAINST` for what re-verifying covers.
+    """
+    import json
+    from pathlib import Path
+
+    pinned = doctor.harness_mod.VERIFIED_AGAINST["claude"]["version"]
+    fixture = Path(__file__).parent / "fixtures" / "transcript_attribution.jsonl"
+    versions = {json.loads(ln).get("version")
+                for ln in fixture.read_text(encoding="utf-8").splitlines() if ln.strip()}
+    assert pinned in versions, (
+        f"claude is pinned to {pinned} but {fixture.name} carries {sorted(v for v in versions if v)} "
+        "— capture a transcript from the pinned version before moving the pin"
+    )

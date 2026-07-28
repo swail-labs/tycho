@@ -8,7 +8,7 @@ VERIFIED after a run that verified nothing, it is worse than no indicator at all
 the silent-trust failure `doctor` exists to catch, dressed up as reassurance.
 
 The second is that it can't hurt anything. It runs on every render, inside a harness that
-gives it ~5s and reads stdout only on exit 0 (Claude Code 2.1.210 — see
+gives it ~5s and reads stdout only on exit 0 (Claude Code 2.1.220 — see
 the pinned harness contract). So: never raise, never block, never clobber the user's own
 status line.
 """
