@@ -119,18 +119,30 @@ def blame(repo: Path, target: str, limit: int = 10, cwd: Path | None = None,
     path = resolve(repo, parsed.path, cwd)
     if not path:
         return ["tycho blame: give it a path, e.g. `tycho blame src/app.py`."]
-    records = record_mod.touching(repo, path, limit=max(0, limit))
-    if not records:
+    if limit <= 0:
+        # Answering "nothing touched it" to "show me zero turns" is a lie about the record.
+        return [f"tycho blame: -n wants a positive number of turns, not {limit}."]
+    hits = _touching(repo, path, limit)
+    if not hits:
         return _nothing_here(repo, path)
+    records = [row for row, _ in hits]
+    stored = [where for _, where in hits]
     now = time.time() if now is None else now
 
     head = [f"{path} — {_count(len(records), 'turn')}, newest first"]
+    if len(set(stored)) > 1:
+        head.append(f"  note: `{path}` matched {len(set(stored))} files in the record — each row "
+                    "shows which.")
     if parsed.line is not None:
         # Before the results, not after: a reader who takes the first line as line-42
         # attribution has already been misled by the time a footnote arrives.
         head.append(f"  note: asked for :{parsed.line} — attribution is file-level. Tycho "
                     "records which turns touched a file, not which lines.")
-    rows = [_meta_row(r, now) for r in records]
+    # A bare basename matches that name in any directory, so the row has to say *which* file
+    # it is talking about — two files with one name are not one file with two turns.
+    show_path = set(stored) != {path}
+    rows = [_meta_row(r, now, where if show_path else None)
+            for r, where in zip(records, stored)]
     widths = _widths(rows)
     lines = list(head)
     for record, row in zip(records, rows):
@@ -202,6 +214,31 @@ def _epoch(since: str | None) -> float | None:
     return datetime(day.year, day.month, day.day).timestamp()
 
 
+def _touching(repo: Path, path: str, limit: int) -> list[tuple[dict, str]]:
+    """`(record, the path it actually stored)` for turns that touched `path`, newest first.
+
+    The match rule, and it is the whole point: a query with a directory in it matches that
+    stored path **exactly**, and only a bare basename is allowed to match the name in any
+    directory. `record.touching` suffix-matches every query, so `src/app.py` is answered by a
+    turn that only touched `vendor/src/app.py` — a confident answer about a file nobody
+    edited. Bounded: streams the record holding at most `limit` rows.
+    """
+    needle = str(path or "").replace("\\", "/").removeprefix("./")
+    if not needle:
+        return []
+    bare = "/" not in needle
+    hits: deque[tuple[dict, str]] = deque(maxlen=limit)
+    for row in record_mod.iter_records(repo):
+        for entry in record_mod._rows(row, "files"):
+            stored = entry.get("path")
+            if not isinstance(stored, str):
+                continue
+            if stored == needle or (bare and stored.endswith("/" + needle)):
+                hits.append((row, stored))
+                break
+    return list(reversed(hits))
+
+
 def _nothing_here(repo: Path, path: str) -> list[str]:
     """The empty state, split by *why* it's empty — the two cases need different next steps."""
     if not record_mod.read(repo, limit=1):
@@ -215,10 +252,12 @@ def _nothing_here(repo: Path, path: str) -> list[str]:
 # --- the row cells -----------------------------------------------------------
 
 
-def _meta_row(record: dict, now: float) -> tuple[str, ...]:
+def _meta_row(record: dict, now: float, stored: str | None = None) -> tuple[str, ...]:
     """blame's first line. Model goes last because it is nullable (`record.py` never guesses
-    attribution) and must not shift the columns before it."""
-    return (_ago(record.get("ended_at"), now), _verdict(record), _stage(record),
+    attribution) and must not shift the columns before it. `stored` leads when the query was a
+    bare basename: which file this row is about outranks everything else on it."""
+    return (*((stored,) if stored else ()),
+            _ago(record.get("ended_at"), now), _verdict(record), _stage(record),
             "turn " + _id(record), _model(record))
 
 

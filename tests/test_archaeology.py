@@ -340,11 +340,43 @@ def test_log_honours_its_limit(tmp_path: Path):
     assert len(log(tmp_path, limit=5)) == 5
 
 
-@pytest.mark.parametrize("limit", [0, -1])
-def test_a_non_positive_limit_returns_nothing_rather_than_raising(tmp_path: Path, limit: int):
-    write(tmp_path, turn())
+@pytest.mark.parametrize("limit", [0, -5])
+def test_a_non_positive_limit_is_refused_rather_than_answered_wrongly(tmp_path: Path, limit: int):
+    """`blame -n 0` on a file a turn *did* touch used to print "no recorded turn touched
+    src/app.py" — a false statement about the record, produced by a usage error."""
+    write(tmp_path, turn(path="src/app.py"))
     assert log(tmp_path, limit=limit) == []
-    assert blame(tmp_path, "src/app.py", limit=limit)[0].startswith("tycho: no recorded turn")
+    said = blame(tmp_path, "src/app.py", limit=limit)[0]
+    assert "-n wants a positive number" in said
+    assert "no recorded turn touched" not in said
+
+
+def test_a_pathful_query_does_not_match_a_vendored_copy_of_the_same_path(tmp_path: Path):
+    """A turn that only touched `vendor/src/app.py` must not be reported as having touched
+    `src/app.py`. Suffix matching belongs to bare basenames, not to paths."""
+    write(tmp_path, turn(path="vendor/src/app.py", claim="Patched the vendored copy"))
+
+    lines = blame(tmp_path, "src/app.py")
+
+    assert lines[0].startswith("tycho: no recorded turn touched src/app.py")
+    assert "vendored" not in "\n".join(lines)
+    # The file that *was* touched still answers for itself.
+    assert blame(tmp_path, "vendor/src/app.py")[0].startswith("vendor/src/app.py — 1 turn")
+
+
+def test_a_bare_basename_says_which_file_each_row_is_about(tmp_path: Path):
+    """Two files named `app.py` are two files. Printing "app.py — 2 turns" with no paths
+    reads as one file with a history it doesn't have."""
+    write(tmp_path,
+          turn(path="lib/app.py", id="1" * 16, claim="lib work"),
+          turn(path="vendor/src/app.py", id="2" * 16, claim="vendor work"))
+
+    lines = blame(tmp_path, "app.py")
+
+    assert lines[0].startswith("app.py — 2 turns")
+    assert "matched 2 files" in lines[1]
+    body = "\n".join(lines)
+    assert "lib/app.py" in body and "vendor/src/app.py" in body
 
 
 def test_blame_on_a_large_record_file_stays_bounded(tmp_path: Path):
