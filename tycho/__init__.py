@@ -5,5 +5,6 @@ process exit codes, and the harness event stream. Only code renders a verdict â€
 trust path. Free, open source (Apache 2.0), offline, no account needed.
 """
 
-# Alpha. Bumped to 0.1.0 for the first public release.
-__version__ = "0.1.0"
+# The single source of truth for the version: Hatchling reads it, the release workflow asserts
+# the tag matches it, and the npm wrapper and Homebrew formula are stamped from that tag.
+__version__ = "0.2.0"
