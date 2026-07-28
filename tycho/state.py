@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 # Bump when an already-installed entry no longer satisfies what init now writes. `tycho
@@ -67,11 +69,97 @@ def _read_json(path: Path) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+# --- durable writes ----------------------------------------------
+#
+# Several agents now run against one repo at once, so every writer here is a *concurrent*
+# writer. Three primitives, shared with record.py and command.py so there is one policy:
+#
+#   _private_dir/_touch_private  — 0700/0600 on creation. `turns.jsonl` holds the agent's own
+#                                  prose; it is not world-readable.
+#   _tmp_name                    — a per-writer temp sibling. A fixed `<name>.tmp` is the
+#                                  corruption: two processes open the same path with "w", one
+#                                  truncates while the other writes, and the rename — atomic
+#                                  in itself — publishes a splice of both.
+#   _locked                      — cross-process exclusion for read-modify-write and for the
+#                                  prune's read-then-rename.
+
+_DIR_MODE = 0o700
+_FILE_MODE = 0o600
+_LOCK_TIMEOUT = 5.0
+_LOCK_STALE = 30.0  # a lock this old belonged to a process that died holding it
+
+
+def _private_dir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True, mode=_DIR_MODE)
+
+
+def _touch_private(path: Path) -> None:
+    """Create `path` 0600 if it does not exist. The mode argument only applies on creation,
+    which is why this runs before the append rather than as a chmod after it."""
+    try:
+        os.close(os.open(path, os.O_CREAT | os.O_WRONLY, _FILE_MODE))
+    except OSError:
+        pass
+
+
+def _tmp_name(path: Path) -> Path:
+    return path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+
+
+@contextmanager
+def _locked(path: Path, timeout: float | None = None):
+    """Hold an exclusive lock on `path` for the block; yields True if it was acquired.
+
+    ponytail: an O_EXCL sidecar, not `fcntl.flock` (POSIX-only) or `msvcrt.locking`
+    (Windows-only) — Tycho ships on Linux, macOS and Windows and one mechanism everywhere is
+    less to get wrong than two. Its known ceiling: O_EXCL is not atomic on old NFS, and a
+    holder killed mid-block leaves the sidecar until `_LOCK_STALE` passes. Callers must work
+    when it yields False — never block a turn on a lock.
+    """
+    lock = path.with_name(path.name + ".lock")
+    fd = None
+    deadline = time.monotonic() + (_LOCK_TIMEOUT if timeout is None else timeout)
+    while True:
+        try:
+            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, _FILE_MODE)
+            break
+        except FileExistsError:
+            try:
+                if time.time() - lock.stat().st_mtime > _LOCK_STALE:
+                    lock.unlink(missing_ok=True)
+                    continue
+            except OSError:
+                pass
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.005)
+        except OSError:
+            break
+    try:
+        yield fd is not None
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+                lock.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
 def _write_json(path: Path, data: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    tmp.replace(path)
+    _private_dir(path.parent)
+    tmp = _tmp_name(path)
+    try:
+        with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, _FILE_MODE),
+                  "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(data, indent=2) + "\n")
+        tmp.replace(path)
+    except OSError:
+        # Leaving a per-pid temp behind would litter; on Windows `replace` can also fail
+        # outright while another process holds the target open — a lost write, never a
+        # corrupt file.
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def write_install(repo: Path, harness: str, command: str) -> None:
@@ -187,19 +275,22 @@ def record_catch(repo: Path, harness: str, verdict: str, results) -> None:
 
 
 def _bump(path: Path, verdict: str, entry: dict | None) -> None:
-    # Read-modify-write with no lock: two repos catching in the same instant can lose one
-    # machine-tally increment. A tally, not a ledger; add locking only if that ever matters.
+    # Read-modify-write, so it is held under the lock: the machine-level file is shared by
+    # every agent on the box, and unlocked this dropped 4 of every 5 increments under four
+    # concurrent writers. A tally that undercounts by an order of magnitude is not a tally.
     try:
-        data = _read_catches(path)
-        tally = _tally_of(data)
-        tally["runs"] = _count_of(tally, "runs") + 1     # the denominator: every verdict
-        tally[verdict] = _count_of(tally, verdict) + 1   # per-verdict, incl VERIFIED/UNSUPPORTED
-        out: dict = {"tally": tally}
-        if entry is not None:
-            prior = data.get("catches") if isinstance(data.get("catches"), list) else []
-            out["catches"] = [entry, *prior][:_CATCH_LIST_CAP]  # newest first, bounded
-        _write_json(path, out)
-        path.with_name(_LEGACY_COUNTS).unlink(missing_ok=True)  # migrated — drop the old file
+        _private_dir(path.parent)
+        with _locked(path):
+            data = _read_catches(path)
+            tally = _tally_of(data)
+            tally["runs"] = _count_of(tally, "runs") + 1     # the denominator: every verdict
+            tally[verdict] = _count_of(tally, verdict) + 1   # per-verdict, incl VERIFIED
+            out: dict = {"tally": tally}
+            if entry is not None:
+                prior = data.get("catches") if isinstance(data.get("catches"), list) else []
+                out["catches"] = [entry, *prior][:_CATCH_LIST_CAP]  # newest first, bounded
+            _write_json(path, out)
+            path.with_name(_LEGACY_COUNTS).unlink(missing_ok=True)  # migrated — drop the old
     except OSError:
         pass
 
@@ -468,11 +559,15 @@ def relay_streak(repo: Path) -> int:
 
 
 def bump_relay_streak(repo: Path) -> int:
+    """Read-modify-write under the lock: this is the leash, and two hooks reading the same
+    value would each write n+1, letting the relay run past `relay_max`."""
+    path = dir_for(repo) / _RELAY_STREAK
     n = relay_streak(repo) + 1
     try:
-        path = dir_for(repo) / _RELAY_STREAK
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(str(n), encoding="utf-8")
+        _private_dir(path.parent)
+        with _locked(path):
+            n = relay_streak(repo) + 1
+            path.write_text(str(n), encoding="utf-8")
     except OSError:
         pass
     return n

@@ -135,11 +135,18 @@ def _log(repo: Path, cmd: list[str], code: int, started: float, ended: float) ->
             "ended_at": ended,
         }
         path = path_for(repo)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(entry, ensure_ascii=False, separators=(",", ":")) + "\n")
-        # Slack differs from the turn record's: commands are logged far more often.
-        record._prune(path, max_records(), _PRUNE_SLACK)
+        state._private_dir(path.parent)
+        line = json.dumps(entry, ensure_ascii=True, separators=(",", ":"))
+        state._touch_private(path)
+        # Same durability policy as the turn record: 0600, a repaired final newline, and the
+        # prune only under the lock it needs.
+        with state._locked(path) as held:
+            record._terminate(path)
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
+            if held:
+                # Slack differs from the turn record's: commands are logged far more often.
+                record._prune(path, max_records(), _PRUNE_SLACK)
     except Exception:
         return
 

@@ -65,6 +65,10 @@ _MAX_EVIDENCE_CHARS = 500
 _TRUNCATED = "…[truncated]"
 
 _MAX_DEFAULT = 5000
+# A ceiling on any retention cap. `deque(maxlen=n)` raises OverflowError past sys.maxsize —
+# an exception no caller here expects, which took the whole append down and rendered every
+# turn verdictless. A cap nobody will reach is the same as no cap.
+_MAX_CEILING = 10_000_000
 # Slack before a prune, so a rewrite happens once per `_PRUNE_SLACK` turns instead of making
 # every Stop O(cap). ponytail: amortized rewrite; switch to a ring/segment file only if a
 # 5000-line rewrite every 250 turns shows up in a profile.
@@ -73,9 +77,10 @@ _PRUNE_SLACK = 250
 
 def _env_cap(var: str, default: int) -> int:
     """A retention cap from `var`, floored at 1 ("keep nothing" is a broken config) and
-    falling back to `default` on junk — read inside the Stop hook, so it must not raise."""
+    falling back to `default` on junk and clamped to `_MAX_CEILING` — read inside the Stop
+    hook, so it must not raise, and neither must what it is handed to."""
     try:
-        return max(1, int(os.environ.get(var, default)))
+        return min(max(1, int(os.environ.get(var, default))), _MAX_CEILING)
     except (TypeError, ValueError):
         return default
 
@@ -293,7 +298,10 @@ def digest(record: dict) -> str:
     identically to the one built; the on-disk line is deliberately *not* sorted (``schema``
     leads it), which is why this hashes a re-serialization rather than the raw line."""
     canonical = json.dumps(record, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    # `surrogatepass`: a lone surrogate in the agent's prose is not encodable UTF-8, and
+    # plain `encode` raises on it — from the digest of a row already on disk, where there is
+    # nothing left to fix. Digesting the bytes is honest and changes no valid record's hash.
+    return "sha256:" + hashlib.sha256(canonical.encode("utf-8", "surrogatepass")).hexdigest()
 
 
 # --- I/O ---------------------------------------------------------------------
@@ -304,26 +312,63 @@ def append(repo: Path, record: dict) -> bool:
 
     One ``write()`` of one short line in append mode does not interleave with a concurrent
     appender on any platform Tycho supports — which is what the field bounds in ``build``
-    buy. ponytail: no lockfile; add one only if records grow past a page."""
+    buy. The lock is for the *prune*, which rewrites the whole file: a record appended
+    between its read and its rename would otherwise be gone. Failing to take the lock still
+    appends and simply skips the prune — losing this turn is worse than keeping 250 old ones.
+
+    ``ensure_ascii=True`` because a lone surrogate in the agent's prose (``"\\ud800"``) is not
+    encodable UTF-8: the write raised, the append returned False, and the whole turn vanished
+    rather than one odd character.
+    """
     try:
         path = path_for(repo)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        line = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
-        with path.open("a", encoding="utf-8") as fh:
-            fh.write(line + "\n")
-        _prune(path, max_records())
+        state._private_dir(path.parent)
+        line = json.dumps(record, ensure_ascii=True, separators=(",", ":"))
+        state._touch_private(path)
+        with state._locked(path) as held:
+            _terminate(path)
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
+            if held:
+                _prune(path, max_records())
         return True
     except (OSError, TypeError, ValueError):
         return False
 
 
+def _terminate(path: Path) -> None:
+    """Give the file a final newline if it is missing one.
+
+    A process killed mid-append (a harness timing the Stop hook out, a full disk) leaves a
+    line with no terminator; the next append lands on the same line and both records become
+    one unparseable one. Repairing costs a stat and, once in a very long while, one byte.
+    """
+    try:
+        if path.stat().st_size == 0:
+            return
+        with path.open("rb") as fh:
+            fh.seek(-1, os.SEEK_END)
+            if fh.read(1) == b"\n":
+                return
+        with path.open("ab") as fh:
+            fh.write(b"\n")
+    except OSError:
+        pass
+
+
 def _prune(path: Path, cap: int, slack: int | None = None) -> None:
     """Trim the file to its newest `cap` records, once it has drifted past cap+slack. `slack`
     is a parameter because turns and `command.py`'s evidence log are written at different
-    rates, and read at call time so ``_PRUNE_SLACK`` stays patchable."""
+    rates, and read at call time so ``_PRUNE_SLACK`` stays patchable.
+
+    **Call this holding ``state._locked(path)``.** It is read-all-then-rename, so an append
+    landing in the middle of it is dropped, and two of them running at once used to leave the
+    file a single spliced line with every record lost.
+    """
     slack = _PRUNE_SLACK if slack is None else slack
     kept: deque[str] = deque(maxlen=cap)
     total = 0
+    tmp = state._tmp_name(path)
     try:
         with path.open(encoding="utf-8", errors="replace") as fh:
             for line in fh:
@@ -331,13 +376,14 @@ def _prune(path: Path, cap: int, slack: int | None = None) -> None:
                 kept.append(line)
         if total <= cap + slack:
             return
-        # Atomic: temp sibling, then rename.
-        tmp = path.with_name(path.name + ".tmp")
-        with tmp.open("w", encoding="utf-8") as fh:
+        # Atomic: a temp sibling *named for this writer* — a shared `<name>.tmp` is two
+        # processes writing one file, and the rename then publishes the splice.
+        with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600),
+                  "w", encoding="utf-8") as fh:
             fh.writelines(line if line.endswith("\n") else line + "\n" for line in kept)
         tmp.replace(path)
     except OSError:
-        pass
+        tmp.unlink(missing_ok=True)
 
 
 def iter_jsonl(path: Path) -> Iterator[dict]:
