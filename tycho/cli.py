@@ -88,6 +88,18 @@ def _force_utf8() -> None:
             pass  # fail open: cosmetic setup must never be why a command fails
 
 
+def _count_arg(text: str) -> int:
+    """A `-n` that must ask for at least one row. `-n 0` and `-n -5` are slices that read as
+    "nothing matched" — the same output as a file no turn ever touched, which is a lie."""
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a number")
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"must be 1 or more, got {value}")
+    return value
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     _force_utf8()
     parser = argparse.ArgumentParser(
@@ -156,9 +168,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     help="a turn id from `tycho log` (default: the most recent turn)")
     bl = sub.add_parser("blame", help=_COMMANDS["blame"])
     bl.add_argument("target", metavar="PATH[:LINE]", help="the file (optionally :line) to blame")
-    bl.add_argument("-n", "--limit", type=int, default=10, help="how many turns to show (default 10)")
+    bl.add_argument("-n", "--limit", type=_count_arg, default=10, help="how many turns to show (default 10)")
     lg = sub.add_parser("log", help=_COMMANDS["log"])
-    lg.add_argument("-n", "--limit", type=int, default=20, help="how many turns to show (default 20)")
+    lg.add_argument("-n", "--limit", type=_count_arg, default=20, help="how many turns to show (default 20)")
     # Both filter *inside* the bounded stream: `--verdict FAILED -n 20` gives twenty failures,
     # not the failures among the last twenty turns.
     lg.add_argument("--verdict", help="only turns with this verdict, e.g. FAILED")
@@ -338,7 +350,7 @@ def _show(cwd: Path, turn: str | None) -> int:
 
     repo = state.root_for(cwd)
     records = record_mod.read(repo, limit=1) if not turn else [
-        r for r in record_mod.read(repo) if r.get("id", "").startswith(turn)
+        r for r in record_mod.read(repo) if str(r.get("id") or "").startswith(turn)
     ]
     if not records:
         print("tycho: no turn recorded yet — the Stop hook writes one per verified turn.")
@@ -451,7 +463,16 @@ def _pct(n: int, denominator: int) -> str:
     return f"{round(100 * n / denominator)}%" if denominator else "—"
 
 
+# Below this, a rate is an artefact of the sample, not a property of the check: 0 of 3 renders
+# as a confident 0% and reads as "this check is dead".
+_MIN_SAMPLE = 10
+
+
 def _rate(n: int, denominator: int) -> str:
+    """"8 (80%)", or a bare "1/3" when the sample is too thin for a percentage to mean
+    anything. Zero denominator keeps the "—": nothing was ever asked."""
+    if 0 < denominator < _MIN_SAMPLE:
+        return f"{n}/{denominator}"
     return f"{n} ({_pct(n, denominator)})"
 
 
@@ -471,8 +492,7 @@ def _ledger_lines(data: dict, repo_runs: int | None = None) -> list[str]:
     when = f", {span[0]} → {span[-1]}" if span else ""
     out = [
         f"ledger: {turns} turn{'' if turns == 1 else 's'} on the record{when}, "
-        f"{data['blind']} blind ({_pct(data['blind'], turns)}), "
-        f"{data['caught']} caught ({_pct(data['caught'], turns)})",
+        f"blind {_rate(data['blind'], turns)}, caught {_rate(data['caught'], turns)}",
         "  (the retained turn record — `count` above is the all-time tally)",
     ]
     # `count` and the ledger legitimately differ; name why. Do NOT close the gap by recording a
@@ -505,7 +525,11 @@ def _ledger_lines(data: dict, repo_runs: int | None = None) -> list[str]:
     out += ["", "  catch rate = caught / turns the check could speak to (PASS|FAIL|STALE).",
             "  blind rate = blind / every turn it ran in — the metric that doesn't improve "
             "with model capability.",
-            "  a check at 0% across three model generations is the retirement signal (§7)."]
+            f"  rates are shown from {_MIN_SAMPLE} turns up; below that you get the raw "
+            f"fraction, because 0/3 is not 0%.",
+            "  the retirement signal (§7) is a high blind rate holding across model "
+            "generations — never catch rate alone: a check that passed on every turn it "
+            "spoke to caught nothing precisely because nothing was wrong."]
     return [line.rstrip() for line in out]
 
 

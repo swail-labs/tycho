@@ -125,6 +125,27 @@ def test_log_filters_reach_archaeology(repo, capsys):
     assert "ancient history" not in capsys.readouterr().out
 
 
+# --- argument hygiene ---------------------------------------------------------
+
+
+def test_show_survives_a_record_with_no_id(repo, capsys):
+    """A record whose `id` is null (a truncated write, a hand-edited line) crashed the prefix
+    match with AttributeError. `show` reads the record; it must not be broken by it."""
+    _record(repo, id=None)
+    assert main(["show", "abc"]) == ExitCode.OK
+    assert "no turn recorded" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("limit", ["0", "-5"])
+def test_blame_and_log_refuse_a_non_positive_limit(repo, limit):
+    """`-n 0` slices to nothing and renders a touched file as untouched — a wrong answer, not
+    an empty one. Argparse refuses it instead."""
+    for cmd in (["blame", "src.py", "-n", limit], ["log", "-n", limit]):
+        with pytest.raises(SystemExit) as exc:
+            main(cmd)
+        assert exc.value.code == ExitCode.USAGE
+
+
 # --- exit-code contract -------------------------------------------------------
 
 

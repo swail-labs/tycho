@@ -107,7 +107,7 @@ def test_spoke_excludes_the_turns_a_check_could_not_speak_to(tmp_path: Path):
     write(tmp_path, turn(verdict="FAILED", checks=(("command_execution", "FAIL"),)))
     check = state.ledger(tmp_path)["checks"][0]
     assert (check["spoke"], check["caught"], check["blind"]) == (2, 1, 8)
-    assert cli._rate(check["caught"], check["spoke"]) == "1 (50%)"
+    assert cli._rate(check["caught"], check["spoke"]) == "1/2"  # 2 is too thin for a percentage
     assert cli._rate(check["blind"], check["spoke"] + check["blind"]) == "8 (80%)"
 
 
@@ -169,7 +169,7 @@ def test_ledger_view_renders_models_checks_and_its_own_denominators(tmp_path, mo
     assert "ledger: 2 turns on the record" in out
     assert "gen-1" in out and "gen-2" in out
     assert "file_state" in out and "gen-1 1/1" in out  # caught/spoke, per model
-    assert "command_execution" in out and "1 (50%)" in out  # blind over seen (1 of 2)
+    assert "command_execution" in out and "1/2" in out  # blind over seen, raw: 2 is no sample
     assert "catch rate = caught / turns the check could speak to" in out
     assert "retirement signal" in out
 
@@ -192,6 +192,23 @@ def test_empty_denominator_never_renders_as_zero_percent():
     # found nothing", which is exactly the wrong conclusion to draw about a check to retire.
     assert cli._rate(0, 0) == "0 (—)"
     assert cli._pct(0, 0) == "—"
+
+
+def test_a_thin_sample_renders_the_fraction_not_a_confident_percentage(tmp_path, monkeypatch, capsys):
+    # "0 (0%)" off three turns reads as "this check is dead". It isn't a rate yet — say so by
+    # showing the fraction. And the footer must not call a low catch rate the retirement
+    # signal: a check that PASSed on every turn it spoke to caught nothing because nothing
+    # was wrong, which is the check working.
+    monkeypatch.chdir(tmp_path)
+    assert cli._rate(0, 3) == "0/3"
+    assert cli._rate(2, 10) == "2 (20%)"
+
+    for _ in range(3):
+        write(tmp_path, turn(model="gen-1", checks=(("file_state", "PASS"),)))
+    assert cli.main(["count", "--ledger"]) == cli.ExitCode.OK
+    out = capsys.readouterr().out
+    assert "0/3" in out and "(0%)" not in out
+    assert "never catch rate alone" in out
 
 
 # --- backwards compatibility: deployed installs ------------------------------
