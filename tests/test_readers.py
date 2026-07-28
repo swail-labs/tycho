@@ -1,4 +1,4 @@
-"""M2 readers: transcript parsing, git/fs readers, and gather()."""
+"""Readers: transcript parsing, git/fs readers, and gather()."""
 
 import hashlib
 from pathlib import Path

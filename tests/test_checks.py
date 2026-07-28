@@ -1,4 +1,4 @@
-"""M3: astdiff + the 8 checks + end-to-end run_checks."""
+"""astdiff + the 8 checks + end-to-end run_checks."""
 
 
 import pytest

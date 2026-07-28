@@ -1,4 +1,4 @@
-"""M1 walking-skeleton checks: the verdict reduction, render, and config default."""
+"""The verdict reduction, render, and config default."""
 
 from pathlib import Path
 

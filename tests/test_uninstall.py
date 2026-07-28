@@ -1,4 +1,4 @@
-"""M6 — `tycho uninstall`: remove only Tycho-owned hooks, idempotently."""
+"""`tycho uninstall`: remove only Tycho-owned hooks, idempotently."""
 
 import json
 from pathlib import Path

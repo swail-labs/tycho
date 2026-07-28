@@ -1,4 +1,4 @@
-"""M5 — release-quality CLI: versioning, `--version`, stable exit codes, `--claim`."""
+"""CLI: versioning, `--version`, stable exit codes, `--claim`."""
 
 import json
 import re

@@ -79,7 +79,7 @@ def _isolate_tycho_home(tmp_path_factory, monkeypatch):
     # pass or fail depending on the machine it ran on, which is worse than either.
     # `harness.home` reads this var first, so one override redirects detection and
     # installation together. Tests that exercise the `Path.home()` fallback itself delete
-    # it (see test_m4.py) — that still works, because deleting beats setting.
+    # it (see test_hooks.py) — that still works, because deleting beats setting.
     monkeypatch.setenv("TYCHO_CLAUDE_HOME", str(tmp_path_factory.mktemp("claude-home")))
 
 

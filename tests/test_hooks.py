@@ -1,4 +1,4 @@
-"""M4 — Stop hooks + Claude Code, Cursor, and Codex adapters."""
+"""Stop hooks + Claude Code, Cursor, and Codex adapters."""
 
 import json
 import os

@@ -1,6 +1,6 @@
 """— `tycho init` against a real developer's config: detect, ask, never clobber.
 
-The happy path lives in test_m4/test_m6. This file is the adversarial half: the states
+The happy path lives in test_hooks/test_uninstall. This file is the adversarial half: the states
 a real machine is actually in — a hand-edited config with a trailing comma, a settings
 file symlinked into a dotfiles repo, a read-only file, a write killed halfway. The bar
 is that Tycho either does the right thing or does nothing, and says which.
