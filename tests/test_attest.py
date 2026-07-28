@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -33,8 +34,14 @@ def repo(git_repo: Path) -> Path:
     return git_repo
 
 
-def _record(repo: Path, *paths: str, verdict: str = "VERIFIED", ended_at: float = 1000.0) -> dict:
-    """Append a minimal but schema-shaped turn record touching `paths`."""
+def _record(repo: Path, *paths: str, verdict: str = "VERIFIED",
+            ended_at: float | None = None) -> dict:
+    """Append a minimal but schema-shaped turn record touching `paths`.
+
+    Defaults to *now*, not to a fixed epoch: the attestation window starts at the previous
+    commit, and the commits these tests make are stamped with the real clock. A turn dated
+    1970 is a turn from before the last commit, and correctly excluded."""
+    ended_at = time.time() if ended_at is None else ended_at
     row = turn_record(
         id=f"{abs(hash((paths, verdict, ended_at))):016x}"[:16],
         session="s1", model="opus", agent_version="1.0",
@@ -395,7 +402,7 @@ def test_amend_replaces_the_trailer_rather_than_stacking_it(wired: Path):
     _record(wired, "a.py")
     _commit(wired, "a.py", "feat: add a")
     first = _trailer_of(wired)
-    _record(wired, "a.py", verdict="STALE", ended_at=2000.0)
+    _record(wired, "a.py", verdict="STALE")
     (wired / "a.py").write_text("x = 2\n")
     _git(wired, "add", "a.py")
     _git(wired, "commit", "-q", "--amend", "--no-edit")
@@ -412,7 +419,7 @@ def test_a_merge_commit_carries_no_trailer(wired: Path):
     _record(wired, "a.py")
     _commit(wired, "a.py", "feat: add a")
     _git(wired, "checkout", "-qb", "side", "HEAD~1")
-    _record(wired, "b.py", ended_at=1500.0)
+    _record(wired, "b.py")
     _commit(wired, "b.py", "feat: add b")
     _git(wired, "checkout", "-q", "main")
     _git(wired, "merge", "-q", "--no-ff", "-m", "merge side", "side")
@@ -534,3 +541,93 @@ def test_hook_json_survives_a_round_trip_through_the_settings_file(wired: Path):
     """Sanity: nothing about the git hook disturbed the harness config it ships beside."""
     data = json.loads((wired / ".claude" / "settings.json").read_text())
     assert init_mod._is_tycho_hook(data["hooks"]["Stop"][0]["hooks"][0]["command"])
+
+
+# --- the window: bounded below as well as above ------------------------------
+
+
+def test_old_green_turns_do_not_bury_todays_failure(wired: Path):
+    """Three VERIFIED turns on `src/app.py` from a month ago, then today's FAILED one. Bounded
+    only above, the commit reads `(4 turns, 3 VERIFIED, 1 FAILED)` and `NEVER VERIFIED` is
+    suppressed — so `git log --grep 'NEVER VERIFIED'` never finds the commit that needs it."""
+    old = time.time() - 30 * 86400
+    for i in range(3):
+        _record(wired, "app.py", ended_at=old + i)
+    _commit(wired, "app.py", "feat: last month's work")  # those three are that commit's
+    _record(wired, "app.py", verdict="FAILED")
+
+    (wired / "app.py").write_text("# today\n")
+    _git(wired, "add", "app.py")
+    line = attest.trailer(wired)
+
+    assert "1 turn, NEVER VERIFIED: 1 FAILED" in line
+    assert "3 VERIFIED" not in line
+
+
+def test_the_window_starts_at_the_previous_commit(repo: Path):
+    _record(repo, "a.py", ended_at=100.0)      # long before this repo's only commit
+    _record(repo, "a.py", verdict="STALE")     # now
+    (repo / "a.py").write_text("x = 1\n")
+    _git(repo, "add", "a.py")
+
+    assert "1 turn" in attest.trailer(repo)
+
+
+# --- the trailer names its own turns -----------------------------------------
+
+
+def test_a_pruned_turn_reads_as_cannot_tell_not_as_a_forgery(wired: Path):
+    """The module's stated worst outcome. Two turns cover the commit; retention later drops
+    one; recomputing the set from paths and timestamps yields a different digest and the
+    verifier accuses a perfectly good commit of being forged."""
+    first = _record(wired, "a.py")
+    _record(wired, "a.py", verdict="STALE")
+    _commit(wired, "a.py", "feat: add a")
+    assert attest.verify(wired)[0] is True
+
+    kept = [ln for ln in record_mod.path_for(wired).read_text().splitlines()
+            if json.loads(ln)["id"] != first["id"]]
+    record_mod.path_for(wired).write_text("\n".join(kept) + "\n")
+
+    ok, said = attest.verify(wired)
+
+    assert ok is None, said
+    assert "cannot confirm" in said
+    assert "does NOT match" not in said
+
+
+def test_the_trailer_carries_the_ids_of_the_turns_it_covers(repo: Path):
+    row = _record(repo, "a.py")
+    (repo / "a.py").write_text("x = 1\n")
+    _git(repo, "add", "a.py")
+
+    line = attest.trailer(repo)
+
+    assert f"turns={row['id']}" in line
+    assert attest.claimed_ids(line) == [row["id"]]
+
+
+def test_verification_still_works_on_a_trailer_written_before_turn_ids(repo: Path):
+    """Old commits keep verifying: no `turns=` means fall back to reconstructing the set."""
+    _record(repo, "a.py")
+    (repo / "a.py").write_text("x = 1\n")
+    _git(repo, "add", "a.py")
+    legacy = attest.trailer(repo).split(" turns=")[0]
+    _git(repo, "commit", "-qm", f"feat: add a\n\n{legacy}")
+
+    ok, said = attest.verify(repo)
+
+    assert ok is True, said
+
+
+def test_a_tampered_digest_is_still_caught_when_the_turns_are_all_there(repo: Path):
+    _record(repo, "a.py")
+    (repo / "a.py").write_text("x = 1\n")
+    _git(repo, "add", "a.py")
+    tampered = attest._DIGEST_RE.sub("sha256:" + "b" * 64, attest.trailer(repo))
+    _git(repo, "commit", "-qm", f"feat: add a\n\n{tampered}")
+
+    ok, said = attest.verify(repo)
+
+    assert ok is False, said
+    assert "does NOT match" in said

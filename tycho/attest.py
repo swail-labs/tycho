@@ -1,16 +1,23 @@
 """The commit trailer: `Tycho-Attestation: sha256:…` (strategy §9.7/§6.6).
 
-Covers every recorded turn that touched a file in the commit, bounded by the commit's own
-timestamp. Body, and the two rendered forms::
+Covers every recorded turn that touched a file in the commit, in the window **between the
+previous commit and this one**. Body, and the two rendered forms::
 
     {"schema": 1, "turns": [<record digest>, …], "verdicts": {"VERIFIED": 3, "STALE": 1}}
 
-    Tycho-Attestation: sha256:6f… (4 turns, 3 VERIFIED, 1 STALE)
-    Tycho-Attestation: sha256:1c… (2 turns, NEVER VERIFIED: 2 UNSUPPORTED)
+    Tycho-Attestation: sha256:6f… (4 turns, 3 VERIFIED, 1 STALE) turns=6a1f…,9c02…
+    Tycho-Attestation: sha256:1c… (2 turns, NEVER VERIFIED: 2 UNSUPPORTED) turns=4d31…
 
-``git log --grep 'NEVER VERIFIED'`` is the six-months-later query. A commit with no recorded
-turn gets no trailer at all. `verify` recomputes the body and answers True/False/None — None
-because a pruned record must never read as a forged one.
+Both bounds matter. Without the upper one a turn recorded later joins the set and every old
+trailer stops verifying; without the lower one a commit sweeps in every turn that ever touched
+one of its files, so three green turns from last month bury today's failure and
+``git log --grep 'NEVER VERIFIED'`` — the six-months-later query — misses it.
+
+`turns=` names the covered turn ids, so verification looks those turns up instead of
+reconstructing the set from paths and timestamps. A reconstruction drifts: prune the record, or
+rebase the commit, and the set comes back different — which read as *forged*, this module's
+worst possible output. Missing ids now read as "cannot tell". A commit with no recorded turn
+gets no trailer at all; `verify` answers True/False/None.
 
 **Never raises.** Called from a git `prepare-commit-msg` hook: a verifier that breaks
 `git commit` is dead on arrival, so every path fails open.
@@ -32,6 +39,7 @@ SCHEMA = 1
 NEVER = "NEVER VERIFIED"
 
 _DIGEST_RE = re.compile(r"sha256:[0-9a-f]{64}")
+_IDS_RE = re.compile(r"turns=([0-9a-fA-F,]+)")
 
 # Stable ordering so the trailer prose is deterministic across dict orderings.
 _VERDICT_ORDER = ("VERIFIED", "OVERRIDDEN", "FAILED", "STALE", "INDETERMINATE", "UNSUPPORTED")
@@ -77,47 +85,74 @@ def _commit_paths(repo: Path, ref: str) -> tuple[str, ...]:
     return _paths_of(_git(repo, "show", "--pretty=format:", "--name-only", ref))
 
 
-def _commit_time(repo: Path, ref: str) -> float | None:
-    """`ref`'s committer epoch — the upper bound on which turns it could cover.
+def _commit_time(repo: Path, ref: str, slack: float = _CLOCK_SLACK) -> float | None:
+    """`ref`'s committer epoch, nudged by `slack` — a bound on which turns it could cover.
 
-    ponytail: a rebase moves it later without re-running the hook, widening the window so an
-    old trailer can read as a mismatch. Upgrade path: carry the covered turn ids in the
-    trailer so verification needn't reconstruct the set."""
+    Positive slack widens an upper bound, negative widens a lower one; both sides err toward
+    including a turn, because the trailer's `turns=` list is what verification actually
+    trusts."""
     out = _git(repo, "show", "-s", "--format=%ct", ref)
     try:
-        return float((out or "").strip()) + _CLOCK_SLACK
+        return float((out or "").strip()) + slack
     except ValueError:
         return None
+
+
+def _window(repo: Path, base: str) -> float | None:
+    """The lower bound for a commit whose diff base is `base`: when `base` was committed.
+
+    A turn older than the previous commit was already that commit's to attest. Sweeping it in
+    again is how three VERIFIED turns from last month outvote today's FAILED one."""
+    return _commit_time(repo, base, -_CLOCK_SLACK)
 
 
 # --- the attestation ---------------------------------------------------------
 
 
-def attestation(repo: Path, paths, until: float | None = None) -> dict | None:
-    """The attestation body for a commit touching `paths`, or None when nothing covers it.
-
-    `until` bounds by `ended_at` so a turn recorded *after* the commit can't sneak into a
-    later recomputation and break verification."""
+def covered(repo: Path, paths, until: float | None = None,
+            since: float | None = None) -> list[tuple[str, str, str]]:
+    """`(turn id, record digest, verdict)` for every recorded turn covering `paths`, oldest
+    first. Three strings per matching turn, never the records themselves — the record file
+    outsizes what this needs by orders of magnitude."""
     wanted = {str(p).replace("\\", "/") for p in paths if p}
     if not wanted:
-        return None
-    turns: list[str] = []
-    verdicts: dict[str, int] = {}
+        return []
+    out = []
     for row in record_mod.iter_records(repo):
         ended = row.get("ended_at")
-        if until is not None and isinstance(ended, (int, float)) and ended > until:
-            continue
+        if isinstance(ended, (int, float)):
+            if until is not None and ended > until:
+                continue
+            if since is not None and ended < since:
+                continue
         if not any(
             isinstance(e.get("path"), str) and e["path"] in wanted
             for e in record_mod._rows(row, "files")
         ):
             continue
-        turns.append(record_mod.digest(row))
-        verdict = str(row.get("verdict") or "INDETERMINATE")
-        verdicts[verdict] = verdicts.get(verdict, 0) + 1
-    if not turns:
+        out.append((str(row.get("id") or ""), record_mod.digest(row),
+                    str(row.get("verdict") or "INDETERMINATE")))
+    return out
+
+
+def _body(turns) -> dict | None:
+    """The digested body for a set of covered turns, or None when there are none."""
+    digests = [d for _, d, _ in turns]
+    if not digests:
         return None
-    return {"schema": SCHEMA, "turns": turns, "verdicts": verdicts}
+    verdicts: dict[str, int] = {}
+    for _, _, verdict in turns:
+        verdicts[verdict] = verdicts.get(verdict, 0) + 1
+    return {"schema": SCHEMA, "turns": digests, "verdicts": verdicts}
+
+
+def attestation(repo: Path, paths, until: float | None = None,
+                since: float | None = None) -> dict | None:
+    """The attestation body for a commit touching `paths`, or None when nothing covers it.
+
+    `until`/`since` bound by `ended_at`: after the commit is a turn that can't have been in it,
+    before the previous commit is a turn that commit already attested."""
+    return _body(covered(repo, paths, until, since))
 
 
 def summary(body: dict) -> str:
@@ -130,20 +165,29 @@ def summary(body: dict) -> str:
     return f"{head}, {tally}" if counts.get("VERIFIED") else f"{head}, {NEVER}: {tally}"
 
 
-def trailer_line(body: dict) -> str:
-    """`Tycho-Attestation: sha256:… (4 turns, 3 VERIFIED, 1 STALE)` — one line, one commit."""
-    return f"{TRAILER}: {record_mod.digest(body)} ({summary(body)})"
+def trailer_line(body: dict, ids=()) -> str:
+    """`Tycho-Attestation: sha256:… (4 turns, 3 VERIFIED, 1 STALE) turns=6a1f…` — one line.
+
+    ponytail: every id, uncapped — a commit covering hundreds of turns gets a long line. Cap it
+    (and fall back to the reconstructing path) if a real commit message ever suffers.
+    """
+    line = f"{TRAILER}: {record_mod.digest(body)} ({summary(body)})"
+    listed = ",".join(i for i in ids if i)
+    return f"{line} turns={listed}" if listed else line
 
 
 def trailer(repo: Path, source: str | None = None) -> str | None:
     """The trailer for the commit about to be made, or None when there's nothing.
 
     `source` is git's `prepare-commit-msg` second argument. A merge carries no work of its
-    own, so no trailer; `commit` means `--amend` (or `-c`), so the base is HEAD^."""
+    own, so no trailer; `commit` means `--amend` (or `-c`), so the base is HEAD^ — which is
+    both the diff base and, being the commit this one follows, the start of its window."""
     if source == "merge":
         return None
-    body = attestation(repo, staged_paths(repo, "HEAD^" if source == "commit" else "HEAD"))
-    return trailer_line(body) if body else None
+    base = "HEAD^" if source == "commit" else "HEAD"
+    turns = covered(repo, staged_paths(repo, base), since=_window(repo, base))
+    body = _body(turns)
+    return trailer_line(body, [i for i, _, _ in turns]) if body else None
 
 
 # --- writing it into the commit message --------------------------------------
@@ -221,6 +265,31 @@ def claimed_digest(message: str) -> str | None:
     return found
 
 
+def claimed_ids(message: str) -> list[str]:
+    """The turn ids the last trailer names, or `[]` for a trailer written before `turns=`."""
+    found: list[str] = []
+    for line in message.splitlines():
+        if line.startswith(f"{TRAILER}:") and (hit := _IDS_RE.search(line)):
+            found = [i for i in hit.group(1).split(",") if i]
+    return found
+
+
+def _lookup(repo: Path, ids) -> dict[str, tuple[str, str] | None]:
+    """`{id: (digest, verdict)}` for the ids present in the record.
+
+    An id carried by two rows that disagree maps to None — "we have it twice and differently"
+    is a thing we can't tell, not a mismatch to accuse anyone of."""
+    wanted, found = set(ids), {}
+    for row in record_mod.iter_records(repo):
+        turn_id = str(row.get("id") or "")
+        if turn_id not in wanted:
+            continue
+        entry = (record_mod.digest(row), str(row.get("verdict") or "INDETERMINATE"))
+        if found.setdefault(turn_id, entry) != entry:
+            found[turn_id] = None
+    return found
+
+
 def verify(repo: Path, ref: str = "HEAD") -> tuple[bool | None, str]:
     """Check a commit's trailer against the record. (True | False | None, one line).
 
@@ -233,7 +302,23 @@ def verify(repo: Path, ref: str = "HEAD") -> tuple[bool | None, str]:
     claimed = claimed_digest(message)
     if claimed is None:
         return None, f"{short}: no Tycho attestation — not agent-written, or Tycho wasn't installed"
-    body = attestation(repo, _commit_paths(repo, ref), _commit_time(repo, ref))
+    ids = claimed_ids(message)
+    if ids:
+        # The trailer names its own turns, so this reads them back rather than re-deriving
+        # which turns *would* be covered — the derivation moves when the record is pruned or
+        # the commit is rebased, and a moved set is indistinguishable from a forged one.
+        found = _lookup(repo, ids)
+        gone = [i for i in ids if not found.get(i)]
+        if gone:
+            return None, (
+                f"{short}: claims {claimed[:14]}… but the record no longer has "
+                f"{len(gone)} of the {len(ids)} turns it names (pruned, or .tycho/ is gone) "
+                f"— cannot confirm"
+            )
+        body = _body([(i, *found[i]) for i in ids])
+    else:
+        body = attestation(repo, _commit_paths(repo, ref), _commit_time(repo, ref),
+                           _window(repo, f"{ref}^"))
     if body is None:
         return None, (
             f"{short}: claims {claimed[:14]}… but the turn record no longer covers this commit "

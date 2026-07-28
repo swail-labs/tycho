@@ -11,6 +11,7 @@ fires on the wrong finding is a breaking change that no module-level test would 
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
@@ -23,9 +24,12 @@ from tycho.cli import ExitCode, main
 
 def _record(repo: Path, **over) -> dict:
     """One turn record on disk, in the shape the Stop hook writes."""
+    # On the real clock: an attestation covers the window since the previous commit, and the
+    # commits made here are stamped now — a turn dated 1970 predates them all.
+    now = time.time()
     rec = turn_record(**{
-        "id": "a" * 16, "started_at": 1000.0, "ended_at": 2000.0, "stage": "artifact_changed",
-        "files": [{"path": "src.py", "kind": "edit", "ts": 1500.0}], "claims": ["did a thing"],
+        "id": "a" * 16, "started_at": now - 10, "ended_at": now, "stage": "artifact_changed",
+        "files": [{"path": "src.py", "kind": "edit", "ts": now - 5}], "claims": ["did a thing"],
         **over,
     })
     record_mod.append(repo, rec)
