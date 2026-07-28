@@ -6,7 +6,7 @@ import sqlite3
 from pathlib import Path
 
 from tycho import checks, events, harness, hook
-from tycho import init as init_mod
+from tycho import install as init_mod
 from tycho import opencode
 from tycho import verify as engine
 from tycho.config import Config

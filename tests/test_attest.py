@@ -25,7 +25,7 @@ from conftest import git as _git
 from conftest import turn_record
 
 from tycho import attest
-from tycho import init as init_mod
+from tycho import install as init_mod
 from tycho import record as record_mod
 
 MSG = "commit-message.txt"
@@ -476,7 +476,7 @@ def test_a_commit_with_no_records_is_unattested_and_uneventful(wired: Path):
 def test_the_commit_still_succeeds_when_tycho_is_gone(repo: Path, monkeypatch):
     """The load-bearing test. A verifier that can fail `git commit` is uninstalled by
     lunchtime — so point the hook at an interpreter that does not exist and commit anyway."""
-    monkeypatch.setattr(init_mod, "attest_command", lambda: "/nonexistent/python -m tycho.attest")
+    monkeypatch.setattr(init_mod.spelling, "attest_command", lambda: "/nonexistent/python -m tycho.attest")
     (repo / ".claude").mkdir()
     init_mod.init(repo, only="claude", assume_yes=True)
     _record(repo, "a.py")

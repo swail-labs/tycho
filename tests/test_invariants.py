@@ -168,7 +168,7 @@ def test_the_suite_never_reads_the_developers_real_claude_home():
     one laptop, for a reason nothing points at. Pinned here because the override lives in
     conftest, where it is easy to delete without noticing what it was for.
     """
-    from tycho import init as init_mod
+    from tycho import install as init_mod
 
     global_dir = init_mod.claude_dir(Path.cwd(), init_mod.GLOBAL).resolve()
     real = (Path.home() / ".claude").resolve()

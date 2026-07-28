@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from tycho import cli
-from tycho import init as init_mod
+from tycho import install as init_mod
 
 CLAUDE = Path(".claude/settings.json")
 CURSOR = Path(".cursor/hooks.json")
@@ -611,9 +611,9 @@ def test_installing_the_hook_twice_does_not_stack_it(tmp_path: Path):
 
 def test_a_stale_hook_block_is_refreshed_in_place(tmp_path: Path, monkeypatch):
     repo = _init_repo(tmp_path)
-    monkeypatch.setattr(init_mod, "attest_command", lambda: "/old/python -m tycho.attest")
+    monkeypatch.setattr(init_mod.spelling, "attest_command", lambda: "/old/python -m tycho.attest")
     init_mod.init(repo, only="claude", assume_yes=True)
-    monkeypatch.setattr(init_mod, "attest_command", lambda: "/new/python -m tycho.attest")
+    monkeypatch.setattr(init_mod.spelling, "attest_command", lambda: "/new/python -m tycho.attest")
     init_mod.init(repo, only="claude", assume_yes=True)
     text = _hook_path(repo).read_text()
     assert "/new/python" in text and "/old/python" not in text

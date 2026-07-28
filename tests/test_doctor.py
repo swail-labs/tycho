@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from tycho import cli, doctor, hook
-from tycho import init as init_mod
+from tycho import install as init_mod
 from tycho import state
 
 CLAUDE = Path(".claude/settings.json")
@@ -138,7 +138,7 @@ def test_doctor_reports_the_heartbeat_age(tmp_path: Path):
 
 def test_a_command_that_does_not_resolve_is_broken(tmp_path: Path, monkeypatch):
     # The silent death: the entry is there, the harness runs it, nothing exists to run.
-    monkeypatch.setattr(init_mod, "hook_command", lambda: "/nonexistent/python -m tycho.cli hook")
+    monkeypatch.setattr(init_mod.spelling, "hook_command", lambda: "/nonexistent/python -m tycho.cli hook")
     _install(tmp_path)
     findings = doctor.diagnose(tmp_path)
     assert doctor.BROKEN in _levels(findings)
@@ -402,7 +402,7 @@ def test_cli_doctor_exits_ok_when_healthy(tmp_path: Path, monkeypatch, capsys):
 
 def test_cli_doctor_exits_unhealthy_when_broken(tmp_path: Path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(init_mod, "hook_command", lambda: "/nonexistent/python -m tycho.cli hook")
+    monkeypatch.setattr(init_mod.spelling, "hook_command", lambda: "/nonexistent/python -m tycho.cli hook")
     _install(tmp_path)
     assert cli.main(["doctor"]) == cli.ExitCode.UNHEALTHY
     out = capsys.readouterr().out
@@ -434,7 +434,7 @@ def test_cli_doctor_never_edits_anything(tmp_path: Path, monkeypatch):
 def test_verify_warns_loudly_when_the_hook_is_broken(tmp_path: Path, monkeypatch, capsys):
     # The diagnostic has to reach the command people actually run.
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(init_mod, "hook_command", lambda: "/nonexistent/python -m tycho.cli hook")
+    monkeypatch.setattr(init_mod.spelling, "hook_command", lambda: "/nonexistent/python -m tycho.cli hook")
     _install(tmp_path)
     cli.main(["verify"])
     err = capsys.readouterr().err
@@ -486,7 +486,7 @@ def test_help_tells_an_unhooked_repo_how_to_install(tmp_path: Path, monkeypatch,
 def test_help_reports_a_broken_hook_rather_than_claiming_it_is_live(tmp_path: Path, monkeypatch):
     # The whole point of the status line: it must not answer "installed" when the
     # installed thing could never fire.
-    monkeypatch.setattr(init_mod, "hook_command", lambda: "/nonexistent/python -m tycho.cli hook")
+    monkeypatch.setattr(init_mod.spelling, "hook_command", lambda: "/nonexistent/python -m tycho.cli hook")
     _install(tmp_path)
 
     assert "not working" in doctor.liveness(tmp_path)

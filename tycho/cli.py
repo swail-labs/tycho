@@ -298,7 +298,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         return hook.prompt_submit()
     if args.command == "init":
-        from . import init as init_mod
+        from . import install as init_mod
 
         rc = _install(
             init_mod.init_global(assume_yes=args.yes) if args.globally
@@ -314,7 +314,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(doctor.render(findings))
         return ExitCode.OK if doctor.healthy(findings) else ExitCode.UNHEALTHY
     if args.command == "uninstall":
-        from . import init as init_mod
+        from . import install as init_mod
 
         return _install(
             init_mod.uninstall_global() if args.globally
@@ -806,7 +806,7 @@ def _spawn_deferred_upgrade(cmd: Sequence[str]) -> None:
 def _install(lines: Sequence[str]) -> int:
     """Print init/uninstall status lines; exit non-zero if we refused to touch a file — a
     refusal is an unfinished install, and `tycho init --yes` in CI must fail loudly."""
-    from .init import REFUSED
+    from .install import REFUSED
 
     for line in lines:
         print(line)
@@ -831,7 +831,7 @@ def _warn_if_hook_broken(cwd: Path) -> None:
 def _offer_first_run(cwd: Path) -> None:
     """First-run 'set up Tycho here?' offer, printed for the manual commands. Never fatal."""
     try:
-        from . import init as init_mod
+        from . import install as init_mod
 
         for line in init_mod.offer_first_run(cwd):
             print(line)

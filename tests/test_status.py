@@ -21,7 +21,7 @@ from pathlib import Path
 import pytest
 
 from tycho import cli, state, status
-from tycho import init as init_mod
+from tycho import install as init_mod
 
 CLAUDE = Path(".claude/settings.json")
 

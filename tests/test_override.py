@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from tycho import cli, config, hook, init as init_mod, report, state, status
+from tycho import cli, config, hook, install as init_mod, report, state, status
 from tycho.model import CheckResult, CheckStatus, Verdict
 from tycho.model import Verdict as V
 

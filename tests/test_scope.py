@@ -6,7 +6,7 @@ from pathlib import Path
 
 from tycho import checks, cli
 from tycho import config as config_mod
-from tycho import init as init_mod
+from tycho import install as init_mod
 from tycho.model import FileEdit, GitSnapshot, Session
 
 CLAUDE = Path(".claude/settings.json")

@@ -22,7 +22,7 @@ from pathlib import Path
 from . import __version__
 from . import gitstate
 from . import harness as harness_mod
-from . import init as init_mod
+from . import install as init_mod
 from . import state
 from . import version as version_mod
 from .review import _ago
