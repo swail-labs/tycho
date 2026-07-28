@@ -47,8 +47,21 @@ def root_for(repo: Path) -> Path:
     """Where this repo's Tycho state lives: `repo` itself, or the nearest ancestor holding it.
     The walk exists because a cwd follows the user into subdirectories and every reader would
     otherwise report "not installed" from anywhere but the repo root. Stops at the git root so
-    an unrelated parent's `.tycho/` is never adopted; no marker anywhere means `repo`."""
+    an unrelated parent's `.tycho/` is never adopted; no marker anywhere means `repo`.
+
+    Also stops at `$HOME`: a non-git directory has no root of its own, so without this bound
+    the walk climbs out of the project entirely and a scratch directory writes its turns —
+    claims, prose and all — into a *different* project's ledger."""
+    try:
+        home = Path.home()
+    except (OSError, RuntimeError):
+        home = None
     for d in (repo, *repo.parents):
+        # `$HOME` is a boundary, not a project: a `.tycho/` sitting there would otherwise
+        # adopt every non-git directory on the machine. `repo` itself is still honoured, so
+        # someone who really did `tycho init` in their home directory keeps it.
+        if d == home and d != repo:
+            break
         if (d / _DIR).is_dir() or (d / _CONFIG_MARKER).is_file():
             return d
         if (d / _GIT).exists():  # repo root reached (a dir, or a worktree/submodule's file)

@@ -238,3 +238,25 @@ def test_check_evidence_is_redacted_before_it_reaches_catches_json(tmp_path: Pat
     blob = (state.dir_for(tmp_path) / "catches.json").read_text(encoding="utf-8")
     assert "abcd1234efgh5678ijkl" not in blob
     assert "[REDACTED]" in blob
+# --- where state lives ------------------------------------------------------
+
+def test_root_for_does_not_escape_into_an_unrelated_parent(tmp_path: Path, monkeypatch):
+    """A non-git directory nested under a Tycho-installed parent used to adopt the parent's
+    `.tycho/`, so a child project's turns — claims and all — were written into another
+    project's ledger. The walk stops at `$HOME`."""
+    home = tmp_path / "home"
+    (home / ".tycho").mkdir(parents=True)          # the unrelated parent, installed
+    scratch = home / "projects" / "scratch"        # a plain directory, no git, no marker
+    scratch.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    assert state.root_for(scratch) == scratch
+    assert state.dir_for(scratch) == scratch / ".tycho"
+
+
+def test_root_for_still_walks_up_to_the_repo_that_owns_the_state(tmp_path: Path, monkeypatch):
+    """The walk it exists for: a developer standing in `src/` is still in the same repo."""
+    repo = tmp_path / "home" / "repo"
+    (repo / ".tycho").mkdir(parents=True)
+    (repo / "src" / "deep").mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
+    assert state.root_for(repo / "src" / "deep") == repo

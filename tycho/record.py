@@ -485,6 +485,9 @@ def touching(repo: Path, path: str, limit: int | None = None) -> list[dict]:
     needle = str(path or "").replace("\\", "/").removeprefix("./")
     if not needle:
         return []
+    # The suffix match is for a *bare basename* only. Applied to a query that already names a
+    # directory it answers about the wrong file: `vendor/src/app.py` is not `src/app.py`.
+    bare = "/" not in needle
     hits: deque[dict] = deque(maxlen=limit)
     for row in iter_records(repo):
         files = row.get("files")
@@ -492,7 +495,9 @@ def touching(repo: Path, path: str, limit: int | None = None) -> list[dict]:
             continue
         for entry in files:
             stored = entry.get("path") if isinstance(entry, dict) else None
-            if isinstance(stored, str) and (stored == needle or stored.endswith("/" + needle)):
+            if isinstance(stored, str) and (
+                stored == needle or (bare and stored.endswith("/" + needle))
+            ):
                 hits.append(row)
                 break
     return list(reversed(hits))
