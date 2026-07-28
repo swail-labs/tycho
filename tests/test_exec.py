@@ -267,13 +267,26 @@ def test_an_unmasked_transcript_failure_can_add_a_failure_but_never_remove_one()
     assert checks._outcome(masked, (_ran("pytest -q", 0, ts=99.0),)) is False
 
 
-def test_the_latest_matching_run_wins():
-    """Same rule `command_execution` already applies to events: a turn that ran the suite
-    twice rests its claim on the last one."""
+def test_two_agents_running_the_same_command_is_not_evidence_for_either():
+    """`commands.jsonl` is repo-scoped and shared by every process in the repo.
+
+    Two agents both run `pytest -q`; A's fails, B's passes a second later. Crediting the
+    newest match let B's green answer for A's red turn — VERIFIED on a failing suite,
+    citing "Tycho ran it" as the authority. That is the fabricated green this program
+    exists to prevent, so an ambiguous match must resolve to "cannot tell".
+    """
     event = _event("tycho exec -- pytest -q", 100.0, is_error=None)
     runs = (_ran("pytest -q", 1, ts=98.0), _ran("pytest -q", 0, ts=99.0))
-    assert checks._outcome(event, runs) is False
-    assert checks._outcome(event, tuple(reversed(runs))) is False
+    assert checks._outcome(event, runs) is None
+    assert checks._outcome(event, tuple(reversed(runs))) is None
+
+
+def test_a_run_that_started_after_the_event_finished_is_a_different_run():
+    """The harness stamps the event when the tool finished; a later run isn't the one it
+    recorded, so it can neither vindicate nor condemn it."""
+    event = _event("tycho exec -- pytest -q", 100.0, is_error=None)
+    assert checks._outcome(event, (_ran("pytest -q", 0, ts=200.0),)) is None
+    assert checks._outcome(event, (_ran("pytest -q", 1, ts=99.0),)) is True  # in-window, used
 
 
 def test_evidence_for_a_different_command_is_not_credited():

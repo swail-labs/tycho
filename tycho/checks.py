@@ -242,29 +242,52 @@ def _exec_argv(cmd: str) -> list[str] | None:
     return None
 
 
+# Slack between the harness's event clock and our own when matching an exec run to the
+# event that launched it. Generous on purpose: too tight loses real evidence, and the
+# ambiguity rule below is what protects correctness, not this number.
+_EXEC_CLOCK_SLACK = 5.0
+
+
 def _exec_run_for(event, commands) -> "CommandRun | None":  # noqa: F821 — model.CommandRun
     """The `tycho exec` evidence for this transcript event, or None.
 
-    Matched on the inner argv, not timestamps: harness clocks vary (Cursor stamps nothing).
-    `commands` is already floored to this turn by `verify.gather`, so staleness can't creep in.
-    Latest match wins — a turn that ran the suite twice rests on the last.
+    Matched on the inner argv, and **an ambiguous match is no match**.
 
-    ponytail: exact argv match. A redacted command string (`TOKEN=x pytest`) won't match and the
-    check falls back to its pre-exec behaviour — losing evidence, never inventing it.
+    `commands.jsonl` is repo-scoped and shared by every process in the repo, so with two
+    agents working the same tree, `tycho exec -- pytest -q` appears twice with different
+    outcomes. Picking the newest let agent B's passing run answer for agent A's failing one:
+    VERIFIED, citing "Tycho ran it — exit 0", on a red suite. That is the fabricated green
+    this program exists to prevent, and it fired precisely where the evidence is treated as
+    strongest.
+
+    So: only runs that could plausibly be *this* event's are considered — one that started
+    after the event finished is a different run, whoever launched it — and if more than one
+    survives, the honest answer is that we cannot tell. Losing evidence is the acceptable
+    direction; inventing it is not. A turn that legitimately ran the suite twice has two
+    events, and each still resolves against its own run by time.
+
+    ponytail: argv + a time window, no process identity. `tycho exec` could stamp its pid and
+    the check require it, which would be exact — worth doing if the window proves too coarse.
     """
     if not commands:
         return None
     argv = _exec_argv(event.input.get("command") or "")
     if not argv:
         return None
-    best = None
+    # The harness stamps the event when the tool *finished*; a run that began after that
+    # cannot be the one it recorded. Slack absorbs clock granularity between the two clocks.
+    latest = (event.ts or 0.0) + _EXEC_CLOCK_SLACK
+    matches = []
     for run in commands:
         try:
-            if shlex.split(run.cmd) == argv and (best is None or run.ended_at >= best.ended_at):
-                best = run
+            if shlex.split(run.cmd) != argv:
+                continue
         except ValueError:
             continue
-    return best
+        if event.ts and run.started_at > latest:
+            continue  # a later run, by us or by another agent in this repo
+        matches.append(run)
+    return matches[-1] if len(matches) == 1 else None
 
 
 def _status_is_masked(cmd: str) -> bool:
