@@ -174,7 +174,14 @@ _SEGMENT_SEP = re.compile(r"&&|\|\||[;|\n()]")
 _SEGMENT_TOKENS = re.compile(r"(&&|\|\||[;|\n()])")
 
 
-_ENV_PREFIX = re.compile(r"^(?:\s*\w+=\S+\s+)+")
+# `VAR=1 pytest`, and `env VAR=1 pytest` — the same idiom spelled with the utility instead of
+# the shell, which is what Makefiles and CI configs actually write. Without the `env` branch
+# the whole segment failed to look like a runner at all, so an honest test run was invisible
+# and the turn degraded to INDETERMINATE.
+# `--` is env's end-of-options marker and belongs to the prefix, not the command. Left behind
+# it becomes argv[0], which shifts every later token by one — enough that `tox -e lint` no
+# longer looked like the lint env it is and read as a test run.
+_ENV_PREFIX = re.compile(r"^(?:\s*env\s+)?(?:\s*\w+=\S+\s+)+(?:--\s+)?")
 
 # pytest's verdict is the last line; the slack absorbs the trailing warnings block. Small on
 

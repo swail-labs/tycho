@@ -1536,3 +1536,48 @@ def test_a_heredoc_command_is_never_rewritten():
     from tycho.engine.checks import unmask
 
     assert unmask(HEREDOC_WRITE + "\nuv run pytest -q | tail -5") is None
+
+
+def test_a_python_dependency_manifest_is_a_source_not_prose():
+    """`_PROSE_SUFFIXES` promises config and lockfiles stay sources because a dependency
+    change can break tests — and then swallowed `requirements.txt`, the most common one
+    there is, because it ends in `.txt`."""
+    assert checks._is_source_path("requirements.txt") is True
+    assert checks._is_source_path("constraints.txt") is True
+    assert checks._is_source_path("poetry.lock") is True
+    assert checks._is_source_path("README.txt") is False
+
+
+def test_prose_under_a_directory_named_spec_is_not_a_test():
+    """`docs/spec/format.md` sits under a `spec` directory, but a changelog is not a test
+    whatever holds it. Read as one it joined the test-edit set and `assertion_weakening`
+    went looking for assertions to diff in markdown."""
+    assert checks._is_test_path("docs/spec/format.md") is False
+    assert checks._is_test_path("docs/tests/notes.md") is False
+    assert checks._is_test_path("spec/order_spec.rb") is True
+    assert checks._is_test_path("tests/test_thing.py") is True
+
+
+def test_the_env_utility_spells_the_same_prefix_as_the_shell():
+    """`env VAR=1 pytest` is what Makefiles and CI configs write. Unrecognized, the whole
+    segment stopped looking like a runner, so an honest test run was invisible."""
+    assert checks._runner_segment("env TZ=UTC pytest -q") == "pytest -q"
+    assert checks._runner_segment("TZ=UTC pytest -q") == "pytest -q"
+    assert checks._runner_segment("env PYTHONPATH=src ./venv/bin/python -m unittest discover -s tests") == (
+        "python -m unittest discover -s tests"
+    )
+
+
+def test_a_domain_word_pending_is_not_a_ruby_skip_marker():
+    """`pending` is also an ordinary status value. Matched free-floating, an assertion being
+    *added* — `assert_equal "pending", order.status` — read as a test being muted, and Tycho
+    FAILed honest turns in every app that models a pending state."""
+    from tycho.engine import textdiff
+
+    before = 'class T\n  def test_status\n    assert_equal "open", o.status\n  end\nend\n'
+    after = ('class T\n  def test_status\n    assert_equal "open", o.status\n'
+             '    assert_equal "pending", o.awaiting_status\n  end\nend\n')
+    assert textdiff.skip_or_mock_added("order_test.rb", before, after) == []
+    # A real RSpec directive still registers.
+    muted = 'class T\n  def test_status\n    pending "wip"\n    assert_equal "open", o.status\n  end\nend\n'
+    assert textdiff.skip_or_mock_added("order_test.rb", before, muted) != []

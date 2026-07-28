@@ -35,10 +35,21 @@ _PROSE_SUFFIXES = frozenset({
 
 _PROSE_NAMES = frozenset({"LICENSE", "NOTICE", "AUTHORS", "CODEOWNERS"})
 
+# The comment above says lockfiles stay sources, and for `poetry.lock` and `go.sum` it was
+# true — but Python's dependency manifests end in `.txt`, so `_PROSE_SUFFIXES` swallowed the
+# most common one there is. Editing `requirements.txt` after a green run could not go STALE,
+# which is exactly the dependency change the comment promises to catch.
+_DEPENDENCY_NAMES = frozenset({
+    "requirements.txt", "requirements-dev.txt", "requirements-test.txt",
+    "constraints.txt", "dev-requirements.txt", "test-requirements.txt",
+})
+
 
 def _is_prose_path(path: str) -> bool:
     """True for a file whose edits can't change what a test run proves."""
     base = path.replace("\\", "/").rsplit("/", 1)[-1]
+    if base.lower() in _DEPENDENCY_NAMES:
+        return False
     if base in _PROSE_NAMES:
         return True
     dot = base.rfind(".")
@@ -78,6 +89,11 @@ _TEST_SUFFIX_EXTENSIONS = frozenset({
 def _is_test_path(path: str) -> bool:
     p = path.replace("\\", "/")
     base = p.rsplit("/", 1)[-1]
+    # Prose first: `docs/spec/format.md` lives under a directory named `spec`, but a markdown
+    # file is not a test whatever directory holds it. Read as one, it joined the test-edit set
+    # and `assertion_weakening` went looking for assertions to diff in a changelog.
+    if _is_prose_path(p):
+        return False
     if any(part.lower() in _TEST_DIRS for part in p.split("/")[:-1]):
         return True
     if base == "conftest.py":
