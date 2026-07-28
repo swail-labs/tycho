@@ -107,6 +107,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _update(skip=args.skip, force=args.force)
     if args.command == "relay":
         return _relay(Path.cwd(), on=args.on, off=args.off)
+    if args.command == "rewrite":
+        return _rewrite(Path.cwd(), on=args.on, off=args.off)
     if args.command == "override":
         return _override(Path.cwd(), check=args.check, reason=args.reason,
                          on=args.on, off=args.off, veto=args.veto, unveto=args.unveto)
@@ -195,7 +197,12 @@ from .record import (  # noqa: E402
     _review as _review,
     _show as _show,
 )
-from .settings import _override as _override, _relay as _relay, _scope as _scope  # noqa: E402
+from .settings import (  # noqa: E402
+    _override as _override,
+    _relay as _relay,
+    _rewrite as _rewrite,
+    _scope as _scope,
+)
 from .update import (  # noqa: E402
     _is_homebrew_install as _is_homebrew_install,
     _print_update_notice as _print_update_notice,

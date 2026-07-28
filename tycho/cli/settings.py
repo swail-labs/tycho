@@ -73,6 +73,35 @@ def _relay(cwd: Path, on: bool, off: bool) -> int:
     return ExitCode.OK
 
 
+def _rewrite(cwd: Path, on: bool, off: bool) -> int:
+    """`tycho rewrite [--on|--off]` — route a piped runner through `tycho exec` so its real
+    exit status is recorded. Off by default; see `config.render` for the permission-rule
+    reason. Bare `tycho rewrite` just reports the setting."""
+    from ..store import state
+
+    repo = state.root_for(cwd)
+    if on or off:
+        state.set_rewrite_enabled(repo, enabled=on)
+    enabled = state.rewrite_enabled(repo)
+    if on:
+        print(f"tycho: runner rewrite ON for {repo} — a piped runner now goes through "
+              f"`tycho exec`, so its real exit status is on the record instead of the pipe's. "
+              f"Claude Code will ask to approve the rewritten command the first time; a "
+              f"`Bash(...)` allow rule you already have won't cover it. `tycho rewrite --off` "
+              f"to revert.")
+    elif off:
+        print(f"tycho: runner rewrite OFF for {repo} — commands reach the shell exactly as the "
+              f"agent wrote them, and a piped runner's verdict is read from its summary line.")
+    else:
+        print(f"tycho: runner rewrite is {'ON' if enabled else 'OFF'} for {repo}"
+              f"{'' if enabled else ' — a piped runner is read from its output, not its status'}.")
+        print("  it always applies under `--permission-mode bypassPermissions`, where there are "
+              "no permission rules for it to void.")
+        print("  toggle: `tycho rewrite --on` | `--off`   ·   in Claude Code: /tycho-rewrite-on | "
+              "/tycho-rewrite-off   ·   stored in .tycho.toml [rewrite].")
+    return ExitCode.OK
+
+
 def _override(cwd: Path, check: str | None, reason: str | None,
               on: bool, off: bool, veto: bool = False, unveto: bool = False) -> int:
     """`tycho override [--on|--off|--veto|--unveto] | <check> "<reason>"` — toggle the

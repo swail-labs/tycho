@@ -292,6 +292,24 @@ def prompt_submit() -> int:
     return 0
 
 
+def _rewrite_allowed(payload: dict) -> bool:
+    """May we hand the harness a different command than the agent wrote?
+
+    Claude Code matches `Bash(...)` permission rules against the **rewritten** command — tested
+    against 2.1.220, which denied `<python> -m tycho.cli exec -- python3 -m unittest …` in a
+    session whose allowlist held `Bash(python3:*)`. So a rewrite silently voids the user's own
+    rules: a command that ran without asking starts asking, and headless it is denied outright.
+    A verifier that costs you approvals you already granted is not free, whatever it proves.
+
+    `bypassPermissions` has no rules to void, so the rewrite always applies there. Everywhere
+    else it is opt-in, because in *those* modes it can only be neutral (no rule matched, so the
+    command was going to prompt anyway) or harmful (a rule matched, and now it doesn't).
+    """
+    if payload.get("permission_mode") == "bypassPermissions":
+        return True
+    return state.rewrite_enabled(state.root_for(Path(payload.get("cwd") or ".")))
+
+
 def pre_tool_use() -> int:
     """PreToolUse hook on the shell tool: keep a piped runner's exit status from being lost.
 
@@ -315,7 +333,7 @@ def pre_tool_use() -> int:
         if payload.get("tool_name") not in checks._SHELL_TOOLS or not isinstance(tool_input, dict):
             return 0
         command = tool_input.get("command")
-        if not isinstance(command, str):
+        if not isinstance(command, str) or not _rewrite_allowed(payload):
             return 0
         rewritten = checks.unmask(command, tycho=spelling.exec_program())
         if rewritten is None:

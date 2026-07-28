@@ -3,7 +3,7 @@
 The stdlib has no TOML writer, so the mutating helpers re-render the whole file from a
 canonical template. Cost: a user's own comments and unknown tables are NOT preserved. Only
 the schema keys (`scope.include`/`exclude`, `checks.disable`, `relay.enabled`,
-`override.enabled`) round-trip.
+`override.enabled`, `rewrite.enabled`) round-trip.
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ class Config:
     scope_exclude: tuple[str, ...] = ()
     relay_enabled: bool = False
     override_enabled: bool = False
+    rewrite_enabled: bool = False
 
 
 def path(repo: Path) -> Path:
@@ -42,12 +43,14 @@ def load(repo: Path) -> Config:
     disabled = data.get("checks", {}).get("disable", [])
     relay = data.get("relay", {}).get("enabled", False)
     override = data.get("override", {}).get("enabled", False)
+    rewrite = data.get("rewrite", {}).get("enabled", False)
     return Config(
         scope_include=tuple(scope.get("include", [])),
         disabled_checks=tuple(disabled),
         scope_exclude=tuple(scope.get("exclude", [])),
         relay_enabled=bool(relay),
         override_enabled=bool(override),
+        rewrite_enabled=bool(rewrite),
     )
 
 
@@ -69,6 +72,7 @@ def render(
     scope_exclude: tuple[str, ...] = (),
     relay_enabled: bool = False,
     override_enabled: bool = False,
+    rewrite_enabled: bool = False,
 ) -> str:
     """The canonical `.tycho.toml`, with the current values filled in."""
     return (
@@ -104,6 +108,16 @@ def render(
         "# distinct OVERRIDDEN verdict (agent-authorized, NOT proven) and is logged to\n"
         "# .tycho/overrides.json. Off by default. Toggle: tycho override --on|--off.\n"
         f"enabled = {'true' if override_enabled else 'false'}\n"
+        "\n"
+        "[rewrite]\n"
+        "# Route a piped test runner through `tycho exec` so its real exit status survives:\n"
+        '# `pytest | tail -20` hands the harness tail\'s status and pytest\'s is gone before any\n'
+        "# check could read it. Claude Code only (PreToolUse). Off by default because your\n"
+        "# `Bash(...)` permission rules are matched against the *rewritten* command, so a\n"
+        "# `Bash(pytest:*)` allow rule would stop covering it and a silent run would start\n"
+        "# asking. Not needed under `--permission-mode bypassPermissions`, where there are no\n"
+        "# rules to void and the rewrite always applies. Toggle: tycho rewrite --on|--off.\n"
+        f"enabled = {'true' if rewrite_enabled else 'false'}\n"
     )
 
 
@@ -123,23 +137,39 @@ def ensure(repo: Path) -> bool:
     return True
 
 
+def _rewrite_with(repo: Path, **changed) -> None:
+    """Re-render `.tycho.toml` with the current settings, overridden by `changed`. One place
+    to add a key, so a new flag can't be dropped by a setter that predates it."""
+    cur = load(repo)
+    fields = {
+        "scope_include": cur.scope_include,
+        "disabled": cur.disabled_checks,
+        "scope_exclude": cur.scope_exclude,
+        "relay_enabled": cur.relay_enabled,
+        "override_enabled": cur.override_enabled,
+        "rewrite_enabled": cur.rewrite_enabled,
+    }
+    _write(repo, render(**{**fields, **changed}))
+
+
 def _save(repo: Path, include: tuple[str, ...], exclude: tuple[str, ...]) -> None:
     """Rewrite with these include/exclude lists, preserving the other settings."""
-    cur = load(repo)
-    _write(repo, render(tuple(include), cur.disabled_checks, tuple(exclude), cur.relay_enabled, cur.override_enabled))
+    _rewrite_with(repo, scope_include=tuple(include), scope_exclude=tuple(exclude))
 
 
 def set_relay(repo: Path, enabled: bool) -> None:
     """Write the verdict-relay flag, creating the file if absent so it stays hand-editable."""
-    cur = load(repo)
-    _write(repo, render(cur.scope_include, cur.disabled_checks, cur.scope_exclude, enabled, cur.override_enabled))
+    _rewrite_with(repo, relay_enabled=enabled)
 
 
 def set_override(repo: Path, enabled: bool) -> None:
     """Write the override-capability flag, creating the file if absent."""
-    cur = load(repo)
-    _write(repo, render(cur.scope_include, cur.disabled_checks, cur.scope_exclude,
-                        cur.relay_enabled, enabled))
+    _rewrite_with(repo, override_enabled=enabled)
+
+
+def set_rewrite(repo: Path, enabled: bool) -> None:
+    """Write the runner-rewrite flag, creating the file if absent."""
+    _rewrite_with(repo, rewrite_enabled=enabled)
 
 
 def set_scope(repo: Path, globs: list[str]) -> tuple[str, ...]:

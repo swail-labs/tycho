@@ -92,6 +92,7 @@ tycho exec -- pytest -q          # run it and put the real exit status on the re
 tycho attest --verify            # check a commit's trailer against the record
 tycho scope add 'src/**'         # bound where the agent may edit (opt-in; `--exclude` denies)
 tycho relay --on                 # let the agent see its own verdict and keep working (off by default)
+tycho rewrite --on               # route a piped runner through `tycho exec` for you (off by default)
 tycho doctor                     # is the hook installed, current, and firing?
 ```
 
@@ -116,14 +117,19 @@ Degrading honestly instead of guessing is the point, so the limits are part of t
   `--verify` can answer *cannot tell*, and a pruned record must never read as a forged one.
 - **`tool_call_provenance` is advisory.** Two claim families (web, issue trackers), matched on
   family presence only. Tuned to never emit a false FAIL, at the cost of recall.
-- **`uv run --with pytest pytest -q` is not recognized as a test run** — a real hole today. Use
-  `tycho exec --` until the fix ships; it doesn't parse the command at all.
+- **A piped runner's exit status is gone before Tycho can read it.** `pytest | tail -20` hands the
+  harness tail's status, so the verdict falls back to reading pytest's summary line — inference,
+  and only as good as the vocabulary in `engine/runlog.py`. `tycho exec -- pytest | tail -20` fixes
+  it at the source, and `tycho rewrite --on` does that for you. It's off by default because Claude
+  Code matches your `Bash(...)` permission rules against the *rewritten* command: a `Bash(pytest:*)`
+  allow rule stops covering it, so a command that ran silently starts asking. Under
+  `--permission-mode bypassPermissions` there are no rules to void and it always applies.
 - **Nothing polls in the background.** A hook that died goes undiagnosed until someone runs
   `doctor`.
 
 ## Configuration
 
-Settings in `.tycho.toml` (`scope`, `relay`, `override`), state in `<repo>/.tycho/`. Command
+Settings in `.tycho.toml` (`scope`, `relay`, `override`, `rewrite`), state in `<repo>/.tycho/`. Command
 strings, evidence and agent prose are pattern-filtered for secrets before hitting disk — a match
 becomes a visible `[REDACTED]` — but it's best-effort, so keep `.tycho/` out of git regardless.
 

@@ -565,6 +565,21 @@ def relay_max() -> int:
         return _RELAY_MAX_DEFAULT
 
 
+def rewrite_enabled(repo: Path) -> bool:
+    """`.tycho.toml` [rewrite] enabled, default off — see `config.render` for why off."""
+    from . import config
+    return config.load(repo).rewrite_enabled
+
+
+def set_rewrite_enabled(repo: Path, enabled: bool) -> None:
+    """Toggle the PreToolUse runner rewrite for `repo` in `.tycho.toml`."""
+    from . import config
+    try:
+        config.set_rewrite(repo, enabled)
+    except OSError:
+        pass
+
+
 def relay_enabled(repo: Path) -> bool:
     """`.tycho.toml` [relay] enabled, default off."""
     from . import config

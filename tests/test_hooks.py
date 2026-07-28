@@ -719,6 +719,7 @@ def test_pre_tool_use_reroutes_a_masked_runner(capsys, monkeypatch):
 
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({
         "hook_event_name": "PreToolUse",
+        "permission_mode": "bypassPermissions",
         "tool_name": "Bash",
         "tool_input": {"command": "pytest -q 2>&1 | tail -5", "description": "run tests"},
     })))
@@ -743,9 +744,42 @@ def test_pre_tool_use_says_nothing_rather_than_guessing(capsys, monkeypatch, pay
     that can change what runs, so every uncertain path has to end in no output."""
     from tycho.wire import hook as hook_mod
 
+    # Bypass mode, so each case is silent for its *own* reason and not because the gate below
+    # turned the rewrite off — otherwise this parametrization would pass with the body removed.
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({**payload, "permission_mode": "bypassPermissions"})))
+    assert hook_mod.pre_tool_use() == 0
+    assert capsys.readouterr().out == ""
+
+
+@pytest.mark.parametrize("mode", ["default", "acceptEdits", "plan", None])
+def test_pre_tool_use_leaves_the_command_alone_where_permission_rules_apply(capsys, monkeypatch, tmp_path, mode):
+    """Claude Code matches `Bash(...)` rules against the *rewritten* command (2.1.220), so
+    rewriting under any mode that consults them voids the user's own allowlist: a command that
+    ran silently starts asking, and headless it is denied outright."""
+    from tycho.wire import hook as hook_mod
+
+    payload = {"tool_name": "Bash", "cwd": str(tmp_path),
+               "tool_input": {"command": "pytest -q 2>&1 | tail -5"}}
+    if mode is not None:
+        payload["permission_mode"] = mode
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
     assert hook_mod.pre_tool_use() == 0
     assert capsys.readouterr().out == ""
+
+
+def test_pre_tool_use_rewrites_under_permission_rules_once_opted_in(capsys, monkeypatch, tmp_path):
+    """The escape hatch has to open as well as shut, or `tycho rewrite --on` is decoration."""
+    from tycho.store import state
+    from tycho.wire import hook as hook_mod
+
+    state.set_rewrite_enabled(tmp_path, enabled=True)
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({
+        "tool_name": "Bash", "permission_mode": "default", "cwd": str(tmp_path),
+        "tool_input": {"command": "pytest -q 2>&1 | tail -5"},
+    })))
+    assert hook_mod.pre_tool_use() == 0
+    out = json.loads(capsys.readouterr().out)
+    assert " exec -- pytest -q" in out["hookSpecificOutput"]["updatedInput"]["command"]
 
 
 def test_pre_tool_use_survives_junk_on_stdin(capsys, monkeypatch):

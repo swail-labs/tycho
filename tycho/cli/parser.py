@@ -29,6 +29,7 @@ _COMMANDS = {
     "scope": "show or edit which files the agent may edit (the scope_drift allowlist)",
     "relay": "let Claude/Codex see its verdict and keep working until VERIFIED (bounded, off by default)",
     "override": "record a per-check verdict override when the relay is on (agent-authorized, logged, off by default)",
+    "rewrite": "route a piped test runner through `tycho exec` so its real exit status is recorded (off by default)",
     "update": "check for and install a newer Tycho",
     "help": "what Tycho is, whether it's live here, and every command",
 }
@@ -169,6 +170,15 @@ def build() -> argparse.ArgumentParser:
     )
     rl_toggle.add_argument(
         "--off", action="store_true", help="stop feeding the verdict to the agent (the default)",
+    )
+    rw = sub.add_parser("rewrite", help=_COMMANDS["rewrite"])
+    rw_toggle = rw.add_mutually_exclusive_group()
+    rw_toggle.add_argument(
+        "--on", action="store_true",
+        help="route a piped runner through `tycho exec` so its real exit status is recorded",
+    )
+    rw_toggle.add_argument(
+        "--off", action="store_true", help="leave commands exactly as the agent wrote them (the default)",
     )
     ov = sub.add_parser("override", help=_COMMANDS["override"])
     ov.add_argument("check", nargs="?", metavar="CHECK",
