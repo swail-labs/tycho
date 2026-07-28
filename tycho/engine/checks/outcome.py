@@ -14,6 +14,7 @@ from .. import runlog
 from ...model import UNSTRUCTURED_RESULT, Session
 from .cmdread import (
     _ENV_PREFIX,
+    _strip_heredocs,
     _MAX_CMD_LEN,
     _covers,
     _MAX_UNWRAP_DEPTH,
@@ -107,7 +108,7 @@ def _status_is_masked(cmd: str, _depth: int = 0) -> bool:
     """
     if len(cmd) > _MAX_CMD_LEN or _depth > _MAX_UNWRAP_DEPTH:
         return True
-    parts = _SEGMENT_TOKENS.split(cmd)  # [segment, sep, segment, sep, ..., segment]
+    parts = _SEGMENT_TOKENS.split(_strip_heredocs(cmd))  # [segment, sep, segment, sep, ..., segment]
     for i in range(0, len(parts), 2):
         seg = parts[i]
         if not _is_runner(_normalize_segment(seg)):
@@ -148,6 +149,11 @@ def unmask(cmd: str, tycho: str = "tycho") -> str | None:
     (`sh -c '...'`), where rewriting means editing a string this does not own.
     """
     if len(cmd) > _MAX_CMD_LEN or not _status_is_masked(cmd):
+        return None
+    # A heredoc is left alone entirely. The rewrite splices into the original text by segment
+    # index, and those indices no longer line up once a body has been stripped out — splicing
+    # against a shifted index would edit the file being written rather than the command.
+    if _strip_heredocs(cmd) != cmd:
         return None
     parts = _SEGMENT_TOKENS.split(cmd)
     for i in range(0, len(parts), 2):

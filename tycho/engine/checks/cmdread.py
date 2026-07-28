@@ -119,6 +119,37 @@ _DASHDASH_WRAPPERS = ("wsl", "env")
 
 _C_SHELLS = ("bash", "sh", "zsh", "dash", "ash")
 
+# `cat > tests/test_x.py <<'EOF'` … `EOF` — the body is a file being written, not commands.
+# `<<<` (herestring) can't match: after `<<` the next character has to open the tag.
+_HEREDOC_TAG = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+
+
+def _strip_heredocs(cmd: str) -> str:
+    """`cmd` with every heredoc body removed.
+
+    A heredoc body is data. Left in, its lines are segmented like commands, and a file of
+    tests written this way turns into a "test run" made of its own contents — which is how
+    an agent writing `cat >> tests/test_checks.py <<'PYEOF'` in this very repo produced a
+    runner event whose command was a fragment of the test source. That event took the exit
+    status of the real command beside it, so a red one could never be superseded: nothing
+    later matched a command that was never a command, and `test_freshness` stuck at STALE
+    across turns with no edit that could clear it.
+
+    Unterminated tag: the rest of the input is the body. That is what the shell does, and
+    treating the tail as commands is the guess that caused this.
+    """
+    lines = cmd.split("\n")
+    kept, i = [], 0
+    while i < len(lines):
+        line = lines[i]
+        kept.append(line)
+        i += 1
+        for tag in (m.group(2) for m in _HEREDOC_TAG.finditer(line)):
+            while i < len(lines) and lines[i].strip() != tag:
+                i += 1
+            i += 1  # the terminator line itself
+    return "\n".join(kept)
+
 
 _EXE_SUFFIX = re.compile(r"\.(?:exe|bat|cmd|ps1)$", re.IGNORECASE)
 
@@ -412,7 +443,7 @@ def _runner_segment(cmd: str, _depth: int = 0) -> str | None:
     """
     if len(cmd) > _MAX_CMD_LEN or _depth > _MAX_UNWRAP_DEPTH:
         return None
-    for segment in _SEGMENT_SEP.split(cmd):
+    for segment in _SEGMENT_SEP.split(_strip_heredocs(cmd)):
         norm = _normalize_segment(segment)
         if _is_runner(norm):
             return norm
@@ -437,7 +468,7 @@ def _exec_argv(cmd: str, _depth: int = 0) -> list[str] | None:
     evidence streams, the only thing the transcript and the exec log both know."""
     if len(cmd) > _MAX_CMD_LEN or _depth > _MAX_UNWRAP_DEPTH:
         return None
-    for segment in _SEGMENT_SEP.split(cmd):
+    for segment in _SEGMENT_SEP.split(_strip_heredocs(cmd)):
         try:
             # Redirects out too, or `tycho exec -- pytest 2>&1` never matches the argv the
             # exec log recorded, and the strongest evidence Tycho has goes unused.

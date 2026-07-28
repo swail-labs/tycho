@@ -1474,3 +1474,51 @@ def test_exec_evidence_joins_a_transcript_that_kept_the_original_command():
     event = bash("go test ./... 2>&1 | tail -20", ts=100.0, is_error=False)
     run = CommandRun(cmd="go test ./...", exit_code=1, started_at=99.0, ended_at=99.5)
     assert checks._outcome(event, (run,)) is True  # the real status, not the pipe's
+
+
+HEREDOC_WRITE = """cat > tests/test_slug.py <<'PYEOF'
+import pytest
+
+
+def test_basic():
+    assert slugify("Hello World") == "hello-world"
+PYEOF"""
+
+
+def test_a_heredoc_that_writes_tests_is_not_a_test_run():
+    """The body is a file, not commands. Read as commands, a test file written this way
+    becomes a "runner event" made of its own contents."""
+    from tycho.engine.checks import cmdread
+
+    assert cmdread._runner_segment(HEREDOC_WRITE) is None
+
+
+def test_the_real_command_beside_a_heredoc_is_still_found():
+    """And it must be the *command*, not a line of the body — otherwise a red run can never
+    be superseded, because nothing later matches a command that was never a command. That is
+    how `test_freshness` stuck at STALE in this repo across turns with no edit to clear it."""
+    from tycho.engine.checks import cmdread
+
+    cmd = HEREDOC_WRITE + "\nuv run pytest -q tests/test_slug.py 2>&1 | tail -20"
+    assert cmdread._runner_segment(cmd) == "uv run pytest -q tests/test_slug.py"
+
+
+def test_a_herestring_is_not_a_heredoc():
+    from tycho.engine.checks import cmdread
+
+    assert cmdread._strip_heredocs("pytest <<< 'x'") == "pytest <<< 'x'"
+
+
+def test_an_unterminated_heredoc_swallows_the_rest():
+    """What the shell does. Treating the tail as commands is the guess that caused the bug."""
+    from tycho.engine.checks import cmdread
+
+    assert cmdread._runner_segment("cat > f <<'EOF'\npytest -q") is None
+
+
+def test_a_heredoc_command_is_never_rewritten():
+    """Segment indices shift once a body is stripped, and splicing against a shifted index
+    edits the file being written instead of the command."""
+    from tycho.engine.checks import unmask
+
+    assert unmask(HEREDOC_WRITE + "\nuv run pytest -q | tail -5") is None
