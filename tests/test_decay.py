@@ -248,10 +248,10 @@ def test_rows_the_ledger_cannot_read_are_dropped_field_by_field(tmp_path: Path):
         "{not json\n"
         '"a bare string"\n'
         "[1, 2, 3]\n"
-        + json.dumps({"no": "verdict"}) + "\n"
+        + json.dumps({"schema": 1, "no": "verdict"}) + "\n"
         + json.dumps(turn(verdict="FAILED", checks=(("file_state", "FAIL"),))) + "\n"
-        + '{"verdict": "VERIFIED", "checks": "not a list", "started_at": "soon"}\n'
-        + '{"verdict": "VERIFIED", "checks": [{"status": "PASS"}, 7]}\n',
+        + '{"schema": 1, "verdict": "VERIFIED", "checks": "not a list", "started_at": "soon"}\n'
+        + '{"schema": 1, "verdict": "VERIFIED", "checks": [{"status": "PASS"}, 7]}\n',
         encoding="utf-8",
     )
     ledger = state.ledger(tmp_path)

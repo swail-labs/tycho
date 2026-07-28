@@ -259,7 +259,9 @@ def test_init_installs_the_slash_command_and_subcommands(tmp_path: Path):
     assert top.exists() and "$ARGUMENTS" in top.read_text()   # /tycho <freeform>
     # One flat file per subcommand (/tycho-status etc.) → each autocompletes with its own
     # description shown in Claude Code's interface.
-    for name in ("status", "doctor", "verify", "help", "hide", "show", "count"):
+    for name in ("status", "doctor", "verify", "help", "count",
+                 "show", "log", "blame", "review", "attest",   # the record-backed set
+                 "badge-on", "badge-off"):                     # the renamed badge toggles
         sub = commands / f"tycho-{name}.md"
         assert sub.exists(), name
         body = sub.read_text()
@@ -267,6 +269,10 @@ def test_init_installs_the_slash_command_and_subcommands(tmp_path: Path):
         assert 'description: "' in body               # quoted, so a colon in the text is safe
     # The doctor description has a colon — the exact case that broke YAML unquoted.
     assert 'description: "Full diagnostics:' in (commands / "tycho-doctor.md").read_text()
+    # /tycho-show is the turn digest, not the status badge. Before 0.2.0 this name was bound
+    # to `statusline --on`, which would have shadowed the release's most useful command.
+    assert "tycho show" in (commands / "tycho-show.md").read_text()
+    assert not (commands / "tycho-hide.md").exists()  # renamed to badge-off, cleaned up
 
 
 def test_uninstall_removes_the_slash_commands(tmp_path: Path):

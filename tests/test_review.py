@@ -312,10 +312,10 @@ def test_corrupt_and_junk_records_never_raise(tmp_path: Path):
     path.parent.mkdir(parents=True)
     path.write_text(
         "not json at all\n"
-        '{"files": "not-a-list", "commands": 7}\n'
-        '{"files": [{"path": "src.py", "ts": "yesterday"}], "commands": [null, 3]}\n'
+        '{"schema": 1, "files": "not-a-list", "commands": 7}\n'
+        '{"schema": 1, "files": [{"path": "src.py", "ts": "yesterday"}], "commands": [null, 3]}\n'
         '[1,2,3]\n'
-        '{"files": [{"path": "src.py", "ts": 1.0}], "commands": [{"outcome": "passed",'
+        '{"schema": 1, "files": [{"path": "src.py", "ts": 1.0}], "commands": [{"outcome": "passed",'
         ' "runner": true}]}\n'  # no timestamps at all — unusable, must not crash
     )
     assert levels(review.classify(tmp_path, [hunk()], now=NOW)) == [review.UNEXERCISED]

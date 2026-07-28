@@ -22,7 +22,14 @@ from pathlib import Path
 
 # Bump when an already-installed entry no longer satisfies what init now writes. `tycho
 # doctor` compares this against install.json's stamp and reports HOOK OUTDATED on divergence.
-SCHEMA = 1
+#
+# 2 (0.2.0): init gained the `prepare-commit-msg` trailer hook and the `.gitignore` entry.
+# Neither exists in a 0.1.0 install, and upgrading the *package* does not re-run init — so
+# without this bump `doctor` calls a half-installed repo healthy, `attest --verify` fails on
+# every commit, and `turns.jsonl` (which holds the agent's own prose) accumulates in a
+# directory nothing ignores. The bump is what routes an upgrader to `tycho init`, which is
+# already idempotent and self-healing.
+SCHEMA = 2
 
 _DIR = ".tycho"
 _INSTALL = "install.json"

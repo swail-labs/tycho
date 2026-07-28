@@ -316,9 +316,9 @@ def test_iter_records_is_oldest_first(tmp_path: Path):
 
 def test_reads_stream_and_stay_bounded(tmp_path: Path):
     """`tycho log -n 3` must hold 3 records, whatever the file's length."""
-    import inspect
+    import types
 
-    assert inspect.isgeneratorfunction(record.iter_records)  # streamed, never slurped
+    assert isinstance(record.iter_records(tmp_path), types.GeneratorType)  # streamed, never slurped
     for i in range(50):
         record.append(tmp_path, build(make_session(), ended_at=float(i)))
     rows = record.read(tmp_path, limit=3)
@@ -541,3 +541,23 @@ def test_record_lands_beside_the_rest_of_tycho_state(tmp_path: Path):
     assert record.path_for(tmp_path) == state.dir_for(tmp_path) / "turns.jsonl"
     assert record.path_for(tmp_path).name == record.FILE
     assert os.path.dirname(record.path_for(tmp_path)).endswith(".tycho")
+
+
+def test_a_record_from_a_newer_tycho_is_skipped_not_misread(tmp_path: Path):
+    """The file outlives the version that wrote it.
+
+    A `schema: 2` line may have repurposed a key this version thinks it understands, so
+    reading it as schema 1 would be a confident wrong answer — the one thing every reader
+    here is built to avoid. Skipping is the honest handling.
+    """
+    path = record.path_for(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    mine = build(make_session(), ended_at=1.0)
+    path.write_text(
+        json.dumps(mine) + "\n"
+        + json.dumps({**mine, "schema": 99, "verdict": "VERIFIED"}) + "\n"
+        + json.dumps({k: v for k, v in mine.items() if k != "schema"}) + "\n",
+        encoding="utf-8",
+    )
+    rows = list(record.iter_records(tmp_path))
+    assert len(rows) == 1 and rows[0]["schema"] == record.SCHEMA

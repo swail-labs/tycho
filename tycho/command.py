@@ -14,7 +14,9 @@ signal-killed child reports the conventional 128+signal.
 from __future__ import annotations
 
 import json
+import os
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -63,7 +65,7 @@ def execute(repo: Path, argv: list[str]) -> int:
 
     started = time.time()
     try:
-        proc = subprocess.Popen(cmd)
+        proc = subprocess.Popen(launchable(cmd))
     except OSError as exc:  # not found, not executable, not a directory — all the same here
         print(f"tycho exec: cannot run {cmd[0]}: {exc}", file=sys.stderr)
         # Still evidence: "the claimed command does not exist" is not in any transcript.
@@ -74,6 +76,26 @@ def execute(repo: Path, argv: list[str]) -> int:
     code = 128 - rc if rc < 0 else rc  # POSIX reports -N for signal N; the shell says 128+N
     _log(repo, cmd, code, started, time.time())
     return code
+
+
+def launchable(cmd: list[str]) -> list[str]:
+    """`cmd`, made runnable by CreateProcess on Windows. Unchanged everywhere else.
+
+    Windows can only execute PE images, but `npm`, `yarn`, `pnpm`, `npx`, `gradlew` and
+    `mvnw` all ship as `.cmd`/`.bat` shims — and those are exactly the runners `checks.py`
+    recognizes, so this is the common case, not a corner. Without the `cmd.exe /c` hop,
+    `tycho exec -- npm test` returns 127 for a build that would have passed, which for a
+    command that promises to forward the child's status unchanged is the worst possible
+    failure: Tycho turning a green run red.
+
+    `shutil.which` is what honours PATHEXT and resolves `npm` to `npm.cmd`.
+    """
+    if os.name != "nt" or not cmd:
+        return cmd
+    exe = shutil.which(cmd[0])
+    if exe and exe.lower().endswith((".cmd", ".bat")):
+        return [os.environ.get("COMSPEC", "cmd.exe"), "/c", exe, *cmd[1:]]
+    return cmd
 
 
 def _wait(proc: subprocess.Popen) -> int:

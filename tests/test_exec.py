@@ -359,3 +359,40 @@ def test_the_turn_record_reports_what_tycho_observed(tmp_path: Path):
                        [_ran("pytest -q", 1, ts=99.0)], turn_start=50.0)
     built = record.build(session, [], "FAILED", "claude", ended_at=200.0)
     assert built["commands"][0]["outcome"] == "failed"
+
+
+# --- Windows launchability ----------------------------------------------------
+#
+# npm/yarn/pnpm/npx/gradlew/mvnw ship as .cmd shims, and Windows CreateProcess runs only PE
+# images — so these are exactly the runners `checks.py` recognizes and exactly the ones a
+# bare Popen cannot start. Getting it wrong turns a passing build into exit 127 from a
+# command whose whole contract is forwarding the child's status unchanged.
+
+
+def test_launchable_is_a_passthrough_off_windows(monkeypatch):
+    monkeypatch.setattr(command.os, "name", "posix")
+    assert command.launchable(["npm", "test"]) == ["npm", "test"]
+
+
+def test_launchable_routes_a_cmd_shim_through_the_interpreter(monkeypatch):
+    monkeypatch.setattr(command.os, "name", "nt")
+    monkeypatch.setattr(command.shutil, "which", lambda c: r"C:\node\npm.cmd")
+    monkeypatch.setenv("COMSPEC", r"C:\Windows\cmd.exe")
+    assert command.launchable(["npm", "test"]) == [
+        r"C:\Windows\cmd.exe", "/c", r"C:\node\npm.cmd", "test",
+    ]
+
+
+def test_launchable_leaves_a_real_executable_alone(monkeypatch):
+    monkeypatch.setattr(command.os, "name", "nt")
+    monkeypatch.setattr(command.shutil, "which", lambda c: r"C:\Python\python.exe")
+    assert command.launchable(["python", "-m", "pytest"]) == ["python", "-m", "pytest"]
+
+
+def test_launchable_survives_an_unresolvable_command(monkeypatch):
+    """`which` returns None for a command that isn't there; Popen must still get the
+    original argv so the error the user sees names what they actually typed."""
+    monkeypatch.setattr(command.os, "name", "nt")
+    monkeypatch.setattr(command.shutil, "which", lambda c: None)
+    assert command.launchable(["nope"]) == ["nope"]
+    assert command.launchable([]) == []

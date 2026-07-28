@@ -361,7 +361,16 @@ def iter_jsonl(path: Path) -> Iterator[dict]:
 
 
 def iter_records(repo: Path) -> Iterator[dict]:
-    yield from iter_jsonl(path_for(repo))
+    """Every record this Tycho understands, oldest first.
+
+    Filters on `schema` rather than trusting the shape, because the file outlives the
+    version that wrote it: a 0.2.0 reader will meet lines a later Tycho wrote, and a key
+    that changed meaning would otherwise be read as if it hadn't. Skipping is the honest
+    handling — the same rule `command.py` already applies to its own log, and the same
+    posture as every other reader here, which drops what it can't interpret rather than
+    guessing at it.
+    """
+    return (r for r in iter_jsonl(path_for(repo)) if r.get("schema") == SCHEMA)
 
 
 def read(repo: Path, limit: int | None = None) -> list[dict]:

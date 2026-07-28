@@ -13,7 +13,11 @@ def _git(repo: Path, *args: str) -> tuple[int, str]:
     from PATH must read as "git said no" on the review and commit-hook paths."""
     try:
         proc = subprocess.run(
-            ["git", "-C", str(repo), *args],
+            # `core.quotePath=false` on every call, not just the ones that noticed: by default
+            # git renders a non-ASCII path as `"src/caf\303\251.py"` — quoted, octal-escaped,
+            # and equal to nothing we store. That silently cost `attest` its trailer on any
+            # commit touching such a file, and dropped those files out of `review` entirely.
+            ["git", "-C", str(repo), "-c", "core.quotePath=false", *args],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -110,9 +114,7 @@ def diff_hunks(repo: Path, since: str = "HEAD", limit: int = MAX_HUNKS) -> tuple
     None is not "no changes" — it is "unknown ref, no commits yet, not a repo, git blew up".
     Reporting a bad ref as a clean diff would quietly claim all is fine."""
     code, out = _git(
-        repo,
-        "-c", "core.quotePath=false",  # keep non-ASCII paths readable rather than \xNN-escaped
-        "diff", "--no-color", "--no-ext-diff", "--find-renames", "--unified=3", since,
+        repo, "diff", "--no-color", "--no-ext-diff", "--find-renames", "--unified=3", since,
     )
     if code != 0:
         return None

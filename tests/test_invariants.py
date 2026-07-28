@@ -168,3 +168,66 @@ def test_the_advisory_marker_stays_deleted():
     packaging metadata (§8). Deleting it was the decision; this keeps it decided."""
     pyproject = (Path(__file__).parent.parent / "pyproject.toml").read_text(encoding="utf-8")
     assert '"advisory:' not in pyproject
+
+
+def test_every_stream_is_pinned_to_utf8_including_stdin():
+    """The harness writes UTF-8 JSON; a Windows reader defaults to the ANSI codepage.
+
+    Left unpinned, a Latin-1 path decodes into mojibake (so the hook creates a bogus
+    directory and verifies a repo that doesn't exist, while still beating a healthy
+    heartbeat) and a CJK path raises — out of the Stop hook, which breaks the agent's turn.
+    stdin is the one that matters and was the one missing.
+    """
+    import io
+    from tycho import cli
+
+    class _Stream(io.StringIO):
+        def __init__(self):
+            super().__init__()
+            self.enc = None
+
+        def reconfigure(self, encoding=None, errors=None):
+            self.enc = (encoding, errors)
+
+    streams = {name: _Stream() for name in ("stdin", "stdout", "stderr")}
+    import sys as _sys
+
+    saved = {n: getattr(_sys, n) for n in streams}
+    try:
+        for name, s in streams.items():
+            setattr(_sys, name, s)
+        cli._force_utf8()
+    finally:
+        for name, s in saved.items():
+            setattr(_sys, name, s)
+    for name, s in streams.items():
+        assert s.enc == ("utf-8", "replace"), f"{name} was left on the platform default"
+
+
+def test_every_git_call_disables_path_quoting():
+    """git escapes a non-ASCII path to `"src/caf\\303\\251.py"` by default, which equals
+    nothing Tycho stores — so `attest` silently lost its trailer on any commit touching one
+    and `review` dropped the file. The flag belongs in the shared wrapper, not per-call."""
+    import subprocess as sp
+    from tycho import gitstate
+
+    seen = []
+
+    class _Done:
+        returncode, stdout = 0, ""
+
+    def _spy(argv, **kw):
+        seen.append(argv)
+        return _Done()
+
+    real, sp.run = sp.run, _spy
+    try:
+        gitstate.is_repo(Path("."))
+        gitstate.diff_names(Path("."), "HEAD")
+        gitstate.diff_hunks(Path("."), "HEAD")
+        gitstate.untracked(Path("."))
+    finally:
+        sp.run = real
+    assert seen, "no git call was made"
+    for argv in seen:
+        assert "core.quotePath=false" in argv, argv

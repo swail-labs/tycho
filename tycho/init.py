@@ -682,8 +682,17 @@ _SLASH_SUBCOMMANDS = {
     "verify": ("Verify the latest session and render a verdict", "verify $ARGUMENTS"),
     "help": ("What Tycho is, whether it's live here, and every command", "help"),
     "count": ("How many problems Tycho has caught here, and all-time", "count"),
-    "hide": ("Hide the Tycho status indicator (the hook keeps verifying)", "statusline --off"),
-    "show": ("Show the Tycho status indicator again", "statusline --on"),
+    # The record-backed commands. `show` names the turn digest, not the status badge —
+    # the badge toggles are `badge-on`/`badge-off`, renamed in 0.2.0 because `/tycho-show`
+    # pointing at a status-bar toggle would shadow the release's most useful command in
+    # autocomplete. Re-init removes the old files, so the rename costs nothing.
+    "show": ("The full receipt of a turn: what changed, what ran, what's unverified", "show $ARGUMENTS"),
+    "log": ("What agents did in this repo, newest first", "log $ARGUMENTS"),
+    "blame": ("Which turn touched this file, what it claimed, what backed it", "blame $ARGUMENTS"),
+    "review": ("Which changes no test covered and no command exercised", "review $ARGUMENTS"),
+    "attest": ("Print or check the Tycho-Attestation commit trailer", "attest $ARGUMENTS"),
+    "badge-off": ("Hide the Tycho status indicator (the hook keeps verifying)", "statusline --off"),
+    "badge-on": ("Show the Tycho status indicator again", "statusline --on"),
     "relay": ("Is the verdict relay on? (agent sees its verdict, works till VERIFIED)", "relay"),
     "relay-on": ("Turn ON the verdict relay — agent sees non-VERIFIED verdicts, works till VERIFIED (bounded)", "relay --on"),
     "relay-off": ("Turn OFF the verdict relay — verdicts stay human-only (the default)", "relay --off"),

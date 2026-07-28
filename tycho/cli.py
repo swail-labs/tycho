@@ -70,9 +70,18 @@ non-zero, so CI can gate on it."""
 
 
 def _force_utf8() -> None:
-    """Keep Windows' legacy cp1252 console from raising UnicodeEncodeError on our ✓/✗/•/→
-    status glyphs. errors=replace so a non-UTF-8 stream degrades instead of raising."""
-    for stream in (sys.stdout, sys.stderr):
+    """Pin UTF-8 on all three streams, whatever the platform's locale says.
+
+    stdout/stderr keep Windows' legacy cp1252 console from raising UnicodeEncodeError on our
+    ✓/✗/•/→ glyphs. **stdin matters more**: the harness writes UTF-8 JSON, and a Windows
+    reader defaulting to cp1252 either mojibakes a path (`C:\\Users\\Müller` → `MÃ¼ller`, so
+    the hook fabricates a directory tree and verifies a repo that doesn't exist, while still
+    beating a healthy heartbeat) or raises on a CJK path — and a raise out of the Stop hook
+    breaks the agent's turn, which is the one thing this program must never do.
+
+    errors=replace so a stream that genuinely can't do UTF-8 degrades instead of raising.
+    """
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
         try:
             stream.reconfigure(encoding="utf-8", errors="replace")
         except Exception:
@@ -310,8 +319,10 @@ def _run(argv: list[str]) -> int:
     if not cmd:
         print("tycho run: give a command, e.g. tycho run -- pytest -q", file=sys.stderr)
         return ExitCode.USAGE
+    from .command import launchable  # npm/yarn/npx are .cmd shims on Windows
+
     try:
-        return subprocess.call(cmd)  # inherits stdio; returns the child's real exit code
+        return subprocess.call(launchable(cmd))  # inherits stdio; child's real exit code
     except FileNotFoundError:
         print(f"tycho run: command not found: {cmd[0]}", file=sys.stderr)
         return ExitCode.USAGE

@@ -79,9 +79,30 @@ def cached_latest() -> str | None:
 
 
 def _tuple(v: str) -> tuple[int, ...]:
-    """Numeric release tuple: "0.1.0" -> (0, 1, 0). Non-numeric suffixes dropped — no
-    pre-release tags are in play."""
-    return tuple(int("".join(c for c in part if c.isdigit()) or 0) for part in v.split("."))
+    """Comparable release tuple: "0.1.0" -> (0, 1, 0, 1); "0.2.0rc1" -> (0, 2, 0, 0, 1).
+
+    PyPI normalizes `0.2.0-rc.1` to `0.2.0rc1`, so a pre-release arrives as one part with
+    the marker glued to the number. Keeping only the digits collapsed that to `01` -> 1,
+    making `0.2.0rc1` compare *newer* than `0.2.0` — so anyone running an RC would never be
+    told the real release had landed, which is the one moment an upgrade notice exists for.
+
+    The trailing `1`/`0` is the pre-release rank: a final release sorts above any RC of the
+    same version, and RCs sort among themselves by number.
+    """
+    parts, pre = v.strip().split("."), None
+    out: list[int] = []
+    for part in parts:
+        digits = ""
+        for i, c in enumerate(part):
+            if c.isdigit():
+                digits += c
+                continue
+            pre = "".join(ch for ch in part[i:] if ch.isdigit()) or "0"
+            break
+        out.append(int(digits or 0))
+        if pre is not None:
+            break
+    return (*out, 0, int(pre)) if pre is not None else (*out, 1)
 
 
 def is_newer(candidate: str, than: str) -> bool:

@@ -117,12 +117,14 @@ def _wrapped_output(repo: Path, stdin_text: str) -> str:
 
 
 def main(off: bool = False, on: bool = False) -> int:
-    try:
-        # Output is UTF-8; on Windows a piped stdout defaults to cp1252 and raises
-        # UnicodeEncodeError. reconfigure may be absent on a wrapped stdout, hence the catch.
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    except Exception:
-        pass
+    for stream in (sys.stdin, sys.stdout):
+        try:
+            # Both directions are UTF-8; on Windows a pipe defaults to cp1252, which raises
+            # on output and silently mojibakes the repo path on input. reconfigure may be
+            # absent on an already-wrapped stream, hence the catch.
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
     raw = _stdin_text()
     repo = repo_of(_parse(raw))
     if off or on:
