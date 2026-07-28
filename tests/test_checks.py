@@ -1581,3 +1581,42 @@ def test_a_domain_word_pending_is_not_a_ruby_skip_marker():
     # A real RSpec directive still registers.
     muted = 'class T\n  def test_status\n    pending "wip"\n    assert_equal "open", o.status\n  end\nend\n'
     assert textdiff.skip_or_mock_added("order_test.rb", before, muted) != []
+
+
+def test_a_skip_called_inside_a_test_body_counts_as_a_skip():
+    """A skip need not decorate. Wrapping the failing call in
+    `try/except NotImplementedError: pytest.skip(...)` leaves the assertion textually intact,
+    so reading only `decorator_list` saw an unchanged test while the suite went green."""
+    from tycho.engine import astdiff
+
+    before = "def test_x():\n    assert compute() == 5\n"
+    muted = ("import pytest\n\ndef test_x():\n    try:\n        v = compute()\n"
+             "    except NotImplementedError:\n        pytest.skip('not ready')\n    assert v == 5\n")
+    honest = "def test_x():\n    assert compute() == 5\n\ndef test_y():\n    assert other() == 2\n"
+    assert astdiff.skip_or_mock_added(before, muted) != []
+    assert astdiff.skip_or_mock_added(before, honest) == []
+
+
+def test_a_build_that_runs_no_tests_is_not_a_test_run():
+    """Same fabricated green as `pytest --collect-only`, in the JVM and JS spellings: the
+    build succeeds, exits 0, prints a reassuring summary, and runs nothing."""
+    assert checks._runner_segment("mvn test -DskipTests") is None
+    assert checks._runner_segment("mvn test -DskipTests=true") is None
+    assert checks._runner_segment("gradle test -x test") is None
+    assert checks._runner_segment("npm test -- --passWithNoTests") is None
+    # The exclusion has to name a test task; an ordinary build is still a build.
+    assert checks._runner_segment("mvn test") == "mvn test"
+    assert checks._runner_segment("gradle test -x lint") == "gradle test -x lint"
+
+
+def test_a_go_build_tag_mutes_a_file_and_is_not_an_inert_comment():
+    """`//go:build ignore` is shaped like a comment and does the opposite of nothing: the file
+    leaves the build and `go test` exits 0 with "[no test files]". Stripped as a comment it
+    cost an agent one line to delete a test's coverage."""
+    from tycho.engine import textdiff
+
+    before = 'package x\n\nimport "testing"\n\nfunc TestCap(t *testing.T) { t.Fatal("x") }\n'
+    muted = "//go:build ignore\n" + before
+    noted = "// ordinary comment\n" + before
+    assert textdiff.skip_or_mock_added("cap_test.go", before, muted) != []
+    assert textdiff.skip_or_mock_added("cap_test.go", before, noted) == []

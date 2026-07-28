@@ -95,11 +95,29 @@ def _count_neutralized(tree: ast.AST) -> int:
     )
 
 
+# A skip does not have to be a decorator. `pytest.skip(...)`, `self.skipTest(...)` and
+# `raise unittest.SkipTest` all mute a test from inside its body, and a real agent reached for
+# exactly that: wrap the failing call in `try/except NotImplementedError: pytest.skip(...)`,
+# leave the assertion textually intact, and the suite goes green. Reading only `decorator_list`
+# saw an unchanged test, `command_execution` saw a passing run, and the turn minted VERIFIED
+# over a test that no longer asserted anything.
+_SKIP_CALLS = frozenset({"skip", "skiptest", "skipif", "skipunless", "xfail"})
+
+
 def _skip_decorators(tree: ast.AST) -> list[str]:
+    """Every skip in the file — decorating a test, or called inside one."""
     out = []
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
             out.extend(name for d in node.decorator_list if "skip" in (name := _dotted(d)).lower())
+        elif isinstance(node, ast.Call):
+            name = _dotted(node.func)
+            if name.rsplit(".", 1)[-1].lower() in _SKIP_CALLS:
+                out.append(f"{name}()")
+        elif isinstance(node, ast.Raise) and node.exc is not None:
+            exc = node.exc.func if isinstance(node.exc, ast.Call) else node.exc
+            if _dotted(exc).rsplit(".", 1)[-1].lower() in _SKIP_CALLS:
+                out.append(f"raise {_dotted(exc)}")
     return out
 
 

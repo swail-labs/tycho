@@ -68,7 +68,16 @@ _TEST_RUNNERS = (
 _DISCOVERY_FLAGS = frozenset({
     "--collect-only", "--co", "--no-run", "--listtests", "--list-tests", "--list",
     "--dry-run", "--version", "-V", "--help", "-h", "--fixtures", "--markers",
+    # The same fabricated green in the JVM and JS ecosystems' spelling: the build succeeds,
+    # exits 0, prints a reassuring summary, and runs no tests at all. `mvn test -DskipTests`
+    # was read as a passing test run — which is the exact thing this set exists to refuse.
+    # Matched on the token's pre-`=` half, so `-DskipTests=true` is caught too.
+    "-dskiptests", "-dskipits", "-dmaven.test.skip", "--passwithnotests",
 })
+
+# Gradle's spelling is a flag with a *value*: `gradle test -x test` asks for the test task and
+# then excludes it. Only an exclusion naming a test task counts — `-x lint` is ordinary.
+_TASK_EXCLUDE_FLAGS = frozenset({"-x", "--exclude-task"})
 # `tox -e lint` is a linter. Only an env naming itself a test env counts.
 
 
@@ -237,6 +246,11 @@ def _is_discovery(segment: str) -> bool:
         )
         if envs is not None:
             return not any(_TOX_TEST_ENV.search(e) for e in envs.split(","))
+    # `gradle test -x test` asks for the test task and then excludes it — green build, zero
+    # tests. Only an exclusion naming a test task counts; `-x lint` is an ordinary build.
+    for flag, nxt in zip(tokens, tokens[1:]):
+        if flag.lower() in _TASK_EXCLUDE_FLAGS and _TOX_TEST_ENV.search(nxt):
+            return True
     return False
 
 
