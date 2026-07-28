@@ -163,3 +163,25 @@ def test_exit_codes_are_not_renumbered():
 def test_review_gate_never_reuses_a_verify_verdict_code():
     """A coverage claim must not be mistakable for a proof that the code is wrong."""
     assert ExitCode.UNEXERCISED not in (ExitCode.FAILED, ExitCode.STALE)
+
+
+def test_require_verified_reaches_attest(repo, monkeypatch, capsys):
+    """The flag changes what counts as False; the exit mapping is unchanged.
+
+    A matching trailer says the record is intact, not that the work was proven — a commit
+    whose every turn came back FAILED matches its own record perfectly. Only a gate that
+    asks the stronger question should get the stronger answer.
+    """
+    from tycho import attest as attest_mod
+
+    seen = {}
+
+    def _spy(repo_, ref="HEAD", require_verified=False):
+        seen["require_verified"] = require_verified
+        return (False, "nope") if require_verified else (True, "fine")
+
+    monkeypatch.setattr(attest_mod, "verify", _spy)
+    assert main(["attest", "--verify", "HEAD"]) == ExitCode.OK
+    assert seen["require_verified"] is False
+    assert main(["attest", "--verify", "HEAD", "--require-verified"]) == ExitCode.MISMATCH
+    assert seen["require_verified"] is True

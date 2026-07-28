@@ -191,6 +191,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                          help="check a commit's trailer against the record (default: HEAD)")
     at_mode.add_argument("--write", nargs="+", metavar=("MSGFILE", "SOURCE"),
                          help="prepare-commit-msg entrypoint (internal): add the trailer to MSGFILE")
+    # A matching trailer says the record is intact, not that the work was ever proven — a
+    # commit whose every turn came back FAILED matches its own record perfectly. A gate wants
+    # the stronger question, so it has to ask for it.
+    at.add_argument("--require-verified", action="store_true",
+                    help="with --verify: also require every covered turn to have reached VERIFIED")
     r = sub.add_parser("run", help=_COMMANDS["run"])
     r.add_argument(
         "cmd",
@@ -267,7 +272,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "review":
         return _review(Path.cwd(), args.since, exit_code=args.exit_code)
     if args.command == "attest":
-        return _attest(Path.cwd(), verify=args.verify, write=args.write)
+        return _attest(Path.cwd(), verify=args.verify, write=args.write,
+                       require_verified=args.require_verified)
     if args.command == "scope":
         return _scope(Path.cwd(), args.action, args.paths, args.exclude)
     if args.command == "update":
@@ -388,7 +394,8 @@ def _review(cwd: Path, since: str, exit_code: bool = False) -> int:
     return ExitCode.UNEXERCISED if review_mod.unexercised(findings) else ExitCode.OK
 
 
-def _attest(cwd: Path, verify: str | None = None, write: list[str] | None = None) -> int:
+def _attest(cwd: Path, verify: str | None = None, write: list[str] | None = None,
+            require_verified: bool = False) -> int:
     """`tycho attest [--verify REF | --write MSGFILE [SOURCE]]`. Bare: print the trailer for
     what's staged. `--verify` exits MISMATCH only on a genuine mismatch, never on "cannot tell" —
     a pruned record must not read as a forged one. `--write` can never fail a commit."""
@@ -399,7 +406,7 @@ def _attest(cwd: Path, verify: str | None = None, write: list[str] | None = None
     if write:
         return attest_mod.main(write)
     if verify:
-        ok, text = attest_mod.verify(repo, verify)
+        ok, text = attest_mod.verify(repo, verify, require_verified=require_verified)
         print(text)
         return ExitCode.MISMATCH if ok is False else ExitCode.OK
     line = attest_mod.trailer(repo)
