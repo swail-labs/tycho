@@ -727,3 +727,75 @@ def test_freshness_ignores_an_mtime_from_the_future():
 
 def test_freshness_still_reports_a_real_edit_after_the_run():
     assert checks.test_freshness(_freshness_session(1060.0)).status == CheckStatus.STALE
+
+
+# --- runners that prove nothing ----------------------------------
+
+@pytest.mark.parametrize("cmd", [
+    "pytest --collect-only -q",
+    "pytest --co",
+    "cargo test --no-run",
+    "tox -e lint",
+    "pytest --version",
+    "jest --listTests",
+    "npm test -- --listTests",
+])
+def test_discovery_runs_are_not_passing_test_runs(cmd):
+    # These exit 0 having proved nothing. Read as a green run they fabricate a green — and
+    # `tox -e lint` additionally sets the "last passing run" both test_* checks measure against.
+    assert checks._runner_segment(cmd) is None, cmd
+    s = make_session(
+        events=[bash(cmd, 100.0, is_error=False)],
+        edits=[FileEdit("src/a.py", 90.0, "x", "edit")],
+        files={"src/a.py": FileState("src/a.py", True, 95.0, "x")},
+    )
+    assert checks.command_execution(s).status == CheckStatus.UNSUPPORTED
+    assert checks.test_freshness(s).status == CheckStatus.UNSUPPORTED
+    assert engine.verdict_of(engine.run_checks(s)) is not Verdict.VERIFIED
+
+
+@pytest.mark.parametrize("cmd", [
+    "pytest -q", "pytest -v", "pytest -n 4", "tox -e py311", "tox -e unit", "cargo test",
+])
+def test_real_runs_are_still_recognized(cmd):
+    assert checks._runner_segment(cmd) is not None, cmd
+
+
+def test_a_narrowed_green_rerun_does_not_erase_a_red_suite():
+    # The standard agent loop: run the suite, see red, narrow to the failing file, go green,
+    # stop. Reporting the last runner's success VERIFIED the turn and named the red run nowhere.
+    s = make_session(events=[
+        bash("pytest -q", 100.0, is_error=True),
+        bash("pytest -q tests/test_new.py", 200.0, is_error=False),
+    ])
+    r = checks.command_execution(s)
+    assert r.status == CheckStatus.UNSUPPORTED and "never re-run" in r.evidence
+    assert engine.verdict_of(engine.run_checks(s)) is not Verdict.VERIFIED
+    assert checks._last_green_run_ts(s) is None
+
+
+def test_the_same_command_re_run_green_supersedes_its_own_failure():
+    # A genuine fix, re-run the same way, is exactly what should read as green.
+    s = make_session(events=[
+        bash("pytest -q", 100.0, is_error=True),
+        bash("pytest -q", 200.0, is_error=False),
+    ])
+    assert checks.command_execution(s).status == CheckStatus.PASS
+    assert checks._last_green_run_ts(s) == 200.0
+
+
+@pytest.mark.parametrize("cmd", [
+    "uv run --group test pytest -q",
+    "uv run --extra test pytest",
+    "uv run --with-editable . pytest",
+    "uv run --env-file .env pytest",
+    "timeout 300 pytest -q",
+    "hatch run test",
+    "deno test",
+    "bun test",
+])
+def test_unknown_wrapper_flags_do_not_hide_the_runner(cmd):
+    # An allowlist of value-taking flags is a list we are always behind: any unknown one's
+    # value shadowed the real command, and with no file edits the turn went entirely silent.
+    assert checks._runner_segment(cmd) is not None, cmd
+    assert checks.has_verifiable_activity(make_session(events=[bash(cmd, 100.0, is_error=True)]))

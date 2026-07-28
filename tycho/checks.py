@@ -56,7 +56,23 @@ _TEST_RUNNERS = (
     "dart test",
     "flutter test",
     "tox",
+    "deno test",
+    "bun test",
+    "hatch run test",
 )
+
+# Flags that make a runner *not run the suite*: it lists, compiles, or prints and exits 0.
+# Read as a passing run they fabricate a green — and `tox -e lint` additionally sets the
+# "last passing run" that both `test_*` checks measure against. Matched as whole tokens:
+# `-n` is xdist parallelism, not a dry run, and must never land here.
+# `-V` is version, `-v` is verbose on every runner there is — only the first belongs here.
+_DISCOVERY_FLAGS = frozenset({
+    "--collect-only", "--co", "--no-run", "--listtests", "--list-tests", "--list",
+    "--dry-run", "--version", "-V", "--help", "-h", "--fixtures", "--markers",
+})
+# `tox -e <env>` runs whatever that env does — `tox -e lint` is a linter. Only an env that
+# names itself a test env counts; anything else is "can't tell", the safe direction.
+_TOX_TEST_ENV = re.compile(r"py[\d.]*$|test|unit|integration", re.IGNORECASE)
 
 # Not Bash-only: a PowerShell/Shell tool runs `pytest` just the same, and filtering them out
 # makes those runs invisible to every check.
@@ -68,12 +84,12 @@ _SHELL_TOOLS = frozenset({"Bash", "Shell", "sh", "PowerShell", "powershell", "pw
 _RUN_WRAPPERS = ("uv run", "uvx", "poetry run", "pdm run", "hatch run", "rye run", "npx", "pnpm dlx", "bunx")
 _PHRASE_RUNNERS = tuple(r for r in _TEST_RUNNERS if " " in r)
 _BARE_RUNNERS = frozenset(r for r in _TEST_RUNNERS if " " not in r)
-# Wrapper flags whose *next* token is a value, not the command. `--with pytest` installs
-# pytest; it does not run it. Anything else starting with `-` is treated as a boolean flag,
-# so an unknown one never swallows the command that follows it.
-_WRAPPER_VALUE_FLAGS = frozenset({
-    "--with", "--from", "--python", "-p", "--index", "--index-url", "--extra-index-url",
-    "--constraint", "--override", "--package", "--project", "--directory", "--refresh-package",
+# Wrapper flags whose next token *installs* something rather than running it: `--with pytest`
+# is why `uv run --with pytest ruff check` must not read as a test run. Everything else is
+# scanned past — an allowlist of every flag uv might grow is a list we'd always be behind, and
+# being behind it made `uv run --group test pytest` invisible.
+_INSTALL_VALUE_FLAGS = frozenset({
+    "--with", "--from", "--with-editable", "--with-requirements", "-p", "--package",
 })
 
 # `<python> -m <module>` — the module IS the runner, so a variable-indirected interpreter
@@ -124,8 +140,31 @@ def _normalize_segment(segment: str) -> str:
     return segment
 
 
+def _is_discovery(segment: str) -> bool:
+    """True when the segment lists, compiles or prints instead of running the suite.
+
+    `pytest --collect-only`, `cargo test --no-run`, `jest --listTests`, `tox -e lint` all exit
+    0 having proved nothing; counted as a passing run they fabricate a green.
+    """
+    tokens = segment.split()
+    if any(t.split("=", 1)[0].lower() in _DISCOVERY_FLAGS for t in tokens):
+        return True
+    if tokens and tokens[0] == "tox":
+        envs = next(
+            (t.split("=", 1)[1] if "=" in t else nxt
+             for t, nxt in zip(tokens, tokens[1:] + [""])
+             if t in ("-e", "--env") or t.startswith(("-e=", "--env="))),
+            None,
+        )
+        if envs is not None:
+            return not any(_TOX_TEST_ENV.search(e) for e in envs.split(","))
+    return False
+
+
 def _is_runner(segment: str) -> bool:
     """True if this already-normalized segment invokes a test/build runner."""
+    if _is_discovery(segment):
+        return False
     java_runner = segment.startswith("java ") and ("junit" in segment.lower() or "testng" in segment.lower())
     if java_runner or any(segment == r or segment.startswith(f"{r} ") for r in _TEST_RUNNERS):
         return True
@@ -144,22 +183,27 @@ def _is_runner(segment: str) -> bool:
     # A multi-word runner phrase anywhere after the wrapper (`uv run … python -m pytest`).
     if any(f" {r} " in f" {segment} " for r in _PHRASE_RUNNERS):
         return True
-    # Otherwise find the wrapper's *own* command: skip its flags, and skip the value of a
-    # flag that takes one. That value is the whole difficulty — in `uv run --with pytest
-    # pytest -q` the first "pytest" is an install argument and the second is the command,
-    # and a plain substring search cannot tell them apart. Requiring a multi-word phrase
-    # used to be the guard against reading `--with pytest ruff check` as a test run; it also
-    # made every `uv run --with pytest pytest -q` invisible, which is how a real repo's whole
-    # test-check family went dark while the eval reported 100%.
-    skip = False
+    # Otherwise find the wrapper's *own* command. The difficulty is one token: in `uv run
+    # --with pytest pytest -q` the first "pytest" is an install argument and the second is the
+    # command. So the value of an *install* flag is skipped outright, and everything else is
+    # scanned — a token right after an unknown flag may be that flag's value (`--group test`)
+    # or the command itself, and the scan decides at the first position where the previous
+    # token cannot have taken a value.
+    prev_was_flag = False
+    skip_next = False
     for token in segment[len(wrapper):].split():
-        if skip:
-            skip = False
+        if skip_next:
+            skip_next = prev_was_flag = False
             continue
         if token.startswith("-"):
-            skip = token in _WRAPPER_VALUE_FLAGS and "=" not in token
+            skip_next = token in _INSTALL_VALUE_FLAGS and "=" not in token
+            prev_was_flag = not skip_next
             continue
-        return token in _BARE_RUNNERS  # the first non-flag token IS the command
+        if token in _BARE_RUNNERS:
+            return True
+        if not prev_was_flag:
+            return False  # this is the wrapper's command, and it isn't a runner
+        prev_was_flag = False  # an unknown flag's value, or the command — the next one decides
     return False
 
 
@@ -185,6 +229,12 @@ def _unwrap(segment: str) -> str | None:
     if head in _DASHDASH_WRAPPERS and "--" in parts:
         rest = parts[parts.index("--") + 1 :]
         return shlex.join(rest) if rest else None
+
+    # `timeout [flags] <duration> <cmd...>` — agents wrap long suites in it routinely.
+    if head == "timeout":
+        rest = [t for t in parts[1:] if not t.startswith("-")]
+        if len(rest) >= 2 and re.fullmatch(r"[\d.]+[smhd]?", rest[0]):
+            return shlex.join(rest[1:])
 
     # `<shell> ... -c '<cmd>'`
     if head in _C_SHELLS:
@@ -395,7 +445,41 @@ def command_execution(session: Session) -> CheckResult:
         via = " (read from its output — exit status masked by the shell)" if masked else ""
     if outcome:
         return _r("command_execution", CheckStatus.FAIL, f"`{cmd}` ran but reported an error{via}")
+    unresolved = [e for e in _unresolved_reds(session.turn_events, session.commands) if e.ts < last.ts]
+    if unresolved:
+        red = _short(_runner_segment(unresolved[0].input.get("command", "")) or "")
+        return _r(
+            "command_execution",
+            CheckStatus.UNSUPPORTED,
+            f"`{red}` reported an error earlier this {_scope(session)} and was never re-run —"
+            f" `{cmd}` passed but is a different command, so it can't stand in for it",
+        )
     return _r("command_execution", CheckStatus.PASS, f"`{cmd}` ran without error{via}")
+
+
+def _unresolved_reds(events, commands) -> list:
+    """Failed runner invocations with no later green re-run of the *same* command.
+
+    Run the suite, see red, narrow to the one failing file, go green, stop — the standard agent
+    loop. Taking the last runner's success at face value reported that as VERIFIED and
+    mentioned the red suite nowhere. A re-run of the same argv legitimately supersedes; a
+    narrower one does not.
+    """
+    runs = sorted(_runner_events(events), key=lambda e: e.ts)
+    reds = []
+    for e in runs:
+        if _outcome(e, commands) is not True:
+            continue
+        argv = _runner_segment(e.input.get("command") or "")
+        if any(
+            later.ts > e.ts
+            and _outcome(later, commands) is False
+            and _runner_segment(later.input.get("command") or "") == argv
+            for later in runs
+        ):
+            continue
+        reds.append(e)
+    return reds
 
 
 def test_freshness(session: Session) -> CheckResult:
@@ -728,7 +812,14 @@ def _runner_events(events) -> list:
 def _last_green_run_ts(session: Session) -> float | None:
     # Session-scoped on purpose: a run three turns back still covers a source that hasn't
     # changed since, and freshness/provenance are the checks whose job is to reason across turns.
-    greens = [e.ts for e in _runner_events(session.events) if _outcome(e, session.commands) is False]
+    # A green that follows an unresolved red run doesn't cover the tree either — it is the
+    # narrowed re-run, not the suite.
+    reds = _unresolved_reds(session.events, session.commands)
+    greens = [
+        e.ts
+        for e in _runner_events(session.events)
+        if _outcome(e, session.commands) is False and not any(r.ts < e.ts for r in reds)
+    ]
     return max(greens) if greens else None
 
 
