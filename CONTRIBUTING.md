@@ -19,6 +19,16 @@ pip install -e ".[dev]"       # or: uv pip install -e ".[dev]"
 
 Both run in CI (Linux, Python 3.11 / 3.12 / 3.13) on every pull request.
 
+## Repository layout
+
+| | |
+|---|---|
+| `tycho/` | the package — `verify.py` is the engine, `checks.py` the checks, `hook.py` the Stop entrypoint |
+| `tests/` | one file per surface; `test_eval.py` is the catch-rate/false-alarm harness |
+| `packaging/` | the npm wrapper and Homebrew formula |
+| `scripts/` | contributor helpers. `tycho-target.ps1.example` flips this repo's own hooks between `.venv` and `.venv-release` — copy it to `scripts/tycho-target.ps1` (gitignored) |
+| `assets/` | logos |
+
 ## Design invariants (don't break these)
 
 - **Never blocks.** The Stop hook (`hook.py`) always exits 0 and fails open (returns `None`)

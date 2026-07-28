@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="swail-logo-rounded.png" alt="Swail" width="96">
+<img src="assets/swail-logo-rounded.png" alt="Swail" width="96">
 
 # Tycho
 
