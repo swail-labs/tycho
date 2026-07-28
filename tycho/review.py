@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import checks as checks_mod
+from . import config as config_mod
 from . import gitstate
 from . import record as record_mod
 from . import state
@@ -272,9 +273,19 @@ def _untracked_hunks(repo: Path) -> tuple[gitstate.Hunk, ...]:
 
 
 def _is_own_state(repo: Path, path: str) -> bool:
-    """Tycho's own `.tycho/` directory. It is not gitignored, so an un-init'd repo would
-    otherwise open every review with our own noise."""
-    return path.replace("\\", "/").startswith(state.dir_for(repo).name + "/")
+    """Everything `tycho init` writes — ours to install, never the user's code to review.
+
+    Measured on a freshly-initialised repo: 21 of 24 hunks were Tycho's own files (the
+    settings file, the config, and 19 slash-command docs), so the first review a new user
+    ever ran was almost entirely Tycho reporting on itself. `.tycho/` is gitignored by init
+    now, but only from the moment it runs — a repo mid-install still shows it.
+    """
+    p = path.replace("\\", "/")
+    return (
+        p.startswith(state.dir_for(repo).name + "/")
+        or p.startswith(".claude/")
+        or p == config_mod.CONFIG_NAME
+    )
 
 
 def _size_of(path: Path) -> tuple[int, bool]:

@@ -417,3 +417,19 @@ def test_review_never_credits_a_run_recorded_before_the_edit_end_to_end(tmp_path
     write_record(repo, files=[("src.py", 500.0)], started=490.0, ended=510.0)
     out = "\n".join(review.review(repo))
     assert "UNEXERCISED" in out and "no recorded command ran after it" in out
+
+
+def test_review_ignores_everything_tycho_init_wrote(tmp_path: Path):
+    """A fresh install must not open the user's first review with 21 hunks of our own files.
+
+    `.claude/` (settings + 19 slash-command docs) and `.tycho.toml` are ours to install, not
+    the user's code to review — measured at 21 of 24 hunks on a freshly-initialised repo.
+    """
+    from tycho import review as review_mod
+
+    for path in (".tycho/turns.jsonl", ".claude/settings.json",
+                 ".claude/commands/tycho-verify.md", ".tycho.toml"):
+        assert review_mod._is_own_state(tmp_path, path), f"{path} should be filtered out"
+    for path in ("src/app.py", ".github/workflows/ci.yml", "claude/notes.md",
+                 "docs/.tycho.toml"):
+        assert not review_mod._is_own_state(tmp_path, path), f"{path} is the user's"
