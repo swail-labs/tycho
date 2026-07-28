@@ -411,6 +411,20 @@ def test_freshness_ignores_prose_edited_after_run():
     assert checks.test_freshness(s).status == CheckStatus.UNSUPPORTED
 
 
+def test_freshness_ignores_a_file_outside_the_repo():
+    """An edit outside the repo stays absolute so `scope_drift` can flag it — and
+    `_file_state` resolves that absolute path to a real mtime. Read as staleness, an agent
+    touching a scratch file in /tmp pinned the repo STALE about a file the suite was never
+    going to cover. Caught on Tycho's own repo mid-session."""
+    outside = "/private/tmp/scratch/batch.json"
+    s = make_session(
+        events=[bash("pytest -q", 100.0)],
+        edits=[FileEdit(outside, ts=110.0, original="x", kind="edit")],
+        files={outside: FileState(outside, True, mtime=200.0, current_text="x")},
+    )
+    assert checks.test_freshness(s).status == CheckStatus.UNSUPPORTED
+
+
 def test_freshness_still_stale_when_a_lockfile_changes_after_run():
     """The exclusion must stay narrow: a dependency change really can break tests."""
     s = make_session(

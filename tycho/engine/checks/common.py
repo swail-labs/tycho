@@ -46,8 +46,17 @@ def _is_prose_path(path: str) -> bool:
 
 
 def _is_source_path(path: str) -> bool:
-    """True for a file a test run actually covers — not a test, not prose."""
-    return not _is_test_path(path) and not _is_prose_path(path)
+    """True for a file *this repo's* test run actually covers — not a test, not prose, and
+    not outside the repo.
+
+    The repo bound is load-bearing, not tidiness. `_relpath` deliberately leaves an
+    out-of-repo edit absolute so `scope_drift` can flag it, and `_file_state` then resolves
+    that absolute path to a real mtime — so without this, an agent that touched a scratch
+    file in /tmp pinned the repo STALE, citing "edited 195s after the last passing test run"
+    about a file the suite was never going to cover. Caught on Tycho's own repo. Editing
+    outside the repo is `scope_drift`'s to report; it is not staleness.
+    """
+    return _is_in_repo(path) and not _is_test_path(path) and not _is_prose_path(path)
 
 
 # The naming conventions that make a file a test. Deliberately the same vocabulary the repo
@@ -96,6 +105,8 @@ def _is_test_edit(fe, session) -> bool:
     Note this does not make the file stop being a *source* file: `src/lib.rs` is both, and
     `_is_source_path` stays path-based so editing it after a green run is still STALE.
     """
+    if not _is_in_repo(fe.path):
+        return False  # someone else's test file — this repo's runner never saw it
     if _is_test_path(fe.path):
         return True
     fs = session.files.get(fe.path) if session is not None else None

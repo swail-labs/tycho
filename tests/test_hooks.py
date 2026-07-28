@@ -4,6 +4,7 @@ import io
 import json
 import os
 import sqlite3
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -195,7 +196,10 @@ def test_codex_session_scope_catches_a_source_uncovered_since_an_earlier_green_r
     UNSUPPORTED. With every turn returned, the earlier green run is visible and the
     later, untested source edit reports STALE."""
     evs = events.parse_codex(CODEX_FIXTURE)
-    edits = tuple(events.file_edits(evs))
+    # Repo-relative, as `gather()` makes them: a path left absolute reads as *outside* /repo,
+    # which is `scope_drift`'s business and not staleness.
+    edits = tuple(replace(e, path=engine._relpath(e.path, Path("/repo")))
+                  for e in events.file_edits(evs))
     app = next(e.path for e in edits if e.path.endswith("src/app.py"))
     green = events._epoch("2026-07-14T18:00:02.000Z")  # the turn-old pytest run
     session = Session(
