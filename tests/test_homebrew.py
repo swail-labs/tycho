@@ -6,6 +6,7 @@ sha256 breaks `brew install` for everyone, and nothing upstream of the tap would
 
 import importlib.util
 import re
+import sys
 from pathlib import Path
 
 import pytest
@@ -90,5 +91,10 @@ def test_both_publish_paths_call_the_same_script():
     for name in ("release.yml", "homebrew-tap.yml"):
         text = (workflows / name).read_text(encoding="utf-8")
         assert "packaging/homebrew/publish.sh" in text, f"{name} no longer calls publish.sh"
-    # Executable, or the runner's `run:` step dies with permission denied.
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="no executable bit on Windows")
+def test_publish_script_is_executable():
+    # Both workflows invoke it as a bare path, so a lost +x is "permission denied" mid-release —
+    # after the binaries are already attached and PyPI has already published.
     assert _PUBLISH.stat().st_mode & 0o111, "publish.sh must be executable"
