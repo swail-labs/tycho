@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shlex
 import sys
 from collections.abc import Sequence
 from enum import IntEnum
@@ -477,6 +478,26 @@ def _is_homebrew_install() -> bool:
     return "/cellar/tycho/" in real
 
 
+# The README's one-liner. `https://swail.dev/install.sh` (what install.sh's own header used to
+# claim) answers 405 — the path is /tycho/.
+_INSTALLER_URL = "https://swail.dev/tycho/install.sh"
+
+
+def _reinstall_command() -> list[str]:
+    """Re-run the installer against the directory this binary already occupies.
+
+    `install.sh` verifies the download against the release's SHA256SUMS and then overwrites
+    `<dir>/tycho` in place, so a re-run *is* the upgrade — there's nothing else to call.
+
+    The directory is passed explicitly rather than left to the installer's `~/.local/bin` default:
+    `TYCHO_INSTALL_DIR` lets the binary live anywhere, and defaulting would write a second copy to
+    `~/.local/bin` while the one actually on PATH stayed stale — an upgrade that reports success
+    and changes nothing.
+    """
+    dest = os.path.dirname(os.path.realpath(sys.executable))
+    return ["sh", "-c", f"curl -fsSL {_INSTALLER_URL} | TYCHO_INSTALL_DIR={shlex.quote(dest)} sh"]
+
+
 def _upgrade_command(force: bool = False) -> list[str]:
     """The upgrade command for however Tycho was installed — best-effort from the install
     path. Falls back to pip, which works for a plain `pip install` (TYCHO-10).
@@ -496,6 +517,13 @@ def _upgrade_command(force: bool = False) -> list[str]:
     would fall through to a `pip install` it can't run (no bundled pip). Homebrew
     installs a bare binary with no wrapper to set that variable, so it's detected from the install
     path instead — ``TYCHO_INSTALL=brew`` still works for anyone who wants to force it.
+
+    Anything else frozen came from `install.sh` (the README's curl one-liner) or a hand-downloaded
+    release asset. Neither leaves a marker, but neither needs one: a frozen binary that is not npm
+    and not Homebrew has no other way to upgrade itself, so re-running the installer IS the
+    channel. Without this branch it fell through to the pip default and ran
+    ``<the binary> -m pip install --upgrade tycho-cli`` — the binary invoked with pip's arguments,
+    which no standalone build can serve. ``TYCHO_INSTALL=direct`` forces it.
     """
     from . import version as version_mod
 
@@ -508,6 +536,10 @@ def _upgrade_command(force: bool = False) -> list[str]:
         # `--force` to cross here, since the formula pins the version, not the user.
         target = "swail-labs/tap/tycho"
         return ["brew", "reinstall", target] if force else ["brew", "upgrade", target]
+    # `install.sh` is POSIX-only, so a frozen Windows binary has no installer to re-run and keeps
+    # the old fallback; the npm wrapper is the supported standalone channel there.
+    if channel == "direct" or (getattr(sys, "frozen", False) and sys.platform != "win32"):
+        return _reinstall_command()
 
     pkg = version_mod._DIST_NAME or "tycho-cli"
     prefix = sys.prefix.replace("\\", "/").lower()

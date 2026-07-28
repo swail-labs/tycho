@@ -1,7 +1,7 @@
 #!/bin/sh
 # Tycho installer — https://swail.dev
 #
-#   curl -fsSL https://swail.dev/install.sh | sh
+#   curl -fsSL https://swail.dev/tycho/install.sh | sh
 #
 # Downloads the standalone Tycho binary for your platform from the GitHub Release, verifies it
 # against the release's SHA256SUMS, and installs `tycho` to ~/.local/bin. No Python required;
