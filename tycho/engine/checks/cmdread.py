@@ -237,6 +237,35 @@ def _runs_a_test_file(segment: str) -> bool:
     return any(_is_test_path(t) for t in tokens[1:] if not t.startswith("-"))
 
 
+def _phrase_end(tokens: list[str], phrase: list[str]) -> int:
+    """Index just past `phrase` in `tokens`, allowing the tool's own flags between its words;
+    0 when it isn't there.
+
+    `mvn -q test` is a test run and an exact prefix match said it wasn't — a whole honest Maven
+    turn came back "no test/build command ran this turn", which disarms the three checks that
+    need a passing run. Same shape in `gradle --offline test` and `npm run --silent test`.
+
+    Only `-`-prefixed tokens are skipped, and the first token that isn't a flag has to be the
+    next word of the phrase. That is what keeps `cargo build --features test` out: the first
+    non-flag after `cargo` is `build`, so the match stops there rather than walking on to find
+    a `test` that is a flag's value, not a subcommand.
+
+    A flag that takes its value as the next token carries that token with it, or `uv run --with
+    pytest ruff check` matches `uv run pytest` — the install argument read as the command, which
+    is the same trap the wrapper scan below already guards.
+    """
+    i = 0
+    for word in phrase:
+        while i < len(tokens) and tokens[i].startswith("-") and tokens[i] != word:
+            if tokens[i] in _INSTALL_VALUE_FLAGS:
+                i += 1
+            i += 1
+        if i >= len(tokens) or tokens[i] != word:
+            return 0
+        i += 1
+    return i
+
+
 def _runner_span(segment: str) -> tuple[int, int] | None:
     """Token span of the runner phrase within a normalized segment, or None.
 
@@ -250,9 +279,9 @@ def _runner_span(segment: str) -> tuple[int, int] | None:
     # Longest direct match wins, so `python -m pytest` isn't read as the shorter `pytest`.
     longest = 0
     for runner in _TEST_RUNNERS:
-        phrase = runner.split()
-        if tokens[:len(phrase)] == phrase:
-            longest = max(longest, len(phrase))
+        end = _phrase_end(tokens, runner.split())
+        if end:
+            longest = max(longest, end)
     if longest:
         return 0, longest
     # `<interpreter> -m pytest`, guarded so `echo -m pytest` doesn't count.

@@ -1377,3 +1377,62 @@ def test_mock_injection_is_caught_outside_python():
     result = checks.skip_mock_injection(_edit("api.test.js", before, after))
     assert result.status is CheckStatus.FAIL
     assert "mock/stub use(s) added" in result.evidence
+
+
+@pytest.mark.parametrize("path, before, after, marker", [
+    # Each of these is what an agent actually wrote in a dogfood session to silence a failing
+    # test. The documented spelling matched; what got typed did not.
+    ("lib_test.rs", "#[test]\nfn accents() { assert_eq!(slug(), \"a\"); }\n",
+     "#[test]\n#[ignore = \"out of scope this sprint\"]\nfn accents() { assert_eq!(slug(), \"a\"); }\n",
+     "#[ignore = ...]"),
+    ("test/slug_test.dart", "test('accents', () {\n  expect(slug(), equals('a'));\n});\n",
+     "test('accents', () {\n  expect(slug(), equals('a'));\n}, skip: 'out of scope');\n",
+     "skip: '<reason>'"),
+    ("slug_test.ts", "Deno.test(\"accents\", () => {\n  assertEquals(slug(), \"a\");\n});\n",
+     "Deno.test.ignore(\"accents\", () => {\n  assertEquals(slug(), \"a\");\n});\n",
+     "Deno.test.ignore"),
+])
+def test_the_skip_forms_agents_actually_write_are_caught(path, before, after, marker):
+    result = checks.skip_mock_injection(_edit(path, before, after))
+    assert result.status is CheckStatus.FAIL, f"{marker} in {path}: {result.evidence}"
+
+
+def test_deno_declares_tests_under_a_prefix():
+    """`Deno.test(...)` is a test case. Read as none, deleting the whole suite is invisible."""
+    from tycho.engine import textdiff
+
+    src = "Deno.test(\"basic\", () => {\n  assertEquals(slug(), \"a\");\n});\n"
+    assert textdiff.contains_tests("slug_test.ts", src) is True
+    assert textdiff.assertion_delta("slug_test.ts", src, "") != []
+
+
+@pytest.mark.parametrize("command, is_runner", [
+    ("mvn -q test", True),          # a real Maven turn; the exact-prefix match said no runner ran
+    ("gradle --offline test", True),
+    ("npm run --silent test", True),
+    ("cargo build --features test", False),  # `test` here is a flag's value, not a subcommand
+    ("make -f build.mk test", False),        # can't tell `-f`'s value from a subcommand: stay quiet
+    ("echo mvn test", False),
+])
+def test_a_tools_own_flags_may_sit_between_it_and_its_subcommand(command, is_runner):
+    from tycho.engine.checks import cmdread
+
+    assert cmdread._is_runner(cmdread._normalize_segment(command)) is is_runner
+
+
+@pytest.mark.parametrize("path", ["tests/test_slug.c", "tests/test_slug.cpp"])
+def test_the_c_family_is_read_rather_than_left_unread(path):
+    """A `make test`/`ctest` turn is otherwise blocked from VERIFIED forever: with no reader
+    for the edited test, an honest C session returns a blocking UNSUPPORTED on every turn."""
+    before = "int main(void) {\n    assert(strcmp(buf, \"hello-world\") == 0);\n    return 0;\n}\n"
+    after = "int main(void) {\n    return 0;\n}\n"
+    result = checks.assertion_weakening(_edit(path, before, after))
+    assert result.status is CheckStatus.FAIL
+    assert "assertion(s) removed" in result.evidence
+
+
+def test_gtest_skip_is_caught():
+    before = "TEST(Slug, Accents) {\n  EXPECT_EQ(slugify(\"a\"), \"a\");\n}\n"
+    after = "TEST(Slug, Accents) {\n  GTEST_SKIP() << \"out of scope\";\n  EXPECT_EQ(slugify(\"a\"), \"a\");\n}\n"
+    result = checks.skip_mock_injection(_edit("test_slug.cc", before, after))
+    assert result.status is CheckStatus.FAIL

@@ -48,9 +48,16 @@ _SPEC = {
     },
     "javascript": {
         "suffixes": (".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"),
-        "test": r"^\s*(?:it|test)\s*(?:\.\w+)?\s*\(",
+        # Deno declares tests as `Deno.test(...)`, which the bare `test(` rule misses because
+        # of the prefix — its whole suite read as zero test cases.
+        "test": r"^\s*(?:it|test)\s*(?:\.\w+)?\s*\(|\bDeno\.test\s*(?:\.\w+)?\s*[({]",
         "assert": r"\bexpect\s*\(|\bassert\s*[.(]|\.should\b",
-        "skip": r"\b(?:it|test|describe)\.(?:skip|todo)\s*\(|^\s*x(?:it|test|describe)\s*\(",
+        # Three runners, three spellings of the same act: jest/vitest `.skip`, Deno's
+        # `Deno.test.ignore` and `{ ignore: true }`, and node:test's `t.skip()`.
+        "skip": (
+            r"\b(?:it|test|describe)\.(?:skip|todo)\s*\(|^\s*x(?:it|test|describe)\s*\("
+            r"|\bDeno\.test\.ignore\s*\(|\bignore:\s*true\b|\b\w+\.skip\s*\(\s*\)"
+        ),
         "comment": r"//",
         "neutral": r"expect\s*\(\s*(?:true|1)\s*\)\s*\.\s*to(?:Be|Equal)\s*\(\s*(?:true|1)\s*\)|assert\s*\.\s*ok\s*\(\s*true\s*\)",
         "mock": r"\bjest\.mock\s*\(|\bsinon\.(?:stub|mock|fake)\b|\bvi\.mock\s*\(|\bmockResolvedValue\b",
@@ -77,7 +84,9 @@ _SPEC = {
         "suffixes": (".rs",),
         "test": r"#\[(?:test|rstest|tokio::test)\]",
         "assert": r"\bassert(?:_eq|_ne)?!|\bpanic!",
-        "skip": r"#\[ignore\]",
+        # `\b`, not `\]`: the documented spelling is `#[ignore]` but what an agent writes is
+        # `#[ignore = "out of scope this sprint"]`, and that reached VERIFIED in a real session.
+        "skip": r"#\[ignore\b",
         "comment": r"//",
         "neutral": r"\bassert!\s*\(\s*true\s*\)|\bassert_eq!\s*\(\s*(\d+)\s*,\s*\1\s*\)",
         "mock": r"\bmockall\b|\bMockAll\b|\bfake\w*::",
@@ -109,11 +118,27 @@ _SPEC = {
         "neutral": r"\bXCTAssertTrue\s*\(\s*true\s*\)",
         "mock": r"\bMock\w+\(\)|\bStub\w+\(\)",
     },
+    # One entry for C and C++: the test frameworks (gtest, Catch2, Unity, Criterion) are shared
+    # across both, and plain `assert()` in a `main()` is still how a lot of C suites are written.
+    "c_family": {
+        "suffixes": (".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".hh", ".hxx"),
+        "test": r"^\s*(?:TEST(?:_F|_P)?|TEST_CASE|SCENARIO|Test)\s*\(|^\s*void\s+test\w*\s*\(",
+        "assert": (
+            r"\bassert\s*\(|\b(?:EXPECT|ASSERT)_\w+\s*\(|\bREQUIRE\w*\s*\(|\bCHECK\w*\s*\("
+            r"|\bTEST_ASSERT\w*\s*\(|\bcr_assert\w*\s*\("
+        ),
+        "skip": r"\bGTEST_SKIP\s*\(|\bDISABLED_|\bTEST_IGNORE\w*\b|\bSKIP\s*\(",
+        "comment": r"//",
+        "neutral": r"\bassert\s*\(\s*(?:1|true)\s*\)|\bEXPECT_TRUE\s*\(\s*true\s*\)",
+        "mock": r"\bMOCK_METHOD\w*\s*\(|\bgmock\b|\bNiceMock\b|\bFAKE_V\w*\s*\(",
+    },
     "dart": {
         "suffixes": (".dart",),
         "test": r"^\s*(?:test|testWidgets)\s*\(",
         "assert": r"\bexpect\s*\(|\bassert\s*\(",
-        "skip": r"\bskip:\s*true",
+        # `skip:` takes `true` or a reason string, and the agent that silenced a failing test
+        # in a real session wrote the string form.
+        "skip": r"\bskip:\s*(?:true|['\"])",
         "comment": r"//",
         "neutral": r"\bexpect\s*\(\s*true\s*,\s*(?:isTrue|true)\s*\)",
         "mock": r"\bMock\w+\(\)|\bwhen\s*\(",
