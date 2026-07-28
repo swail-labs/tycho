@@ -44,8 +44,8 @@ def gather(
     ``turn_start`` to scope the whole transcript, which is what a manual audit wants."""
     events = (parse or events_mod.parse)(transcript)
     msgs = (messages or events_mod.assistant_messages)(transcript)
-    # Harness transcripts record absolute paths; git and scope globs speak repo-relative.
-    # Normalize once here (an edit outside the repo stays absolute — scope_drift flags it).
+    # Transcripts record absolute paths; git and scope globs speak repo-relative. An edit
+    # outside the repo stays absolute, so scope_drift flags it.
     edits = tuple(
         _with_baseline(replace(fe, path=_relpath(fe.path, repo)), repo, since)
         for fe in events_mod.file_edits(events)
@@ -68,13 +68,12 @@ def gather(
 
 
 def _evidence_floor(events, edits, turn_start: float) -> float:
-    """The earliest moment a `tycho exec` run may still count as evidence for this session.
+    """The earliest moment a `tycho exec` run may still count as evidence here.
 
-    `.tycho/commands.jsonl` is repo-scoped and long-lived, so read unbounded it would offer
-    yesterday's green `pytest` as proof of today's claim. The floor is the turn boundary,
-    else the session's first timestamp, else **0.0 meaning admit nothing** (`command.read`
-    returns () for 0.0). Deliberately *not* an "older than N hours" rule: that would make
-    the verdict depend on when you ran the verifier."""
+    `commands.jsonl` is long-lived, so unbounded it offers yesterday's green `pytest` as proof
+    of today's claim. The turn boundary, else the session's first timestamp, else 0.0 = admit
+    nothing. Not an "older than N hours" rule — that makes the verdict depend on when you ran
+    the verifier."""
     if turn_start:
         return turn_start
     stamps = [e.ts for e in events if e.ts] + [fe.ts for fe in edits if fe.ts]
@@ -95,11 +94,9 @@ _SUFFIX_TEST_EXTENSIONS = {
 def _has_tests(repo: Path) -> bool:
     """Recognize conventional test files without walking dependencies or build output.
 
-    A *yes* is remembered in `.tycho/`, because this runs on the Stop-hook hot path every turn
-    and the answer changes about once in a repo's life (a 4,000-file Rust tree re-read 76 MB
-    each time, looking for `#[test]`). Only the yes is cached: a stale "this repo has no
-    tests" would disable the whole test-check family the moment the first test lands, and no
-    cheap key detects a file appearing anywhere in a tree.
+    A *yes* is cached in `.tycho/`: this runs every turn on the hot path and the answer changes
+    once in a repo's life (a 4,000-file Rust tree re-read 76 MB each time). Only the yes — a
+    stale "no tests" disables the whole test-check family the moment the first test lands.
     """
     marker = state.dir_for(repo) / _HAS_TESTS_MARKER
     try:
@@ -109,7 +106,7 @@ def _has_tests(repo: Path) -> bool:
         pass
     if _walk_for_tests(repo):
         try:
-            if marker.parent.is_dir():  # only where Tycho is installed; never create a dir here
+            if marker.parent.is_dir():  # only where Tycho is installed
                 marker.touch()
         except OSError:
             pass
@@ -146,9 +143,8 @@ def _walk_for_tests(repo: Path) -> bool:
 
 
 def _with_baseline(fe: FileEdit, repo: Path, since: str) -> FileEdit:
-    """Recover the pre-edit baseline from git when the harness omitted it: Claude Code sends
-    ``originalFile: null`` on a file's *repeat* edits, which would leave the AST tamper
-    checks with no "before" and silently UNSUPPORTED while appearing to run."""
+    """Recover the pre-edit baseline from git when the harness omitted it. Claude Code sends
+    ``originalFile: null`` on repeat edits, leaving the AST checks silently UNSUPPORTED."""
     if fe.original is not None or not checks_mod._is_in_repo(fe.path):
         return fe
     blob = gitstate.blob_at(repo, since, fe.path)
@@ -158,13 +154,10 @@ def _with_baseline(fe: FileEdit, repo: Path, since: str) -> FileEdit:
 
 
 def _relpath(path: str, repo: Path) -> str:
-    """Make an absolute in-repo path repo-relative, always with forward slashes.
-
-    Git and the `[scope]` globs both speak POSIX separators, so a Windows backslash here
-    would reconcile against neither — `git_state` would count zero uncommitted and
-    `scope_drift` would miss `src/**`."""
-    # `is_absolute()` only knows the *host* flavor: on Windows a POSIX path like
-    # `/repo/old.md` (no drive) reads as relative, and WSL emits exactly that.
+    """Repo-relative, always forward slashes. Git and the `[scope]` globs both speak POSIX, so
+    a Windows backslash reconciles against neither."""
+    # `is_absolute()` only knows the *host* flavor: on Windows `/repo/old.md` (no drive) reads
+    # as relative, and WSL emits exactly that.
     p = Path(path)
     if p.is_absolute():
         try:
@@ -206,18 +199,14 @@ def _git_snapshot(repo: Path, since: str) -> GitSnapshot:
     )
 
 
-# Only these three can carry a VERIFIED on their own, because only these three PASS on the
-# *presence* of evidence — each requires a test/build run that actually happened and came back
-# green. Every other check passes on the ABSENCE of a problem ("the files exist", "no assertion
-# was neutralized", "the edits were inside the allowlist"), which is equally true of a turn that
-# ran nothing at all. Those corroborate a claim; they can't carry one.
+# Only these can carry a VERIFIED alone: only these PASS on the *presence* of evidence. Every
+# other check passes on the ABSENCE of a problem ("the files exist", "no assertion was
+# neutralized"), which is equally true of a turn that ran nothing. Those corroborate a claim;
+# they can't carry one.
 #
-# An allowlist, not a denylist of weak checks: a new check must be argued INTO the set that can
-# mint a green, and until someone does it defaults to "cannot fabricate a green". The denylist
-# this replaces had exactly the failure the shape invites — `scope_drift` was never added, so
-# setting a scope (which Tycho actively prompts for) flipped a turn that ran no tests and
-# claimed "all tests pass" from INDETERMINATE to VERIFIED. Configuring the product more
-# thoroughly made it lie.
+# An allowlist, so a new check must be argued INTO minting greens. The denylist this replaced
+# had exactly the failure the shape invites: `scope_drift` was never added to it, so setting a
+# scope flipped a turn that ran no tests and claimed "all tests pass" to VERIFIED.
 _SUBSTANTIVE_CHECKS = frozenset({"command_execution", "test_freshness", "test_provenance"})
 
 

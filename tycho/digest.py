@@ -6,12 +6,9 @@ Two surfaces, deliberately different sizes:
 - `speaks()` + `brief()` — the unprompted Stop-hook path. `speaks()` returns a `Signal` only
   when the turn is anomalous *for this repo*; silence is the common outcome.
 
-Signals are relative to history, not absolute: a fixed rule ("speak when >5 files changed") is
-wrong both on a repo where 20-file turns are normal and one where 2 is a lot, so the norms come
-from `.tycho/turns.jsonl`.
-
-**Never raises.** Both surfaces are read from the Stop hook and every field comes off disk
-(possibly an older schema), so every accessor tolerates a missing key, wrong type or `None`.
+Signals are relative to history: a fixed rule ("speak when >5 files changed") is wrong both on
+a repo where 20-file turns are normal and one where 2 is a lot, so the norms come from
+`.tycho/turns.jsonl`. Never raises — every field comes off disk, possibly an older schema.
 """
 
 from __future__ import annotations
@@ -26,14 +23,13 @@ from .archaeology import _ago, _count, _trunc
 from .model import Stage, Verdict
 from .record import _claims, _rows
 
-# How many prior turns the signals read: enough for a norm, short enough that "recent" still
-# means recent. ponytail: fixed window, not a decay curve; widen if the norms prove twitchy.
+# ponytail: fixed window, not a decay curve; widen if the norms prove twitchy.
 HISTORY = 12
 
 # Verdicts worth interrupting for. VERIFIED/UNSUPPORTED are routine and earn silence.
 _ADVERSE = frozenset({Verdict.FAILED.name, Verdict.STALE.name, Verdict.OVERRIDDEN.name})
 
-# Check statuses that mean "this turn is not proven" — the lines worth a headline, worst first.
+# Statuses meaning "not proven", worst first.
 _UNPROVEN = ("FAIL", "STALE", "INDETERMINATE")
 
 _LADDER = tuple(s.value for s in Stage)
@@ -41,11 +37,8 @@ _LADDER = tuple(s.value for s in Stage)
 
 @dataclass(frozen=True)
 class Signal:
-    """One reason a turn is worth interrupting for.
-
-    `key` is the identity used for decay, deliberately fine-grained: two consecutive FAILED turns
-    on the same check are the same news; a FAILED turn on a check that was fine yesterday isn't.
-    """
+    """One reason a turn is worth interrupting for. `key` is the decay identity, fine-grained:
+    two FAILED turns on the same check are the same news, on a different check they aren't."""
 
     key: str
     headline: str
@@ -53,30 +46,19 @@ class Signal:
 
 # --- the selectivity predicate ------------------------------------------------
 #
-# Four signals, in headline order; each is rare on a healthy repo:
-#   1. `adverse`        — a check says the turn is not proven; names a concrete broken thing.
-#   2. `unbacked_claim` — prose says done, the ladder never reached `claim_supported`. Fires on
-#                         turns the verdict is happy with, which is the gap it exists to fill.
-#   3. `regression`     — a green streak just broke (catches non-adverse INDETERMINATE/UNSUPPORTED).
-#   4. `blast_radius`   — far more files than this repo's recent turns; the only scale signal.
-#
-# Deliberately NOT signals: "VERIFIED again" (wallpaper), "touched a file no recent turn touched"
-# (fires constantly on an active repo), and "touched a file no test covers" (that is `tycho
-# review`'s question, asked on demand, not shouted at the end of a turn).
+# Four signals, in headline order, each rare on a healthy repo: `adverse`, `unbacked_claim`,
+# `regression`, `blast_radius`. Deliberately NOT signals: "VERIFIED again" (wallpaper), a file
+# no recent turn touched (constant on an active repo), and a file no test covers (that is
+# `tycho review`'s question, asked on demand).
 
 
 def speaks(record: dict, history: Sequence[dict] = (), decay: bool = True) -> Signal | None:
     """The single signal worth interrupting for this turn, or None for silence.
 
-    `history` is this repo's prior turns, **newest first**, excluding `record`. With no history
-    the history-relative signals don't fire — inventing a norm would make Tycho loudest exactly
-    when it knows least.
-
-    Novelty decay: a condition that fired on the last `_DECAY_AFTER` turns is suppressed even
-    though still true. The relay is unaffected and keeps pushing the agent at a standing failure;
-    `decay=False` is the human opting out (see `hook._digest_output`).
-    ponytail: ceiling is a stuck repo going quiet after two turns — intended, and `tycho show`
-    is always there.
+    `history` is this repo's prior turns, newest first, excluding `record`. With none, the
+    history-relative signals stay quiet — inventing a norm would make Tycho loudest when it
+    knows least. A condition that fired on the last `_DECAY_AFTER` turns is suppressed even
+    though still true; the relay is unaffected and keeps pushing at a standing failure.
     """
     fired = signals(record, history)
     if not fired:
@@ -87,18 +69,13 @@ def speaks(record: dict, history: Sequence[dict] = (), decay: bool = True) -> Si
     return fresh[0] if fresh else None
 
 
-# How many consecutive prior turns must have carried a signal before it stops being news.
-# ponytail: two is the smallest number that can tell "again" from "still"; raise it if
-# users report the digest going quiet too eagerly.
+# ponytail: two is the smallest number that can tell "again" from "still".
 _DECAY_AFTER = 2
 
 
 def _recently_said(history: Sequence[dict]) -> frozenset[str]:
-    """Signal keys that fired on *every* one of the last `_DECAY_AFTER` turns.
-
-    Intersection, not union: a signal that fired once two turns ago is still news; one that has
-    been true continuously is not. Each historical turn is scored against the turns *before* it.
-    """
+    """Signal keys that fired on *every* one of the last `_DECAY_AFTER` turns. Intersection,
+    not union: one that fired once two turns ago is still news, one that never stopped isn't."""
     if len(history) < _DECAY_AFTER:
         return frozenset()
     said = [
@@ -120,15 +97,12 @@ def signals(record: dict, history: Sequence[dict] = ()) -> tuple[Signal, ...]:
 
 
 def _adverse(record: dict) -> Signal | None:
-    """FAILED / STALE / OVERRIDDEN — a check we ran says the turn is not proven.
+    """FAILED / STALE / OVERRIDDEN — a check says the turn is not proven.
 
-    The headline is the worst *unproven check*, not the verdict word: "test_freshness — app.py
-    edited after the last run" says where to look; "FAILED" says go find out. Worst, not first,
-    because `checks` is in registry order — a standing STALE would otherwise headline over the
-    FAIL that actually failed the turn.
-
-    The decay key carries the verdict and the *whole* set of unproven checks, so a turn that gets
-    worse (or an OVERRIDDEN run that becomes a real FAILED) mints a new key and is news again.
+    The headline names the worst unproven *check*, not the verdict word: "FAILED" says go find
+    out, the check says where to look. Worst, not first — `checks` is in registry order, so a
+    standing STALE would headline over the FAIL that actually sank the turn. The decay key
+    carries the whole unproven set, so a turn that gets worse is news again.
     """
     verdict = _text(record.get("verdict"))
     if verdict not in _ADVERSE:
@@ -142,10 +116,9 @@ def _adverse(record: dict) -> Signal | None:
     return Signal(key, f"{verdict} — no check could confirm this turn")
 
 
-# Prose that asserts the work is finished. Only ever used to ask a question, never to fail a
-# turn, so an over-broad match costs a line and never a false verdict.
-# ponytail: a word list, not NLP — an LLM would violate the no-network/no-model invariant.
-# Calibration knob: add rows.
+# Prose asserting the work is finished. Only ever asks a question, never fails a turn, so an
+# over-broad match costs a line. ponytail: a word list — an LLM would break the no-model
+# invariant. Calibration knob: add rows.
 _DONE_PROSE = re.compile(
     r"(?i)\b(?:"
     r"all (?:the )?tests?(?: now)? pass|tests?(?: now)? pass|"
@@ -158,11 +131,8 @@ _DONE_PROSE = re.compile(
 
 
 def _unbacked_claim(record: dict) -> Signal | None:
-    """The prose says finished; the acceptance ladder never reached `claim_supported`.
-
-    Requires *both* halves: a turn that stops at `artifact_changed` without claiming anything is
-    normal work in progress, and interrupting for it would be every-turn wallpaper.
-    """
+    """Prose says finished; the ladder never reached `claim_supported`. Both halves required —
+    stopping at `artifact_changed` without claiming anything is normal work in progress."""
     stage = _text(record.get("stage"))
     if stage == Stage.CLAIM_SUPPORTED.value:
         return None
@@ -176,18 +146,13 @@ def _unbacked_claim(record: dict) -> Signal | None:
     )
 
 
-# How many proven turns in a row make the next non-proven one news. Below three, a green run
-# isn't a streak — it's a coincidence. ponytail: calibration knob.
+# Below three, a green run isn't a streak — it's a coincidence. ponytail: calibration knob.
 _GREEN_STREAK = 3
 
 
 def _regression(record: dict, history: Sequence[dict]) -> Signal | None:
-    """This repo was proving its turns, and now it isn't.
-
-    INDETERMINATE/UNSUPPORTED are the routine "we couldn't tell" outcome and earn silence —
-    except the first time they interrupt a run of proven turns, the shape of a newly-broken
-    test command.
-    """
+    """This repo was proving its turns, and now it isn't. INDETERMINATE/UNSUPPORTED earn
+    silence except the first time they break a run of proven ones."""
     if _text(record.get("verdict")) == Verdict.VERIFIED.name:
         return None
     green = 0
@@ -200,22 +165,17 @@ def _regression(record: dict, history: Sequence[dict]) -> Signal | None:
     return Signal("regression", f"first unproven turn after {green} proven ones")
 
 
-# A turn must be at least this many files AND this multiple of the repo's recent median before
-# scale is worth mentioning. Both, because the multiple alone screams at 3 files on a repo that
-# usually touches 1, and the floor alone screams at every turn in a repo that edits 6 at a time.
-# ponytail: two flat thresholds beat a z-score nobody can predict the behaviour of.
+# Both a floor AND a multiple of the median: the multiple alone screams at 3 files on a repo
+# that usually touches 1, the floor alone at every turn on a repo that edits 6 at a time.
+# ponytail: two flat thresholds beat a z-score nobody can predict.
 _BLAST_FLOOR = 5
 _BLAST_FACTOR = 3
-# Below this many prior turns there is no "recent norm", only a small sample pretending to be one.
 _BLAST_MIN_HISTORY = 4
 
 
 def _blast_radius(record: dict, history: Sequence[dict]) -> Signal | None:
-    """Far more files touched than this repo's recent turns touch.
-
-    Not a failure — a "look at this one before you move on". Median, not mean: one 40-file
-    refactor last week must not raise the bar for the next month.
-    """
+    """Far more files touched than this repo's recent turns touch — not a failure, a "look at
+    this one". Median, not mean: one 40-file refactor must not raise the bar for a month."""
     n = len(_files(record))
     prior = [len(_files(h)) for h in history]
     if len(prior) < _BLAST_MIN_HISTORY:
@@ -233,11 +193,8 @@ def _blast_radius(record: dict, history: Sequence[dict]) -> Signal | None:
 
 
 def brief(record: dict, signal: Signal | None = None) -> str:
-    """The unprompted Stop-hook digest: four lines, anomaly first.
-
-    Why we spoke, then the ladder, then the turn's shape, then a pointer to the full receipt.
-    Evidence nobody reads is evidence that doesn't exist — hence the four-line budget.
-    """
+    """The unprompted Stop-hook digest: why we spoke, the ladder, the turn's shape, a pointer
+    to the full receipt. Evidence nobody reads doesn't exist — hence the four-line budget."""
     headline = signal.headline if signal else _text(record.get("verdict")) or "turn recorded"
     lines = [
         f"🔍 Tycho: {headline}",
@@ -251,13 +208,11 @@ def brief(record: dict, signal: Signal | None = None) -> str:
 
 
 def render(record: dict, now: float | None = None) -> str:
-    """The full digest for one turn record — the on-demand view (`tycho show`).
+    """The full digest for one turn record (`tycho show`), ordered the way a developer
+    reconstructs a turn: how far it got, what it changed, ran, said, what is still unproven.
 
-    Ordered the way a developer reconstructs a turn: how far it got, what it changed, what it
-    ran, what it said, what is still unproven.
-
-    The age is in the header because `tycho show` falls back to the newest record there is: on a
-    turn the hook wrote nothing for, an undated receipt reads as this turn's.
+    The age is in the header because `tycho show` falls back to the newest record there is,
+    and an undated receipt reads as this turn's.
     """
     turn = _text(record.get("id")) or "?"
     verdict = _text(record.get("verdict")) or "?"
@@ -281,17 +236,13 @@ def render(record: dict, now: float | None = None) -> str:
 
 
 def _ladder(record: dict) -> str:
-    """The acceptance ladder with every rung shown, reached ones ticked.
+    """The ladder with every rung shown, reached ones ticked. All four always — the unreached
+    ones are the point, and `·` not `✗` because a gap in evidence isn't a failure.
 
-    All four rungs always — the unreached ones are the point. `·` rather than `✗` because an
-    unreached rung is a gap in the evidence, not a failure.
-
-    It does not simply tick everything up to `stage`: `record.stage_of` returns the highest rung
-    that *matches* by priority, not a chain, so a turn that wrote a file but ran nothing is
-    `artifact_changed` and ticking `executed` under it would assert a test run that never
-    happened. The two independently confirmable rungs are re-checked, and that can only remove
-    a tick — including `claim_supported`, which needs one of them under it or the chain it draws
-    is one nothing ran and nothing changed.
+    Not simply everything up to `stage`: `record.stage_of` returns the highest *matching* rung,
+    not a chain, so a turn that wrote a file but ran nothing is `artifact_changed` and ticking
+    `executed` under it would assert a run that never happened. The two independently
+    confirmable rungs are re-checked, which can only remove a tick.
     """
     try:
         reached = _LADDER.index(_text(record.get("stage")))
@@ -305,11 +256,8 @@ def _ladder(record: dict) -> str:
 
 
 def _facts(record: dict) -> str:
-    """One line of turn shape: files touched, then commands and what they returned.
-
-    Runners first, so `pytest -q failed` survives the truncation a turn with 30 `ls` calls
-    would otherwise cause.
-    """
+    """One line of turn shape. Runners first, so `pytest -q failed` survives the truncation a
+    turn with 30 `ls` calls would cause."""
     parts = []
     files = _files(record)
     if files:
@@ -327,7 +275,6 @@ def _wrap(label: str, text: str) -> str:
 
 
 # --- safe accessors -----------------------------------------------------------
-#
 # A malformed row renders a shorter digest, never a traceback in the Stop hook.
 
 
@@ -369,5 +316,5 @@ def _unproven_checks(record: dict) -> list[tuple[str, str, str]]:
 
 
 def _num(value: float) -> str:
-    """A median printed the way a person would say it: `2`, not `2.0`; `1.5` stays `1.5`."""
+    """`2`, not `2.0`; `1.5` stays `1.5`."""
     return f"{value:g}"
