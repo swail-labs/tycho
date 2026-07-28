@@ -12,6 +12,9 @@ review tool starts lying.
 """
 
 import json
+import os
+import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -395,12 +398,15 @@ def test_review_of_a_repo_with_no_commits_still_sees_untracked_files(tmp_path: P
 
 
 def test_review_never_credits_a_run_recorded_before_the_edit_end_to_end(repo: Path):
+    # Real timestamps, because the judgement is against the file's own mtime as well as the
+    # record: a turn dated 1970 over a file written today is an edit nothing recorded.
+    clock = time.time()
     (repo / "src.py").write_text("changed\n")
-    write_record(repo, files=[("src.py", 10.0)], started=1.0, ended=20.0,
+    write_record(repo, files=[("src.py", clock)], started=clock - 10, ended=clock + 5,
                  commands=[("pytest -q", True, "passed")])
     assert "exercised: a passing test run" in "\n".join(review.review(repo))
     # Same repo, one more turn: edited again, nothing run since.
-    write_record(repo, files=[("src.py", 500.0)], started=490.0, ended=510.0)
+    write_record(repo, files=[("src.py", clock + 500)], started=clock + 490, ended=clock + 510)
     out = "\n".join(review.review(repo))
     assert "UNEXERCISED" in out and "no recorded command ran after it" in out
 
@@ -419,3 +425,130 @@ def test_review_ignores_everything_tycho_init_wrote(tmp_path: Path):
     for path in ("src/app.py", ".github/workflows/ci.yml", "claude/notes.md",
                  "docs/.tycho.toml"):
         assert not review_mod._is_own_state(tmp_path, path), f"{path} is the user's"
+
+
+# --- what the record cannot see ----------------------------------------------
+
+
+def test_an_edit_after_the_test_run_is_not_exercised_even_when_nothing_recorded_it(
+    tmp_path: Path,
+):
+    """The confident wrong "all clear". The record only holds the agent's Edit/Write calls,
+    so a human editor, a `sed -i` or a stray shell redirect adds `eval(x)` and leaves no
+    trace in it. Judging against the recorded edit alone credits a run that predates the
+    line entirely — so the file's own mtime is the other half of "when was this written"."""
+    src = tmp_path / "src.py"
+    src.write_text("x = 1\n")
+    write_record(tmp_path, files=[("src.py", NOW - 100)], started=NOW - 110, ended=NOW - 90,
+                 commands=[("pytest -q", True, "passed")])
+    os.utime(src, (NOW - 10, NOW - 10))  # somebody edited it after the green run
+
+    (f,) = review.classify(tmp_path, [hunk()], now=NOW)
+
+    assert f.level == review.UNEXERCISED
+    assert "changed on disk (not by a recorded edit)" in f.reason
+    assert review.unexercised([f]) == 1
+
+
+def test_the_recorded_edit_still_wins_when_the_file_matches_it(tmp_path: Path):
+    """The other side of the same rule: a file whose mtime *is* the recorded edit must stay
+    EXERCISED, or every review would degrade to noise."""
+    src = tmp_path / "src.py"
+    src.write_text("x = 1\n")
+    os.utime(src, (NOW - 100, NOW - 100))
+    write_record(tmp_path, files=[("src.py", NOW - 100)], started=NOW - 110, ended=NOW - 90,
+                 commands=[("pytest -q", True, "passed")])
+
+    assert levels(review.classify(tmp_path, [hunk()], now=NOW)) == [review.EXERCISED]
+
+
+# --- the --exit-code gate ----------------------------------------------------
+
+
+def test_a_truncated_diff_never_reads_as_clean_to_the_gate(repo: Path, monkeypatch):
+    """2100 unrecorded files push the one risky file past `MAX_HUNKS`: it is absent from the
+    output entirely and the gate exits 0. A gate that passes because it stopped looking is
+    worse than no gate."""
+    (repo / "noise.py").write_text("x = 1\n")
+    monkeypatch.setattr(gitstate, "MAX_HUNKS", 1)
+    monkeypatch.setattr(
+        gitstate, "diff_hunks",
+        lambda *a, **k: (gitstate.Hunk("noise.py", 1, 1, 1, 0, "modified"),),
+    )
+
+    lines, findings = review.inspect(repo, "HEAD")
+
+    assert findings.truncated is True
+    assert review.unexercised(findings) >= 1, "a truncated diff is not a clean diff"
+    assert "truncated" in lines[0]
+    assert any("not reviewed at all" in ln for ln in lines)
+
+
+def test_an_untruncated_clean_diff_still_passes_the_gate(repo: Path):
+    (repo / "notes.md").write_text("prose\n")
+    _, findings = review.inspect(repo, "HEAD")
+    assert findings.truncated is False
+    assert review.unexercised(findings) == 0
+
+
+# --- Tycho's own files -------------------------------------------------------
+
+
+def test_disabling_tycho_is_not_reported_as_no_changes(repo: Path):
+    """An agent that rewrites `.claude/settings.json` to drop the Stop hook must not get
+    "no changes" and exit 0 out of the filter that hides our own install noise."""
+    (repo / ".claude").mkdir()
+    (repo / ".claude" / "settings.json").write_text('{"hooks": {}}\n')
+    git(repo, "add", "-A")
+
+    out = "\n".join(review.review(repo))
+
+    assert "hunk(s) skipped" in out
+    assert out != "tycho: no changes against HEAD."
+
+
+def test_the_filter_covers_our_files_and_not_the_agents(tmp_path: Path):
+    from tycho import review as review_mod
+
+    for path in (".tycho/turns.jsonl", ".claude/settings.json",
+                 ".claude/commands/tycho-verify.md", ".tycho.toml"):
+        assert review_mod._is_own_state(tmp_path, path), f"{path} should be filtered out"
+    for path in (".claude/agents/reviewer.md", ".claude/commands/deploy.md",
+                 ".claude/hooks/mine.sh", ".claude/settings.local.json"):
+        assert not review_mod._is_own_state(tmp_path, path), f"{path} is the user's"
+
+
+# --- mode changes ------------------------------------------------------------
+
+
+def test_a_mode_only_change_is_not_dropped():
+    """`chmod +x` has no `@@` header and stays "modified" — the file vanished from review
+    entirely. Making a data file executable is exactly the change worth seeing."""
+    diff = (
+        "diff --git a/mode.sh b/mode.sh\n"
+        "old mode 100644\n"
+        "new mode 100755\n"
+        "diff --git a/other.py b/other.py\n"
+        "--- a/other.py\n"
+        "+++ b/other.py\n"
+        "@@ -1 +1 @@\n"
+        "-a\n"
+        "+b\n"
+    )
+    hunks = gitstate.parse_hunks(diff)
+    assert [(h.path, h.status) for h in hunks] == [
+        ("mode.sh", "mode"), ("other.py", "modified")]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="git on Windows does not track the x bit")
+def test_a_mode_change_reaches_the_review_output(repo: Path):
+    (repo / "mode.sh").write_text("echo hi\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "add script")
+    (repo / "mode.sh").chmod(0o755)
+    git(repo, "add", "-A")
+
+    out = "\n".join(review.review(repo))
+
+    assert "mode.sh" in out
+    assert "mode change only" in out

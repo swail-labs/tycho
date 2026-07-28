@@ -59,6 +59,10 @@ _MAX_DETAIL = 20
 # Bytes of an untracked file we'll read to size it. Beyond this the line range is a formality —
 # the whole file is new.
 _UNTRACKED_MAX_BYTES = 1 << 20
+# How far past a recorded edit a file's mtime may sit before we stop treating the record as the
+# whole story. The record is written after the write lands, so a small gap is bookkeeping; a
+# larger one is somebody else's edit.
+_MTIME_SLACK = 2.0
 
 
 @dataclass(frozen=True)
@@ -74,6 +78,16 @@ class Finding:
         """Worst first; within a level, biggest change first, then a stable path order."""
         return (_ORDER.get(self.level, len(_LEVELS)), -self.hunk.size, self.hunk.path,
                 self.hunk.start)
+
+
+class Findings(list):
+    """The findings, plus whether the diff they came from was cut short.
+
+    `--exit-code` reads this: a gate that passes because the diff stopped at `MAX_HUNKS` is
+    a gate that passed by not looking.
+    """
+
+    truncated = False
 
 
 def review(repo: Path, since: str = "HEAD") -> list[str]:
@@ -101,30 +115,45 @@ def inspect(repo: Path, since: str = "HEAD") -> tuple[list[str], list[Finding]]:
         if not untracked:
             return [f"tycho: can't diff against {since} — nothing to compare."], []
         hunks = ()
-    all_hunks = tuple(h for h in (*hunks, *untracked) if not _is_own_state(repo, h.path))
+    seen = (*hunks, *untracked)
+    all_hunks = tuple(h for h in seen if not _is_own_state(repo, h.path))
+    skipped = len(seen) - len(all_hunks)
     if not all_hunks:
-        return [f"tycho: no changes against {since}."], []
+        if skipped:
+            # Never "no changes" when there were changes: the filter exists to hide our own
+            # install noise, and silence here would also hide an agent editing that install.
+            return [f"tycho: no changes against {since} outside Tycho's own files "
+                    f"— {skipped} hunk(s) skipped."], Findings()
+        return [f"tycho: no changes against {since}."], Findings()
     findings = classify(repo, all_hunks)
-    lines = render(findings, since, truncated=len(hunks) >= gitstate.MAX_HUNKS)
+    findings.truncated = len(hunks) >= gitstate.MAX_HUNKS
+    lines = render(findings, since, truncated=findings.truncated, skipped=skipped)
     if blind:
         lines.insert(0, f"tycho: can't diff against {since} — untracked files only.")
     return lines, findings
 
 
-def classify(repo: Path, hunks, now: float | None = None) -> list[Finding]:
+def classify(repo: Path, hunks, now: float | None = None) -> Findings:
     """Rank `hunks` by what the record can say about them, in one pass. `now` is injectable so
     the ages in the reasons are reproducible in a test."""
     now = time.time() if now is None else now
     paths = {h.path for h in hunks}
     facts = _facts(repo, paths)
+    mtimes = {p: _mtime(repo, p) for p in paths}
     changed_tests = [p for p in paths if checks_mod._is_test_path(p)]
-    findings = [Finding(h, *_judge(h, facts, changed_tests, now)) for h in hunks]
-    return sorted(findings, key=lambda f: f.rank)
+    findings = [Finding(h, *_judge(h, facts, changed_tests, now, mtimes.get(h.path)))
+                for h in hunks]
+    return Findings(sorted(findings, key=lambda f: f.rank))
 
 
 def unexercised(findings) -> int:
-    """How many findings `--exit-code` should exit non-zero for."""
-    return sum(1 for f in findings if f.level in (UNEXERCISED, UNTESTED))
+    """How many findings `--exit-code` should exit non-zero for.
+
+    A truncated diff counts as one: the hunks past the cap were never judged, so "nothing
+    found" is "nothing looked at" and the gate must not read it as clean.
+    """
+    found = sum(1 for f in findings if f.level in (UNEXERCISED, UNTESTED))
+    return found or (1 if getattr(findings, "truncated", False) else 0)
 
 
 # --- the record side ---------------------------------------------------------
@@ -203,8 +232,14 @@ def _num(value) -> float | None:
 # --- the judgement -----------------------------------------------------------
 
 
-def _judge(hunk, facts: _Facts, changed_tests, now: float) -> tuple[str, str]:
-    """One hunk → (level, reason). The reasons state what was recorded, never what ran."""
+def _judge(hunk, facts: _Facts, changed_tests, now: float,
+           mtime: float | None = None) -> tuple[str, str]:
+    """One hunk → (level, reason). The reasons state what was recorded, never what ran.
+
+    The record only sees an agent's Edit/Write calls. A human editor, a shell redirect or a
+    `sed -i` leaves nothing in it, so the file's own mtime is the other half of "when was this
+    last written" — and the later of the two is the only honest one to judge a run against.
+    """
     path = hunk.path
     note = _status_note(hunk)
     edited = facts.edited_at.get(path)
@@ -212,19 +247,30 @@ def _judge(hunk, facts: _Facts, changed_tests, now: float) -> tuple[str, str]:
         return PROSE, note + "prose or asset — no test run covers it"
     if edited is None:
         return UNRECORDED, note + "no recorded turn touched this file"
+    verb = "edited"
+    if mtime is not None and mtime > edited + _MTIME_SLACK:
+        edited, verb = mtime, "changed on disk (not by a recorded edit)"
     age = _ago(now - edited)
     if checks_mod._is_test_path(path):
         if facts.last_test is not None and edited > facts.last_test:
-            return TEST, note + f"edited {age}, after the last recorded passing run"
-        return TEST, note + f"edited {age} — a changed test is evidence, not proof"
+            return TEST, note + f"{verb} {age}, after the last recorded passing run"
+        return TEST, note + f"{verb} {age} — a changed test is evidence, not proof"
     if facts.last_test is not None and facts.last_test >= edited:
         return EXERCISED, note + f"a passing test run was recorded after the edit ({age})"
     if facts.last_command is not None and facts.last_command >= edited:
-        return UNTESTED, note + f"edited {age}; a command ran after it, but no test runner"
+        return UNTESTED, note + f"{verb} {age}; a command ran after it, but no test runner"
     tail = "" if _has_sibling_test(path, changed_tests) else "; no test file changed alongside"
     if facts.last_test is None and facts.last_command is None:
-        return UNEXERCISED, note + f"edited {age}; no passing command in any recorded turn{tail}"
-    return UNEXERCISED, note + f"edited {age}; no recorded command ran after it{tail}"
+        return UNEXERCISED, note + f"{verb} {age}; no passing command in any recorded turn{tail}"
+    return UNEXERCISED, note + f"{verb} {age}; no recorded command ran after it{tail}"
+
+
+def _mtime(repo: Path, path: str) -> float | None:
+    """The file's last-modified time, or None when it isn't there to ask (deleted, unreadable)."""
+    try:
+        return (repo / path).stat().st_mtime
+    except (OSError, ValueError):
+        return None
 
 
 def _status_note(hunk) -> str:
@@ -235,6 +281,7 @@ def _status_note(hunk) -> str:
         "deleted": "deleted — ",
         "renamed": "renamed — ",
         "binary": "binary — ",
+        "mode": "mode change only — ",
         "unparsed": "diff not parseable, read the whole file — ",
     }.get(hunk.status, "")
 
@@ -273,17 +320,21 @@ def _untracked_hunks(repo: Path) -> tuple[gitstate.Hunk, ...]:
 
 
 def _is_own_state(repo: Path, path: str) -> bool:
-    """Everything `tycho init` writes — ours to install, never the user's code to review.
+    """Exactly what `tycho init` writes — ours to install, never the user's code to review.
 
     Measured on a freshly-initialised repo: 21 of 24 hunks were Tycho's own files (the
     settings file, the config, and 19 slash-command docs), so the first review a new user
     ever ran was almost entirely Tycho reporting on itself. `.tycho/` is gitignored by init
     now, but only from the moment it runs — a repo mid-install still shows it.
+
+    Named files only, never the whole of `.claude/`: an agent's own hooks, agents and
+    commands live there too, and they are the user's code however much they look like ours.
     """
     p = path.replace("\\", "/")
     return (
         p.startswith(state.dir_for(repo).name + "/")
-        or p.startswith(".claude/")
+        or p == ".claude/settings.json"
+        or (p.startswith(".claude/commands/tycho-") and p.endswith(".md"))
         or p == config_mod.CONFIG_NAME
     )
 
@@ -302,7 +353,7 @@ def _size_of(path: Path) -> tuple[int, bool]:
 # --- rendering ---------------------------------------------------------------
 
 
-def render(findings, since: str, truncated: bool = False) -> list[str]:
+def render(findings, since: str, truncated: bool = False, skipped: int = 0) -> list[str]:
     """Worst first, aligned, and honest about its own limits in the last line.
 
     No colour, ever — not even on a tty: a review piped into a file or a PR comment is a
@@ -310,7 +361,9 @@ def render(findings, since: str, truncated: bool = False) -> list[str]:
     """
     files = len({f.hunk.path for f in findings})
     head = f"tycho review — {len(findings)} hunk(s) in {files} file(s) changed against {since}"
-    lines = [head + (" (truncated)" if truncated else ""), ""]
+    notes = ([f"truncated at {gitstate.MAX_HUNKS}"] if truncated else []) + (
+        [f"{skipped} hunk(s) skipped, Tycho's own files"] if skipped else [])
+    lines = [head + (f" ({', '.join(notes)})" if notes else ""), ""]
     shown = 0
     for level in _DETAILED:
         group = [f for f in findings if f.level == level]
@@ -333,6 +386,9 @@ def render(findings, since: str, truncated: bool = False) -> list[str]:
         lines.append("")
     lines.append('  "Exercised" means a command Tycho recorded ran after the hunk was written.')
     lines.append("  Tycho has no per-line coverage — it cannot say these lines executed.")
+    if truncated:
+        lines.append(f"  The diff was cut at {gitstate.MAX_HUNKS} hunks — changes past it were "
+                     "not reviewed at all.")
     return lines
 
 
