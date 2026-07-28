@@ -1,7 +1,7 @@
 # Homebrew formula for Tycho — the TEMPLATE, not the published file.
 #
-# It installs the standalone binary produced by the `binaries` release job (see
-# docs/bundler-spike.md), so `brew install` pulls no Python toolchain.
+# It installs the standalone binary produced by the `binaries` release job, so
+# `brew install` pulls no Python toolchain.
 #
 # The markers below are filled at release time: the `homebrew-publish` job runs
 # `packaging/homebrew/stamp.py` against the release's SHA256SUMS and pushes the result to
@@ -9,8 +9,9 @@
 # next release overwrites it. Renaming a marker or an asset breaks the publish;
 # tests/test_homebrew.py fails first if you do.
 #
-# Then: `brew install swail-labs/tap/tycho`.
-# Operator setup (tap repo + token) is in docs/homebrew-remaining.md.
+# Then: `brew install swail-labs/tap/tycho`. Publishing needs the `swail-labs/homebrew-tap`
+# repo plus a HOMEBREW_TAP_TOKEN secret; the `homebrew-publish` job fails loudly without it
+# rather than shipping a release whose tap stayed stale.
 class Tycho < Formula
   desc "Offline, stdlib-only verifier that proves an AI agent did what it claimed"
   homepage "https://swail.dev"

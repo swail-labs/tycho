@@ -1,18 +1,18 @@
 #!/usr/bin/env node
-// npm/npx wrapper for Tycho (TYCHO-69 §3 / TYCHO-106) — TEMPLATE, not yet publishable.
+// npm/npx wrapper for Tycho.
 //
 // On first run it downloads the standalone binary matching this package's version + the host
 // platform from the GitHub release, VERIFIES it against the release's SHA256SUMS, caches it,
 // then execs it forwarding argv and exit code. Zero npm dependencies (Node stdlib only, plus the
 // system `tar` present on macOS/Linux/Windows 10+), mirroring Tycho's zero-dependency ethos.
 //
-// It consumes the SAME assets the `release` job (TYCHO-104) publishes and that the Homebrew
-// formula reads: per-target `tycho-<target>.tar.gz` + a `SHA256SUMS` manifest. One artifact set,
-// one checksum source of truth.
+// It consumes the SAME assets the `release` job publishes and that the Homebrew formula reads:
+// per-target `tycho-<target>.tar.gz` + a `SHA256SUMS` manifest. One artifact set, one checksum
+// source of truth.
 //
-// BLOCKED until (TYCHO-106): the operator owns the `@swail` npm scope + a publish token, and a
-// public GitHub release exists whose assets are these tarballs. The package `version` must equal
-// the Tycho release it wraps (stamped at publish time from the tag).
+// Publishing needs the `@swail-labs` npm scope + an NPM_TOKEN secret; the `npm-publish` job
+// fails loudly without it rather than shipping a release whose npm channel stayed stale. The
+// package `version` must equal the Tycho release it wraps (stamped at publish time from the tag).
 
 "use strict";
 const fs = require("node:fs");

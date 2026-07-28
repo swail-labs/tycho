@@ -1,15 +1,19 @@
-# CI for Tycho (TYCHO-9). Tycho gates other people's work, so its own gate has to be real:
-# every job here fails loudly rather than degrading to a pass.
+# CI for Tycho. Tycho gates other people's work, so its own gate has to be real: every job
+# here fails loudly rather than degrading to a pass.
 #
 # Note the commands are NOT piped. Piping a runner through `tail`/`head` discards its exit
 # code (a POSIX pipeline exits with its *last* command's status), which is exactly the
-# false-green Tycho exists to catch — see TYCHO-31. Keep it that way.
+# false-green Tycho exists to catch. Keep it that way.
 name: CI
 
 on:
   push:
     branches: [main]
   pull_request:
+  # `release.yml` calls this workflow before it builds anything, so a tag pushed onto a red
+  # tree cannot publish. Without it, `main` going red and a `v*` tag landing are independent
+  # events and PyPI gets whatever HEAD happened to be.
+  workflow_call:
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -19,7 +23,7 @@ jobs:
   # uv.lock is checked in to pin the dev toolchain, but nothing installs from it (the
   # matrix below uses pip), so drift is invisible until someone runs `uv sync` and gets an
   # environment matching neither CI nor pyproject.toml. It had already silently drifted
-  # once (TYCHO-42). This job is the enforcement that makes tracking it mean something.
+  # once. This job is the enforcement that makes tracking it mean something.
   # uv comes from pip rather than an action: one less third-party version to pin.
   lock:
     name: uv.lock is current
@@ -43,7 +47,7 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
         os: [ubuntu-latest]
-        # Windows is a first-class target (TYCHO-28): one job proves the suite, the wheel
+        # Windows is a first-class target: one job proves the suite, the wheel
         # build/install, and the console-script hook all work under cp1252/backslash/`.exe`.
         # One version keeps it cheap — the version matrix is the Linux axis's job.
         include:
