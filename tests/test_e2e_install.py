@@ -128,10 +128,18 @@ def test_installed_console_script_reports_the_packaged_version(tycho_cmd: Path):
     assert r.stdout.strip() == f"tycho {tycho.__version__}"
 
 
+def _package_sources() -> set[str]:
+    """Every `.py` under `tycho/` as a POSIX path, so the build is compared against the tree
+    rather than a hand-listed pair of files that goes stale the next time one moves."""
+    root = Path(__file__).parent.parent
+    return {p.relative_to(root).as_posix() for p in (root / "tycho").rglob("*.py")}
+
+
 def test_wheel_ships_the_package_and_entry_point_but_not_the_tests(wheel: Path):
     names = zipfile.ZipFile(wheel).namelist()
 
-    assert "tycho/cli.py" in names and "tycho/checks.py" in names
+    missing = _package_sources() - set(names)
+    assert not missing, f"source files absent from the wheel: {sorted(missing)}"
     assert not [n for n in names if n.startswith(("tests/", "docs/"))]  # ship the product only
     entry = next(n for n in names if n.endswith("entry_points.txt"))
     assert "tycho = tycho.cli:main" in zipfile.ZipFile(wheel).read(entry).decode()
@@ -152,7 +160,8 @@ def test_sdist_ships_the_sources_and_metadata_files_pyproject_points_at(sdist: P
         pkg_info = tar.extractfile(f"{root}/PKG-INFO").read().decode()
     shipped = {n.split("/", 1)[1] for n in names if "/" in n}
 
-    assert "tycho/cli.py" in shipped and "tycho/checks.py" in shipped
+    missing = _package_sources() - shipped
+    assert not missing, f"source files absent from the sdist: {sorted(missing)}"
     assert "README.md" in shipped and "LICENSE" in shipped
     assert "pyproject.toml" in shipped  # no build backend config, no install from source
 

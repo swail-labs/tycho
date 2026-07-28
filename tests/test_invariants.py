@@ -126,13 +126,26 @@ def test_no_trust_path_module_imports_an_llm_sdk():
 
 
 def test_no_trust_path_source_mentions_a_model_endpoint():
-    """A raw HTTP call to a model API would dodge the import check above."""
-    root = Path(__file__).parent.parent / "tycho"
+    """A raw HTTP call to a model API would dodge the import check above.
+
+    Resolved through each module's own `__file__`, and every `.py` under it when it is a
+    package — deriving a path from the module name instead would silently stop reading a
+    module the day it grows submodules, and read nothing while still passing.
+    """
+    import importlib
+
     endpoints = ("api.anthropic.com", "api.openai.com", "generativelanguage.googleapis")
+    scanned = 0
     for name in TRUST_PATH:
-        src = (root / f"{name.split('.')[-1]}.py").read_text(encoding="utf-8").lower()
-        for endpoint in endpoints:
-            assert endpoint not in src, f"{name} references a model endpoint: {endpoint}"
+        module = importlib.import_module(name)
+        origin = Path(module.__file__)
+        sources = sorted(origin.parent.rglob("*.py")) if origin.name == "__init__.py" else [origin]
+        for source in sources:
+            scanned += 1
+            src = source.read_text(encoding="utf-8").lower()
+            for endpoint in endpoints:
+                assert endpoint not in src, f"{source} references a model endpoint: {endpoint}"
+    assert scanned >= len(TRUST_PATH)
 
 
 def test_checks_are_pure_functions_of_the_session(tmp_path, no_network):
