@@ -780,6 +780,48 @@ def test_timeout_without_a_command_unwraps_to_nothing(cmd):
     assert checks._runner_segment(cmd) is None, cmd
 
 
+# Every wrapper an agent plausibly reaches for. The `timeout` bug was one wrapper laundering
+# one flag; these two sweeps say no wrapper may launder any of them, so the next wrapper added
+# to `_unwrap` has to clear the same bar instead of being spot-checked.
+_WRAPPERS = (
+    "{}",
+    "timeout 60 {}",
+    "timeout -k 5 60 {}",
+    "timeout --kill-after=5 60 {}",
+    "bash -c '{}'",
+    'bash -c "{}"',
+    "sh -c '{}'",
+    "timeout 60 bash -c '{}'",
+    "tycho run -- {}",
+    "tycho run -- timeout 60 {}",
+    "env -- {}",
+    "env FOO=1 -- {}",
+    "wsl -d Ubuntu -- {}",
+    "ssh host {}",
+)
+
+
+@pytest.mark.parametrize("wrapper", _WRAPPERS)
+@pytest.mark.parametrize("inner", [
+    "pytest --collect-only -q", "pytest --co", "cargo test --no-run",
+    "tox -e lint", "pytest --version", "jest --listTests",
+])
+def test_no_wrapper_turns_a_discovery_run_into_a_runner(wrapper, inner):
+    """A command that proves nothing must keep proving nothing however it's invoked."""
+    assert checks._runner_segment(wrapper.format(inner)) is None
+
+
+@pytest.mark.parametrize("wrapper", _WRAPPERS)
+@pytest.mark.parametrize("masking", ["| tail -1", "|| true", "; echo done", "| head -5"])
+def test_no_wrapper_hides_a_masked_exit_status(wrapper, masking):
+    """The dangerous pair is "runner recognized" AND "status believed to be the runner's own":
+    that combination trusts `tail`'s exit 0 on a red suite. Either outcome alone is safe —
+    not finding the runner loses evidence, and knowing the status is masked falls back to the
+    runner's own output — so the assertion is on the conjunction, not on either half."""
+    cmd = wrapper.format(f"pytest -q {masking}")
+    assert checks._runner_segment(cmd) is None or checks._status_is_masked(cmd), cmd
+
+
 @pytest.mark.parametrize("cmd", [
     "pytest -q", "pytest -v", "pytest -n 4", "tox -e py311", "tox -e unit", "cargo test",
 ])
