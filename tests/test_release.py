@@ -40,10 +40,17 @@ def test_release_gates_on_ci(job):
     )
 
 
-@pytest.mark.parametrize("secret", ["NODE_AUTH_TOKEN", "TAP_TOKEN"])
-def test_missing_publish_secret_fails_the_release(secret):
+PUBLISH_SH = WORKFLOWS.parent.parent / "packaging" / "homebrew" / "publish.sh"
+
+
+# The tap's guard lives in the script both workflows call, not in the workflow — same guard,
+# one place, so the manual repair path can't publish under rules the release doesn't use.
+@pytest.mark.parametrize(
+    ("path", "secret"), [(RELEASE, "NODE_AUTH_TOKEN"), (PUBLISH_SH, "TAP_TOKEN")]
+)
+def test_missing_publish_secret_fails_the_release(path, secret):
     """A publish channel that silently no-ops leaves users on the previous version while the
     release reads green — and `tycho update` nags forever at a version that never shipped."""
-    text = RELEASE.read_text()
-    guard = text.split(f'if [ -z "${{{secret}:-}}" ]; then', 1)[1].split("\n          fi", 1)[0]
+    text = path.read_text()
+    guard = text.split(f'if [ -z "${{{secret}:-}}" ]; then', 1)[1].split("fi\n", 1)[0]
     assert "exit 1" in guard and "exit 0" not in guard

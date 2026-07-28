@@ -6,11 +6,14 @@ sha256 breaks `brew install` for everyone, and nothing upstream of the tap would
 
 import importlib.util
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
 
-_STAMP = Path(__file__).resolve().parents[1] / "packaging" / "homebrew" / "stamp.py"
+_REPO = Path(__file__).resolve().parents[1]
+_STAMP = _REPO / "packaging" / "homebrew" / "stamp.py"
+_PUBLISH = _STAMP.with_name("publish.sh")
 _spec = importlib.util.spec_from_file_location("tycho_brew_stamp", _STAMP)
 stamp_mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(stamp_mod)
@@ -77,3 +80,28 @@ def test_template_and_stamper_agree_on_markers_and_assets():
     assert set(re.findall(r"REPLACE_ME_SHA256[A-Z0-9_]*", TEMPLATE)) == set(stamp_mod.ASSETS)
     for asset in stamp_mod.ASSETS.values():
         assert asset in TEMPLATE, f"{asset} is not the tarball any formula URL points at"
+
+
+def test_both_publish_paths_call_the_same_script():
+    # The automatic path (release.yml, on a stable tag) and the manual repair path
+    # (homebrew-tap.yml, for a tag that already shipped) must stay one implementation. If either
+    # grows its own inlined copy, the repair path silently stops matching what releases actually
+    # push — the failure that leaves the tap on an old version with nobody noticing.
+    workflows = _REPO / ".github" / "workflows"
+    for name in ("release.yml", "homebrew-tap.yml"):
+        text = (workflows / name).read_text(encoding="utf-8")
+        assert "packaging/homebrew/publish.sh" in text, f"{name} no longer calls publish.sh"
+
+
+def test_publish_script_is_executable():
+    # Both workflows invoke it as a bare path, so a lost +x is "permission denied" mid-release —
+    # after the binaries are attached and PyPI has already published.
+    #
+    # Ask git, not the filesystem: a Windows checkout doesn't carry POSIX mode bits, so stat()
+    # can't see this on one of the CI platforms. The mode git records is the one the Linux
+    # runner checks out, which is the thing that actually has to be right.
+    out = subprocess.run(
+        ["git", "ls-files", "-s", "--", _PUBLISH.relative_to(_REPO).as_posix()],
+        cwd=_REPO, capture_output=True, text=True, check=True,
+    ).stdout.split()
+    assert out and out[0] == "100755", f"publish.sh must be mode 100755 in git, got {out[:1]}"

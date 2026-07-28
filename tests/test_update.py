@@ -229,6 +229,63 @@ def test_pip_install_into_homebrews_python_is_not_the_brew_channel(monkeypatch):
     assert "brew" not in cli._upgrade_command()
 
 
+def _frozen_at(monkeypatch, executable, platform="darwin"):
+    """A standalone binary installed by install.sh — no npm wrapper, not in a Cellar."""
+    monkeypatch.setattr(cli.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(cli.sys, "executable", executable)
+    monkeypatch.setattr(cli.sys, "platform", platform)
+    monkeypatch.setattr(cli.os.path, "realpath", lambda p: p)
+    monkeypatch.setattr(cli.sys, "prefix", "/tmp/_MEIabc123")  # PyInstaller's unpack dir
+    monkeypatch.delenv("TYCHO_INSTALL", raising=False)
+
+
+def test_curl_installed_binary_reinstalls_itself_instead_of_calling_pip(monkeypatch):
+    # The regression this exists for: a frozen binary that is neither npm nor Homebrew used to
+    # fall through to the pip default, producing `<the binary> -m pip install --upgrade tycho-cli`
+    # — the binary handed pip's arguments, which a PyInstaller build cannot serve. install.sh is
+    # the README's headline install, so this was the most-used channel's update path.
+    _frozen_at(monkeypatch, "/home/u/.local/bin/tycho")
+
+    cmd = cli._upgrade_command()
+    assert cmd[:2] == ["sh", "-c"]
+    assert "install.sh" in cmd[2]
+    assert "-m" not in cmd and "pip" not in cmd
+
+
+def test_reinstall_targets_the_directory_the_binary_already_lives_in(monkeypatch):
+    # TYCHO_INSTALL_DIR lets the binary live anywhere. Re-running the installer without pinning
+    # the dir would drop a fresh copy in ~/.local/bin and leave the one on PATH stale — an
+    # "upgrade" that reports success and changes nothing.
+    _frozen_at(monkeypatch, "/opt/tools/bin/tycho")
+
+    assert "TYCHO_INSTALL_DIR=/opt/tools/bin" in cli._upgrade_command()[2]
+
+
+def test_reinstall_quotes_an_install_dir_containing_spaces(monkeypatch):
+    # The dir is interpolated into a shell command line; an unquoted space would split it into
+    # two words and install somewhere unintended.
+    _frozen_at(monkeypatch, "/Users/u/My Tools/tycho")
+
+    assert "TYCHO_INSTALL_DIR='/Users/u/My Tools'" in cli._upgrade_command()[2]
+
+
+def test_direct_channel_can_be_forced_by_env(monkeypatch):
+    # Mirrors TYCHO_INSTALL=brew: an escape hatch for an install the detection can't see.
+    monkeypatch.setenv("TYCHO_INSTALL", "direct")
+    monkeypatch.setattr(cli.sys, "prefix", "/usr")  # would otherwise be the plain-pip branch
+    monkeypatch.setattr(cli.os.path, "realpath", lambda p: "/home/u/.local/bin/tycho")
+
+    assert cli._upgrade_command()[:2] == ["sh", "-c"]
+
+
+def test_frozen_windows_binary_keeps_the_old_fallback(monkeypatch):
+    # install.sh is POSIX-only — there is no installer to re-run on Windows, where the npm
+    # wrapper is the supported standalone channel and sets TYCHO_INSTALL itself.
+    _frozen_at(monkeypatch, r"C:/Users/u/tycho.exe", platform="win32")
+
+    assert cli._upgrade_command()[:1] != ["sh"]
+
+
 @pytest.mark.parametrize("prefix", ["/home/u/.local/pipx/venvs/tycho-cli",
                                     "/home/u/.local/share/uv/tools/tycho-cli"])  # pip has no persisted pin
 def test_force_crosses_a_version_pin_plain_respects_it(monkeypatch, prefix):

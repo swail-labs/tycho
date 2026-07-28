@@ -1,0 +1,32 @@
+# Republish the Homebrew formula for a tag that already shipped.
+#
+# The automatic path is `homebrew-publish` in release.yml, which fires on every stable tag. This
+# is the repair hatch for when the tap ends up behind anyway: a release cut from a tree without
+# that job, a failed or cancelled run, an expired tap token. Without it the only way to move the
+# tap is cutting a new version — which is exactly what 0.1.1 -> 0.1.2 had to spend a version on.
+#
+# Same script as the release job, so the two paths can't drift apart.
+name: Homebrew tap
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Released tag to publish to the tap (e.g. v0.1.2)"
+        required: true
+        type: string
+
+jobs:
+  publish:
+    name: publish the Homebrew formula (swail-labs/homebrew-tap)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Stamp the formula + push to the tap
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          # Via env, not interpolated into the script line: a `${{ }}` expansion inside `run:` is
+          # substituted before the shell sees it, so a crafted input would execute here.
+          TAG: ${{ inputs.tag }}
+        run: packaging/homebrew/publish.sh "$TAG"

@@ -248,3 +248,6 @@ docs/bundler-spike.md
 docs/homebrew-remaining.md
 docs/tycho-web.md
 docs/superpowers/
+
+# Copied in at publish time by release.yml (npm-publish); never committed.
+packaging/npm/README.md
