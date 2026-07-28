@@ -22,6 +22,7 @@ import pytest
 
 from tycho import cli
 from tycho.store import state
+from tycho.views import colour
 from tycho.wire import status
 from tycho.wire import install as init_mod
 
@@ -76,15 +77,15 @@ def test_colour_tracks_the_verdict(tmp_path: Path, monkeypatch):
     monkeypatch.delenv("NO_COLOR", raising=False)
     _install(tmp_path)
 
-    assert status.line(tmp_path).startswith(status._GREY)     # installed, never fired — grey
+    assert status.line(tmp_path).startswith(colour._GREY)     # installed, never fired — grey
     state.record_run(tmp_path, "claude", pending=True)
-    assert status.line(tmp_path).startswith(status._FROST)    # verifying now — frost blue
+    assert status.line(tmp_path).startswith(colour._FROST)    # verifying now — frost blue
     state.record_run(tmp_path, "claude", verdict="VERIFIED")
-    assert status.line(tmp_path).startswith(status._GREEN)
+    assert status.line(tmp_path).startswith(colour._GREEN)
     state.record_run(tmp_path, "claude", verdict="FAILED")
-    assert status.line(tmp_path).startswith(status._RED)
+    assert status.line(tmp_path).startswith(colour._RED)
     state.record_run(tmp_path, "claude", verdict="STALE")
-    assert status.line(tmp_path).startswith(status._RED)      # STALE is adverse → red
+    assert status.line(tmp_path).startswith(colour._RED)      # STALE is adverse → red
 
 
 def test_pending_is_frost_not_yellow(tmp_path: Path, monkeypatch):
@@ -92,8 +93,8 @@ def test_pending_is_frost_not_yellow(tmp_path: Path, monkeypatch):
     monkeypatch.delenv("NO_COLOR", raising=False)
     _install(tmp_path)
     state.record_run(tmp_path, "claude", pending=True)
-    assert status.line(tmp_path).startswith(status._FROST)
-    assert status._FROST != status._YELLOW
+    assert status.line(tmp_path).startswith(colour._FROST)
+    assert colour._FROST != colour._YELLOW
 
 
 def test_unsupported_and_nothing_to_verify_are_grey(tmp_path: Path, monkeypatch):
@@ -102,9 +103,9 @@ def test_unsupported_and_nothing_to_verify_are_grey(tmp_path: Path, monkeypatch)
     monkeypatch.delenv("NO_COLOR", raising=False)
     _install(tmp_path)
     state.record_run(tmp_path, "claude", verdict="UNSUPPORTED")
-    assert status.line(tmp_path).startswith(status._GREY)
+    assert status.line(tmp_path).startswith(colour._GREY)
     state.record_run(tmp_path, "claude")  # fired, nothing to report (no verdict, not pending)
-    assert status.line(tmp_path).startswith(status._GREY)
+    assert status.line(tmp_path).startswith(colour._GREY)
 
 
 def test_indeterminate_is_yellow(tmp_path: Path, monkeypatch):
@@ -112,7 +113,7 @@ def test_indeterminate_is_yellow(tmp_path: Path, monkeypatch):
     monkeypatch.delenv("NO_COLOR", raising=False)
     _install(tmp_path)
     state.record_run(tmp_path, "claude", verdict="INDETERMINATE")
-    assert status.line(tmp_path).startswith(status._YELLOW)
+    assert status.line(tmp_path).startswith(colour._YELLOW)
 
 
 def test_a_run_that_verified_nothing_is_not_green(tmp_path: Path, monkeypatch):
@@ -122,8 +123,8 @@ def test_a_run_that_verified_nothing_is_not_green(tmp_path: Path, monkeypatch):
     _install(tmp_path)
     state.record_run(tmp_path, "claude", verdict="VERIFIED")
     state.record_run(tmp_path, "claude")
-    assert not status.line(tmp_path).startswith(status._GREEN)  # not green anymore
-    assert status.line(tmp_path).startswith(status._GREY)       # grey — nothing to report
+    assert not status.line(tmp_path).startswith(colour._GREEN)  # not green anymore
+    assert status.line(tmp_path).startswith(colour._GREY)       # grey — nothing to report
 
 
 # --- refresh cadence so the badge settles on the verdict ----------

@@ -406,9 +406,9 @@ def _paint(verdict: str) -> str:
     """
     if not _colour():
         return verdict
-    from ..wire import status
+    from .colour import _RESET, _VERDICT_COLOUR
 
-    return status._VERDICT_COLOUR.get(verdict, "") + verdict + status._RESET
+    return _VERDICT_COLOUR.get(verdict, "") + verdict + _RESET
 
 
 def _colour() -> bool:
