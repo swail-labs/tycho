@@ -1620,3 +1620,34 @@ def test_a_go_build_tag_mutes_a_file_and_is_not_an_inert_comment():
     noted = "// ordinary comment\n" + before
     assert textdiff.skip_or_mock_added("cap_test.go", before, muted) != []
     assert textdiff.skip_or_mock_added("cap_test.go", before, noted) == []
+
+
+def test_a_test_written_by_the_shell_is_not_no_test_at_all():
+    """`session.edits` is built from the Write/Edit tools alone, so
+    `cat > tests/test_x.py <<'EOF'` produced a test file no check could see. All three test
+    checks then said "no test files touched" — false — and shrugged non-blocking, letting
+    `command_execution` mint VERIFIED on its own over a test nothing had inspected."""
+    from tycho.read import session as engine
+
+    heredoc = "cat > tests/test_exporter.py <<'PY'\ndef test_ok():\n    assert True\nPY"
+    s = make_session(events=[bash(heredoc, 100.0), bash("pytest -q", 110.0)], edits=[], files={})
+    for check in (checks.test_provenance, checks.assertion_weakening, checks.skip_mock_injection):
+        r = check(s)
+        assert r.status is CheckStatus.UNSUPPORTED and r.blocking, r.name
+        assert "shell command" in r.evidence
+    assert engine.verdict_of([c(s) for c in checks.CHECKS]) is not Verdict.VERIFIED
+
+    # Narrow on purpose: writing a file that isn't a test proves nothing either way.
+    ok = make_session(events=[bash("echo hi > notes.txt", 100.0), bash("pytest -q", 110.0)],
+                      edits=[], files={})
+    assert engine.verdict_of([c(ok) for c in checks.CHECKS]) is Verdict.VERIFIED
+
+
+def test_written_paths_reads_redirects_without_guessing():
+    """Shallow on purpose — it reports "something was written here", never a verified path."""
+    w = checks.written_paths
+    assert w("cat > tests/test_x.py <<'PY'\nprint(a > b)\nPY") == ["tests/test_x.py"]  # not `b`
+    assert w("pytest -q 2>&1 | tail -5") == []          # stream plumbing, not a file
+    assert w("echo x >> out.log") == ["out.log"]
+    assert w("echo x | tee -a build/log.txt") == ["build/log.txt"]
+    assert w("echo x > $OUT") == []                      # unexpanded — a guess, so nothing

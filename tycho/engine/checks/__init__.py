@@ -79,6 +79,7 @@ from .cmdread import (  # noqa: E402
     _selection as _selection,
     _selects_whole_suite as _selects_whole_suite,
     _unwrap as _unwrap,
+    written_paths as written_paths,
 )
 from .common import (  # noqa: E402
     _is_in_repo as _is_in_repo,

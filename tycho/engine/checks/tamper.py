@@ -12,7 +12,7 @@ from __future__ import annotations
 from .. import textdiff
 from ..astdiff import assertion_delta, parseable, skip_or_mock_added
 from ...model import CheckResult, CheckStatus, Session
-from .common import _is_test_edit, _r
+from .common import _is_test_edit, _r, _shell_written_tests
 
 
 def assertion_weakening(session: Session) -> CheckResult:
@@ -34,6 +34,15 @@ def _is_python(path: str) -> bool:
 def _tamper_check(session: Session, name: str, ast_differ, text_differ, clean_msg: str) -> CheckResult:
     test_edits = [fe for fe in session.edits if _is_test_edit(fe, session)]
     if not test_edits:
+        # A test written by shell redirect leaves no before/after to diff — the same capability
+        # gap the `firsts` branch below blocks on, arriving one step earlier.
+        if written := _shell_written_tests(session):
+            return _r(
+                name, CheckStatus.UNSUPPORTED,
+                f"{written[0]} was written by a shell command, not an edit tool — no baseline "
+                f"exists to diff, so Tycho can't tell whether its assertions survived",
+                blocking=True,
+            )
         return _r(name, CheckStatus.UNSUPPORTED, "no edited test files to diff")
     # earliest original per path = the file before the session's first edit
     firsts: dict[str, str] = {}

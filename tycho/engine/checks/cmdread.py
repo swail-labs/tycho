@@ -216,6 +216,32 @@ def _strip_redirects(parts: list[str]) -> list[str]:
     return kept
 
 
+# `cat > f <<'EOF'`, `printf ... > f`, `tee f` — a file written by the shell rather than by the
+# Write/Edit tools. `session.edits` only ever knew those two tools, so a test file authored this
+# way was invisible: every test check reported "no test files touched this session" — which was
+# false — shrugged non-blocking, and `command_execution` alone minted VERIFIED over a test
+# nothing had inspected. Reproduced on a real session.
+_WRITE_REDIRECT = re.compile(r"(?:^|\s)\d*>{1,2}\s*([^\s|&;<>()]+)")
+_TEE_TARGETS = re.compile(r"(?:^|[|;&]\s*)tee\s+((?:-\S+\s+)*)([^\s|&;<>()]+)")
+
+
+def written_paths(cmd: str) -> list[str]:
+    """Every path this shell command writes by redirection or `tee`.
+
+    Heredoc *bodies* are stripped first: `cat > t.py <<'EOF'` followed by a body containing
+    `print(x > y)` must not read that comparison as a redirect. Deliberately shallow — it does
+    not expand variables or globs, so `> $OUT` yields a useless literal rather than a guess.
+    A caller must treat this as "something was written here", never as a verified path.
+    """
+    if not cmd or len(cmd) > _MAX_CMD_LEN:
+        return []
+    text = _strip_heredocs(cmd)
+    out = [m.group(1) for m in _WRITE_REDIRECT.finditer(text)]
+    out += [m.group(2) for m in _TEE_TARGETS.finditer(text)]
+    # `2>&1` and `>&2` are plumbing between streams, not files.
+    return [p for p in out if p and not p.startswith("&") and not p.startswith("$")]
+
+
 def _normalize_segment(segment: str) -> str:
     """Strip env prefixes, redirections and the leading path, so `.venv/bin/python -m pytest`
     reads as `python -m pytest`."""

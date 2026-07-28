@@ -129,6 +129,30 @@ def _is_test_edit(fe, session) -> bool:
     return textdiff.contains_tests(fe.path, (fs.current_text if fs else None) or fe.original)
 
 
+def _shell_written_tests(session) -> list[str]:
+    """Test files this session wrote with the shell instead of the Write/Edit tools.
+
+    `session.edits` is built from those two tools alone, so `cat > tests/test_x.py <<'EOF'`
+    produced a test file that no check could see. The three test checks then reported "no test
+    files touched", non-blocking — a false statement that let `command_execution` mint VERIFIED
+    on its own, over a test nothing had inspected.
+
+    There is no baseline for a file written this way, so this cannot produce a diff. It exists
+    to turn a wrong confident answer into an honest one.
+    """
+    from .cmdread import _SHELL_TOOLS, written_paths
+
+    seen = []
+    for e in session.events:
+        if e.tool not in _SHELL_TOOLS:
+            continue
+        for path in written_paths(e.input.get("command") or ""):
+            rel = path.lstrip("./")
+            if _is_test_path(rel) and rel not in seen:
+                seen.append(rel)
+    return seen
+
+
 def _is_in_repo(path: str) -> bool:
     """True for a path `_relpath` left repo-relative. Out-of-repo edits stay absolute in
     native *or* POSIX flavor, so both are tested."""
