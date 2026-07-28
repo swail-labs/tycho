@@ -121,35 +121,29 @@ def _locked(path: Path, timeout: float | None = None):
     """Hold an exclusive lock on `path`; yields True if acquired. Callers must work when it
     yields False — never block a turn on a lock.
 
-    The timeout bounds waiting on a *stuck* holder, not waiting in a queue: every time the
-    lock changes hands the deadline resets, because someone is making progress and the wait is
-    finite. Bounding total wait instead conflated the two — enough concurrent writers and a
-    waiter starves out while the file is passing between them perfectly well, which is how a
-    catch went missing from the tally on a loaded Windows runner.
+    Contention beyond the timeout is expected and is not this function's problem to solve:
+    callers that must not lose their write retry the whole operation (`_locked_update`,
+    `record._LOCK_ATTEMPTS`), which works on every platform. An earlier version reset the
+    deadline whenever the lock's mtime moved, on the theory that a lock changing hands means
+    the wait is finite — but Windows quantises file times to the ~15.6ms system tick, coarser
+    than the critical section, so the signal it needed to see was invisible exactly where it
+    was needed.
 
     ponytail: an O_EXCL sidecar, one mechanism on all three platforms instead of flock +
-    msvcrt. Ceiling: not atomic on old NFS, a killed holder blocks until `_LOCK_STALE`, and
-    progress is read from the lock's mtime, so a filesystem with coarse mtime granularity
-    degrades to bounding the total wait.
+    msvcrt. Ceiling: not atomic on old NFS, and a killed holder blocks until `_LOCK_STALE`.
     """
     lock = path.with_name(path.name + ".lock")
     fd = None
-    limit = _LOCK_TIMEOUT if timeout is None else timeout
-    deadline = time.monotonic() + limit
-    held_since = None
+    deadline = time.monotonic() + (_LOCK_TIMEOUT if timeout is None else timeout)
     while True:
         try:
             fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, _FILE_MODE)
             break
         except FileExistsError:
             try:
-                stamp = lock.stat().st_mtime
-                if time.time() - stamp > _LOCK_STALE:
+                if time.time() - lock.stat().st_mtime > _LOCK_STALE:
                     lock.unlink(missing_ok=True)
                     continue
-                if stamp != held_since:  # a new holder — the queue is moving, so keep waiting
-                    held_since = stamp
-                    deadline = time.monotonic() + limit
             except OSError:
                 pass
             if time.monotonic() >= deadline:
