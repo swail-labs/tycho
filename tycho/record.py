@@ -102,38 +102,70 @@ def path_for(repo: Path) -> Path:
 # not. A calibration knob, not a finished list, tuned to over-redact: a false [REDACTED]
 # costs a reader context, a miss puts a live credential in a durable, greppable file.
 
+#
+# **Every quantifier here is bounded.** An unbounded `*`/`+` in front of a literal that may
+# not appear is quadratic on the length of the text, and this text is agent-controlled — a
+# `cat` of a large file was enough to hang the Stop hook for 75 seconds. `_clean` bounds the
+# input as well; both, because a bound in one place is a bound one edit from being lost.
+
+_NAME_RUN = "[A-Za-z0-9_]{0,64}"  # env var names are short; the bound is what keeps this linear
 _SECRET_NAME = (
-    r"[A-Za-z0-9_]*(?:SECRET|TOKEN|PASSWORD|PASSWD|PASSPHRASE|CREDENTIAL|"
-    r"API[_-]?KEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY)[A-Za-z0-9_]*"
+    rf"{_NAME_RUN}(?:SECRET|TOKEN|PASSWORD|PASSWD|PASSPHRASE|PASS|CREDENTIAL|KEY|AUTH|SALT|"
+    rf"DSN|API[_-]?KEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY){_NAME_RUN}"
 )
+_VALUE = "\"[^\"]{0,4096}\"|'[^']{0,4096}'|[^\\s;&|)]{1,4096}"
 
 _REDACTIONS: tuple[tuple[re.Pattern[str], str], ...] = (
+    # A private key block, whole. The long lines would be caught by the base64 rule below, but
+    # the last line of a block is short and would survive on its own.
+    (re.compile(r"(?s)(-----BEGIN [A-Z ]{0,40}PRIVATE KEY-----).{0,65536}?"
+                r"(-----END [A-Z ]{0,40}PRIVATE KEY-----)"), r"\1[REDACTED]\2"),
+    # Authorization: Bearer xxx — the header, in a curl command or a pasted request. Before
+    # the name=value row, which would otherwise consume the header name and stop at `Bearer`.
+    (re.compile(r"(?i)\b(authorization\s*:\s*)(?:bearer\s+|basic\s+|token\s+)?[^\s\"';]{1,4096}"),
+     r"\1[REDACTED]"),
     # FOO_TOKEN=value / "api_key": "value". Quoted values go whole (no dangling quote);
     # unquoted ones stop at a shell separator, so `KEY=x && pytest` keeps its `&& pytest`.
-    (re.compile(rf"(?i)\b({_SECRET_NAME})(\s*[=:]\s*)(\"[^\"]*\"|'[^']*'|[^\s;&|)]+)"),
-     r"\1\2[REDACTED]"),
-    # Authorization: Bearer xxx — the header, in a curl command or a pasted request.
-    (re.compile(r"(?i)\b(authorization\s*:\s*)(?:bearer\s+|basic\s+|token\s+)?[^\s\"';]+"),
-     r"\1[REDACTED]"),
+    (re.compile(rf"(?i)\b({_SECRET_NAME})([ \t]*[=:][ \t]*)({_VALUE})"), r"\1\2[REDACTED]"),
     # Long-form credential flags: --password=x, --token x, --api-key x.
-    (re.compile(r"(?i)(--(?:password|passwd|token|api[-_]?key|secret)(?:[= ]))\S+"), r"\1[REDACTED]"),
+    (re.compile(r"(?i)(--(?:password|passwd|token|api[-_]?key|secret)(?:[= ]))\S{1,4096}"),
+     r"\1[REDACTED]"),
+    # Spaced short flags, but only where the command names what the value is: `docker login -p`
+    # and `ssh-keygen -N` really do take a credential there. A bare `-p x` is left alone (see
+    # the attached-form row).
+    (re.compile(r"(?i)(\b(?:login|ssh-keygen)\b[^\n]{0,120}?\s-(?:p|N)\s+)"
+                r"(?:\"[^\"]{0,4096}\"|'[^']{0,4096}'|\S{1,4096})"), r"\1[REDACTED]"),
+    # curl/wget `-u user:password` — the user identifies the removal, the password goes.
+    (re.compile(r"(?i)(\b(?:curl|wget)\b[^\n]{0,160}?\s-u\s+[^\s:]{1,64}:)\S{1,4096}"),
+     r"\1[REDACTED]"),
     # Short mysql-style `-pSECRET` (attached, ≥6 chars, not all-lowercase so `find -printf`
-    # survives). ponytail: the spaced `-p x` form is deliberately NOT matched — `mkdir -p dir`,
-    # `docker -p 8080:80`, `cp -p src` dominate; add a row if a real one shows up.
-    (re.compile(r"(?<![\w-])-p(?=\S*[^a-z\s])\S{6,}"), "-p[REDACTED]"),
+    # survives). ponytail: the spaced `-p x` form is deliberately NOT matched here — `mkdir -p
+    # dir`, `docker -p 8080:80`, `cp -p src` dominate it; the row above covers the commands
+    # where a spaced `-p` is genuinely a password.
+    (re.compile(r"(?<![\w-])-p(?=\S{0,256}[^a-z\s])\S{6,4096}"), "-p[REDACTED]"),
     # scheme://user:password@host — inline credentials in a URL (git remotes, curl, psql).
-    (re.compile(r"\b([a-zA-Z][a-zA-Z0-9+.-]*://)[^\s/:@]+:[^\s/@]+@"), r"\1[REDACTED]@"),
+    (re.compile(r"\b([a-zA-Z][a-zA-Z0-9+.-]{0,32}://)[^\s/:@]{1,256}:[^\s/@]{1,256}@"),
+     r"\1[REDACTED]@"),
     # Vendor-prefixed keys, which are self-identifying and never anything else.
-    (re.compile(r"\b(?:sk|pk|rk)[-_](?:live|test|proj|ant|or)?[-_]?[A-Za-z0-9_-]{16,}"), "[REDACTED]"),
-    (re.compile(r"\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{16,}"), "[REDACTED]"),
+    (re.compile(r"\b(?:sk|pk|rk)[-_](?:live|test|proj|ant|or)?[-_]?[A-Za-z0-9_-]{16,4096}"),
+     "[REDACTED]"),
+    (re.compile(r"\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{16,4096}"), "[REDACTED]"),
+    (re.compile(r"\b(?:whsec_|hf_)[A-Za-z0-9_]{16,4096}"), "[REDACTED]"),
     (re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{12,}\b"), "[REDACTED]"),
-    (re.compile(r"\bxox[abposr]-[A-Za-z0-9-]{10,}"), "[REDACTED]"),
-    # Long high-entropy hex, except exactly 40 chars: that is a git object id, not a secret.
+    (re.compile(r"\bxox[abposr]-[A-Za-z0-9-]{10,4096}"), "[REDACTED]"),
+    # Long high-entropy hex. A bare 40-char run is a git object id, so it is spared — but only
+    # when nothing assigns it: `=`/`:` in front means a value, and plenty of real credentials
+    # (Datadog application keys) are 40 hex. `sha256:` is spared outright: those are Tycho's
+    # own attestation digests, and redacting them destroys the evidence this tool exists for.
     # ponytail: length heuristic, not entropy, so a 64-char sha256 in prose is redacted too.
-    (re.compile(r"\b(?![0-9a-fA-F]{40}\b)[0-9a-fA-F]{32,}\b"), "[REDACTED]"),
-    # Long base64-ish blob (JWT segments, encoded keys). *Mixed case* is required: it separates
-    # an encoded blob from a long lowercase identifier, and from the git sha kept above.
-    (re.compile(r"\b(?=[A-Za-z0-9+/]*[a-z])(?=[A-Za-z0-9+/]*[A-Z])[A-Za-z0-9+/]{40,}={0,2}"),
+    (re.compile(r"(?<!sha256:)(?<![0-9a-fA-F])"
+                r"(?:(?:(?<=[=:])|(?<=[=:] )|(?<=[=:]\")|(?<=[=:] \"))[0-9a-fA-F]{40}|(?![0-9a-fA-F]{40}(?![0-9a-fA-F]))[0-9a-fA-F]{32,})"
+                r"(?![0-9a-fA-F])"), "[REDACTED]"),
+    # Long base64-ish blob (JWT segments, encoded keys). Mixed case *and* a digit or +/ are
+    # required: that is what separates an encoded blob from a long lowercase identifier, from
+    # the git sha kept above, and from a CamelCase symbol name in prose.
+    (re.compile(r"\b(?=[A-Za-z0-9+/]{0,512}[a-z])(?=[A-Za-z0-9+/]{0,512}[A-Z])"
+                r"(?=[A-Za-z0-9+/]{0,512}[0-9+])[A-Za-z0-9+/]{40,4096}={0,2}"),
      "[REDACTED]"),
 )
 
@@ -148,10 +180,24 @@ def redact(text: str) -> str:
     return text
 
 
+_REDACT_HEADROOM = 8  # multiples of the field limit that reach the patterns
+
+
 def _clean(text: str, limit: int) -> str:
-    """Redact, then bound — truncating first could cut a secret in half and leave its front
-    on disk matching no pattern."""
-    text = redact(str(text or ""))
+    """Bound, redact, bound — in that order.
+
+    Truncating *to the limit* first could cut a secret in half and leave its front on disk
+    matching no pattern, so the first bound is a generous multiple of it: far past any real
+    credential, but a fixed ceiling on the work the patterns do. Without it the field limit
+    protects nothing (redaction ran first) and a 128 KB command string — which an agent can
+    write by accident, with `cat`, never mind on purpose — took 75 seconds inside the Stop
+    hook. A hang is not an exception, so the hook's fail-open never sees it.
+    """
+    text = str(text or "")
+    headroom = limit * _REDACT_HEADROOM
+    if len(text) > headroom:
+        text = text[:headroom]
+    text = redact(text)
     return text if len(text) <= limit else text[:limit] + _TRUNCATED
 
 

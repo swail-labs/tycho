@@ -226,3 +226,15 @@ def test_user_dir_expands_user_in_override(tmp_path, monkeypatch):
     monkeypatch.setenv("USERPROFILE", str(tmp_path))  # Windows reads this one
     monkeypatch.setenv("TYCHO_HOME", "~/relocated")
     assert state.user_dir() == tmp_path / "relocated"
+
+
+# --- the evidence trail is durable, so it is redacted too --------------------
+
+def test_check_evidence_is_redacted_before_it_reaches_catches_json(tmp_path: Path):
+    """The README says evidence is redacted before it hits disk, and `catches.json` is as
+    durable and as greppable as `turns.jsonl` — it just wrote the raw string."""
+    results = _results(("secrets", "FAIL", "ran `deploy --token=abcd1234efgh5678ijkl`"))
+    state.record_catch(tmp_path, "claude", "FAILED", results)
+    blob = (state.dir_for(tmp_path) / "catches.json").read_text(encoding="utf-8")
+    assert "abcd1234efgh5678ijkl" not in blob
+    assert "[REDACTED]" in blob

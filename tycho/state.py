@@ -263,10 +263,14 @@ def record_catch(repo: Path, harness: str, verdict: str, results) -> None:
     """Bump the running tally (repo + machine) and, when adverse or intermediate, append to
     the repo's evidence trail. Every verdict counts toward the `runs` denominator —
     VERIFIED/UNSUPPORTED are runs, not catches."""
+    from . import record  # lazy: record imports state
+
     entry = None
     if verdict in _TALLIED:
         trail = [
-            {"check": r.name, "status": r.status.name, "evidence": r.evidence}
+            # Same redaction policy as the turn record — this trail is durable too.
+            {"check": r.name, "status": r.status.name,
+             "evidence": record._clean(r.evidence, record._MAX_EVIDENCE_CHARS)}
             for r in results if r.status.name != "PASS"
         ]
         entry = {"at": time.time(), "harness": harness, "verdict": verdict, "checks": trail}

@@ -265,7 +265,7 @@ def test_truncation_bounds_a_pathological_turn():
 
 def test_redaction_runs_before_truncation():
     """Truncating first could cut a secret in half and leave its head on disk."""
-    secret = "A" * 60 + "b" * 60  # a mixed-case base64-ish blob, longer than the bound
+    secret = "A" * 60 + "b" * 59 + "7"  # a mixed-case base64-ish blob, longer than the bound
     rec = build(make_session(messages=[Message(1.0, "x" * (record._MAX_CLAIM_CHARS - 10) + secret)]))
     assert secret[:40] not in rec["claims"][0]
 
@@ -343,7 +343,9 @@ def test_corrupt_lines_are_skipped_not_fatal(tmp_path: Path):
     with path.open("a", encoding="utf-8") as fh:
         fh.write("not json at all\n")
         fh.write("[1, 2, 3]\n")          # valid JSON, wrong shape
-        fh.write('{"schema":1,"id":"x"\n')  # truncated append (a crash mid-write)
+        # A truncated append, written the way a crash writes one: **no trailing newline**.
+        # With one, this is a different bug — and the shape a killed process never produces.
+        fh.write('{"schema":1,"id":"x"')
     record.append(tmp_path, build(make_session(), ended_at=2.0))
     assert [r["ended_at"] for r in record.read(tmp_path)] == [2.0, 1.0]
 
@@ -561,3 +563,169 @@ def test_a_record_from_a_newer_tycho_is_skipped_not_misread(tmp_path: Path):
     )
     rows = list(record.iter_records(tmp_path))
     assert len(rows) == 1 and rows[0]["schema"] == record.SCHEMA
+
+
+# --- redaction: the bound on the work it does --------------------------------
+
+@pytest.mark.parametrize("hostile", [
+    "TOKEN" * 30_000,                       # the `_SECRET_NAME` row's quadratic shape
+    "http://" + "a-" * 15_000,              # the URL-credential row's
+    "cat log: " + "A" * 150_000,            # a plain `cat` of a large file
+    "sk-live-" + "a_" * 15_000,
+])
+def test_redaction_of_a_hostile_input_is_bounded_in_wall_time(hostile):
+    """Command strings are agent-controlled, `_clean` used to redact *before* truncating, and
+    a hang is not an exception — the Stop hook's fail-open never sees one. Measured through
+    `hook.run` before the fix: 32k chars → 4.9s, 128k → 74.7s.
+
+    The bound is wall time on purpose: it fails for any future pattern that reintroduces a
+    superlinear one, not just for the two that were found.
+    """
+    import time as _time
+
+    start = _time.perf_counter()
+    out = record._clean(hostile, record._MAX_CMD_CHARS)
+    elapsed = _time.perf_counter() - start
+    assert elapsed < 0.25, f"redaction took {elapsed:.2f}s"
+    assert len(out) <= record._MAX_CMD_CHARS + len(record._TRUNCATED)
+
+
+def test_a_huge_hostile_claim_does_not_hang_the_record(tmp_path: Path):
+    """Through `build`, which is what the Stop hook calls. (`checks._runner_segment` and
+    `checks._status_is_masked` scan the *unbounded* command string before this and cost ~0.4s
+    each at 100k — outside this module, but the same class of problem.)"""
+    import time as _time
+
+    session = make_session(messages=[Message(1.0, "SECRET" * 20_000)])
+    start = _time.perf_counter()
+    rec = build(session)
+    elapsed = _time.perf_counter() - start
+    assert elapsed < 0.5, f"build took {elapsed:.2f}s"
+    assert record.append(tmp_path, rec)
+
+
+# --- redaction: the corpus ---------------------------------------------------
+
+CAUGHT = [
+    ("stripe webhook secret", "STRIPE=whsec_0123456789abcdefghijklmn", "whsec_0123456789abcdefghijklmn"),
+    ("huggingface token", "export HF=hf_abcdefghijklmnopqrstuvwxyz012345", "hf_abcdefghijklmnopqrstuvwxyz012345"),
+    ("db pass, short name", "DB_PASS=hunter2horse", "hunter2horse"),
+    ("app key", "APP_KEY=base64keymaterial123", "base64keymaterial123"),
+    ("encryption key", "ENCRYPTION_KEY=abc123xyz789", "abc123xyz789"),
+    ("signing key", "SIGNING_KEY=abc123xyz789", "abc123xyz789"),
+    ("master key", "MASTER_KEY=abc123xyz789", "abc123xyz789"),
+    ("session key", "SESSION_KEY=abc123xyz789", "abc123xyz789"),
+    ("bare key", "KEY=abc123xyz789", "abc123xyz789"),
+    ("auth", "AUTH=abc123xyz789", "abc123xyz789"),
+    ("salt", "SALT=abc123xyz789", "abc123xyz789"),
+    ("dsn", "SENTRY_DSN=https://abc123@o1.ingest.sentry.io/2", "abc123"),
+    ("docker login spaced -p", "docker login -u bob -p Sup3rSecretPw registry.io", "Sup3rSecretPw"),
+    ("ssh-keygen -N", "ssh-keygen -t ed25519 -N Sup3rSecretPw -f id_ed25519", "Sup3rSecretPw"),
+    ("curl -u user:pass", "curl -u admin:Sup3rSecretPw https://api.example.com", "Sup3rSecretPw"),
+    ("datadog app key after =", "DD_APP=0123456789abcdef0123456789abcdef01234567",
+     "0123456789abcdef0123456789abcdef01234567"),
+]
+
+PEM = (
+    "-----BEGIN RSA PRIVATE KEY-----\n"
+    "MIIEowIBAAKCAQEAx3bV9Qz1kO0pQ7Yd8kZ2mN4tL6vR8sT0uW2xY4zA6bC8dE0fG\n"
+    "aBcD1eF2\n"  # the short final line: on its own it matches nothing
+    "-----END RSA PRIVATE KEY-----"
+)
+
+
+@pytest.mark.parametrize("label, text, secret", CAUGHT, ids=[c[0] for c in CAUGHT])
+def test_the_redaction_corpus_is_caught(label, text, secret):
+    out = record.redact(text)
+    assert "[REDACTED]" in out, label
+    assert secret not in out, label
+
+
+def test_a_private_key_block_goes_whole_including_its_short_final_line():
+    out = record.redact("here is the key:\n" + PEM + "\ndone")
+    assert "aBcD1eF2" not in out
+    assert "MIIEowIBAAKCAQEA" not in out
+    assert "-----BEGIN RSA PRIVATE KEY-----" in out  # what was removed stays identifiable
+
+
+@pytest.mark.parametrize("benign", [
+    "pytest -q",
+    "uv run --with pytest pytest -q",
+    "git checkout 0123456789abcdef0123456789abcdef01234567",
+    "mkdir -p /tmp/build && pytest -q",
+    "docker run -p 8080:80 app",
+    "find . -printf '%p\\n'",
+    "550e8400-e29b-41d4-a716-446655440000",
+    "src/tycho/record.py::test_a_very_long_name",
+    "/Users/dev/projects/some-repo/src/components/AuthenticationProviderFactory.tsx",
+    "class AbstractSingletonProxyFactoryBeanConfigurationDelegate:",
+    "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "Tycho-Attestation: sha256:" + "a" * 64,
+])
+def test_redaction_leaves_these_byte_for_byte(benign):
+    """False positives cost a reader context and, for `sha256:`, destroy Tycho's own
+    attestation digests — the evidence the tool exists to produce."""
+    assert record.redact(benign) == benign
+
+
+def test_a_forty_hex_run_is_a_git_sha_only_when_nothing_assigns_it():
+    """The exemption was drawn at the wrong level: plenty of real credentials (Datadog
+    application keys) are 40 hex, and `=`/`:` in front means it is a value, not an object id."""
+    sha = "0123456789abcdef0123456789abcdef01234567"
+    assert record.redact(f"git show {sha}") == f"git show {sha}"
+    assert sha not in record.redact(f"DATADOG_APP={sha}")
+    assert sha not in record.redact(f'{{"app": "{sha}"}}')
+
+
+def test_an_attestation_digest_survives_the_record_it_is_computed_over():
+    rec = build(make_session([bash("pytest -q")]), [passing()])
+    assert record._clean(record.digest(rec), 500) == record.digest(rec)
+
+
+# --- the never-raises contract, continued ------------------------------------
+
+def test_a_lone_surrogate_in_a_claim_does_not_lose_the_turn(tmp_path: Path):
+    """`"\\ud800"` is not encodable UTF-8: the write raised, `append` returned False, and the
+    whole turn — every claim and every check in it — was never recorded."""
+    rec = build(make_session(messages=[Message(1.0, "I fixed the \ud800 parser")]))
+    assert record.append(tmp_path, rec) is True
+    rows = record.read(tmp_path)
+    assert len(rows) == 1 and rows[0]["claims"]
+    assert record.digest(rows[0])  # and a row already on disk still digests
+
+
+def test_a_huge_retention_cap_does_not_take_the_append_down(tmp_path: Path, monkeypatch):
+    """`deque(maxlen=n)` raises OverflowError past sys.maxsize, and OverflowError is not in
+    `append`'s except clause: the hook swallowed it and every turn rendered no verdict."""
+    monkeypatch.setenv("TYCHO_TURNS_MAX", "99999999999999999999999")
+    assert record.max_records() == record._MAX_CEILING
+    assert record.append(tmp_path, build(make_session())) is True
+    assert len(record.read(tmp_path)) == 1
+
+
+# --- permissions -------------------------------------------------------------
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX modes")
+def test_the_record_is_not_world_readable(tmp_path: Path):
+    """`turns.jsonl` holds the agent's own prose; 0644 in a shared checkout is an exposure."""
+    record.append(tmp_path, build(make_session(messages=[Message(1.0, "private prose")])))
+    path = record.path_for(tmp_path)
+    assert path.stat().st_mode & 0o077 == 0
+    assert path.parent.stat().st_mode & 0o077 == 0
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX modes")
+def test_state_json_is_not_world_readable(tmp_path: Path):
+    state.record_run(tmp_path, "claude", verdict="FAILED")
+    path = state.dir_for(tmp_path) / "last-run.json"
+    assert path.stat().st_mode & 0o077 == 0
+
+
+# --- blame: the suffix match is for a basename -------------------------------
+
+def test_touching_does_not_answer_a_directory_query_with_a_different_file(tmp_path: Path):
+    edit, files = on_disk("vendor/src/app.py")
+    record.append(tmp_path, build(make_session(edits=[edit], files=files)))
+    assert record.touching(tmp_path, "src/app.py") == []      # a different file
+    assert record.touching(tmp_path, "app.py")                # a bare basename still matches
+    assert record.touching(tmp_path, "vendor/src/app.py")     # and the exact path does
