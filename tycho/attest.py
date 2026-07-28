@@ -3,10 +3,15 @@
 Covers every recorded turn that touched a file in the commit, in the window **between the
 previous commit and this one**. Body, and the two rendered forms::
 
-    {"schema": 1, "turns": [<record digest>, …], "verdicts": {"VERIFIED": 3, "STALE": 1}}
+    {"schema": 2, "tree": "<tree sha>", "turns": [<record digest>, …],
+     "verdicts": {"VERIFIED": 3, "STALE": 1}}
 
-    Tycho-Attestation: sha256:6f… (4 turns, 3 VERIFIED, 1 STALE) turns=6a1f…,9c02…
-    Tycho-Attestation: sha256:1c… (2 turns, NEVER VERIFIED: 2 UNSUPPORTED) turns=4d31…
+    Tycho-Attestation: sha256:6f… (4 turns, 3 VERIFIED, 1 STALE) tree=9f2c… turns=6a1f…,9c02…
+    Tycho-Attestation: sha256:1c… (2 turns, NEVER VERIFIED: 2 UNSUPPORTED) tree=3b70… turns=4d31…
+
+`tree` is what makes the attestation a statement about *this* commit. A body naming only turns
+is equally true of any commit touching the same files, so the trailer could be copied onto a
+hand-written commit, or inherited by a `git revert`, and still verify.
 
 Both bounds matter. Without the upper one a turn recorded later joins the set and every old
 trailer stops verifying; without the lower one a commit sweeps in every turn that ever touched
@@ -34,12 +39,22 @@ from . import record as record_mod
 from . import state
 
 TRAILER = "Tycho-Attestation"
-SCHEMA = 1
+# The body shape written today: bound to the tree the commit records.
+SCHEMA = 2
+# What Tycho wrote before that — a body naming turns but no commit content. Trailers in the
+# wild are digests over *this* shape, so verification rebuilds them exactly as written.
+_SCHEMA_UNBOUND = 1
 
 NEVER = "NEVER VERIFIED"
 
 _DIGEST_RE = re.compile(r"sha256:[0-9a-f]{64}")
 _IDS_RE = re.compile(r"turns=([0-9a-fA-F,]+)")
+_TREE_RE = re.compile(r"tree=([0-9a-f]{40,64})")
+
+# git's `-v` scissors: everything below it, diff included, is stripped from the message. The
+# diff body is *not* comment-prefixed, so a trailer appended to the end of the file lands
+# inside it and is silently discarded.
+_SCISSORS = re.compile(r"^\S? ?-{3,} >8 -{3,}")
 
 # Stable ordering so the trailer prose is deterministic across dict orderings.
 _VERDICT_ORDER = ("VERIFIED", "OVERRIDDEN", "FAILED", "STALE", "INDETERMINATE", "UNSUPPORTED")
@@ -78,6 +93,25 @@ def staged_paths(repo: Path, base: str = "HEAD") -> tuple[str, ...]:
         if out is not None:
             return _paths_of(out)
     return ()
+
+
+def staged_tree(repo: Path) -> str | None:
+    """The tree the pending commit will record, or None when git can't say.
+
+    `write-tree` reads whatever index git has the hook looking at — including the temporary
+    one git builds for `git commit --only <path>` — so it names the content being committed
+    rather than the content lying around. It does add a tree object to the database; git was
+    going to write that same object a moment later anyway, and an abandoned commit leaves it
+    unreferenced for gc, like every other aborted git operation.
+    """
+    out = (_git(repo, "write-tree") or "").strip()
+    return out or None
+
+
+def _tree_of(repo: Path, ref: str) -> str | None:
+    """The tree `ref` actually recorded — verify's mirror of `staged_tree`."""
+    out = (_git(repo, "show", "-s", "--format=%T", ref) or "").strip()
+    return out or None
 
 
 def _commit_paths(repo: Path, ref: str) -> tuple[str, ...]:
@@ -135,24 +169,33 @@ def covered(repo: Path, paths, until: float | None = None,
     return out
 
 
-def _body(turns) -> dict | None:
-    """The digested body for a set of covered turns, or None when there are none."""
+def _body(turns, tree: str | None = None) -> dict | None:
+    """The digested body for a set of covered turns, or None when there are none.
+
+    `tree` is what ties the attestation to *this* commit. Without it the body is a statement
+    about a set of turns and nothing else, so the same digest is valid on any commit touching
+    the same paths — copy the trailer onto a hand-written commit, or let a `git revert` inherit
+    it, and it verifies. Omitted only when rebuilding a trailer written before this bound
+    existed, which must digest exactly as it was written.
+    """
     digests = [d for _, d, _ in turns]
     if not digests:
         return None
     verdicts: dict[str, int] = {}
     for _, _, verdict in turns:
         verdicts[verdict] = verdicts.get(verdict, 0) + 1
-    return {"schema": SCHEMA, "turns": digests, "verdicts": verdicts}
+    if tree is None:
+        return {"schema": _SCHEMA_UNBOUND, "turns": digests, "verdicts": verdicts}
+    return {"schema": SCHEMA, "tree": tree, "turns": digests, "verdicts": verdicts}
 
 
 def attestation(repo: Path, paths, until: float | None = None,
-                since: float | None = None) -> dict | None:
+                since: float | None = None, tree: str | None = None) -> dict | None:
     """The attestation body for a commit touching `paths`, or None when nothing covers it.
 
     `until`/`since` bound by `ended_at`: after the commit is a turn that can't have been in it,
     before the previous commit is a turn that commit already attested."""
-    return _body(covered(repo, paths, until, since))
+    return _body(covered(repo, paths, until, since), tree)
 
 
 def summary(body: dict) -> str:
@@ -166,12 +209,17 @@ def summary(body: dict) -> str:
 
 
 def trailer_line(body: dict, ids=()) -> str:
-    """`Tycho-Attestation: sha256:… (4 turns, 3 VERIFIED, 1 STALE) turns=6a1f…` — one line.
+    """`Tycho-Attestation: sha256:… (4 turns, 3 VERIFIED) tree=9f2… turns=6a1f…` — one line.
+
+    `tree=` and `turns=` are the digest's own inputs, written out so verification can check
+    them one at a time and say *which* one moved rather than reporting one opaque mismatch.
 
     ponytail: every id, uncapped — a commit covering hundreds of turns gets a long line. Cap it
     (and fall back to the reconstructing path) if a real commit message ever suffers.
     """
     line = f"{TRAILER}: {record_mod.digest(body)} ({summary(body)})"
+    if body.get("tree"):
+        line += f" tree={body['tree']}"
     listed = ",".join(i for i in ids if i)
     return f"{line} turns={listed}" if listed else line
 
@@ -186,7 +234,7 @@ def trailer(repo: Path, source: str | None = None) -> str | None:
         return None
     base = "HEAD^" if source == "commit" else "HEAD"
     turns = covered(repo, staged_paths(repo, base), since=_window(repo, base))
-    body = _body(turns)
+    body = _body(turns, staged_tree(repo))
     return trailer_line(body, [i for i, _, _ in turns]) if body else None
 
 
@@ -203,9 +251,15 @@ def _strip(text: str) -> str:
 
 def _append(text: str, line: str) -> str:
     """Put `line` after the prose but *before* git's comment block, which git strips and
-    which would otherwise swallow the trailer."""
+    which would otherwise swallow the trailer.
+
+    Under `commit.verbose` (`git commit -v`) the block ends in a scissors line followed by the
+    raw diff — and the diff's own lines are not comment-prefixed, so walking back from the end
+    stops inside it and the trailer lands below the scissors, where git throws it away.
+    """
     lines = text.splitlines()
-    cut = len(lines)
+    cut = next((i for i, ln in enumerate(lines) if _SCISSORS.match(ln)), len(lines))
+    lines, below = lines[:cut], lines[cut:]
     while cut and (not lines[cut - 1].strip() or lines[cut - 1].lstrip().startswith("#")):
         cut -= 1
     body, tail = lines[:cut], lines[cut:]
@@ -213,6 +267,7 @@ def _append(text: str, line: str) -> str:
     # keeps adding blanks and the run isn't idempotent.
     while tail and not tail[0].strip():
         tail.pop(0)
+    tail = [*tail, *below]
     if tail:
         tail = ["", *tail]
     if not body:
@@ -265,6 +320,15 @@ def claimed_digest(message: str) -> str | None:
     return found
 
 
+def claimed_tree(message: str) -> str | None:
+    """The tree the last trailer says it was written for, or None for an unbound one."""
+    found = None
+    for line in message.splitlines():
+        if line.startswith(f"{TRAILER}:") and (hit := _TREE_RE.search(line)):
+            found = hit.group(1)
+    return found
+
+
 def claimed_ids(message: str) -> list[str]:
     """The turn ids the last trailer names, or `[]` for a trailer written before `turns=`."""
     found: list[str] = []
@@ -290,11 +354,18 @@ def _lookup(repo: Path, ids) -> dict[str, tuple[str, str] | None]:
     return found
 
 
-def verify(repo: Path, ref: str = "HEAD") -> tuple[bool | None, str]:
+def verify(repo: Path, ref: str = "HEAD",
+           require_verified: bool = False) -> tuple[bool | None, str]:
     """Check a commit's trailer against the record. (True | False | None, one line).
 
-    None is a first-class answer: reporting "no attestation" or "the record no longer
-    reaches back this far" as a mismatch would be a false accusation."""
+    None is a first-class answer: reporting "no attestation", "the record no longer reaches
+    back this far" or "this trailer was written for other content" as a mismatch would be a
+    false accusation.
+
+    `require_verified` is the CI gate: an attestation that *matches* but whose every turn came
+    back FAILED is a red commit with a valid receipt, and a gate that passes it is decoration.
+    It only ever downgrades a True — a cannot-tell stays a cannot-tell.
+    """
     short = (_git(repo, "rev-parse", "--short", ref) or ref).strip() or ref
     message = _git(repo, "log", "-1", "--format=%B", ref)
     if message is None:
@@ -302,6 +373,15 @@ def verify(repo: Path, ref: str = "HEAD") -> tuple[bool | None, str]:
     claimed = claimed_digest(message)
     if claimed is None:
         return None, f"{short}: no Tycho attestation — not agent-written, or Tycho wasn't installed"
+    tree, actual_tree = claimed_tree(message), _tree_of(repo, ref)
+    if tree and actual_tree and tree != actual_tree:
+        # The trailer is real but it was written for other content: copied onto a
+        # hand-written commit, inherited by a revert, or carried along by a rebase that
+        # rewrote the tree. Which of those it is, this cannot know — so it doesn't guess.
+        return None, (
+            f"{short}: this attestation was written for tree {tree[:10]}…, but the commit "
+            f"records {actual_tree[:10]}… — copied, reverted, or rebased — cannot confirm"
+        )
     ids = claimed_ids(message)
     if ids:
         # The trailer names its own turns, so this reads them back rather than re-deriving
@@ -315,10 +395,10 @@ def verify(repo: Path, ref: str = "HEAD") -> tuple[bool | None, str]:
                 f"{len(gone)} of the {len(ids)} turns it names (pruned, or .tycho/ is gone) "
                 f"— cannot confirm"
             )
-        body = _body([(i, *found[i]) for i in ids])
+        body = _body([(i, *found[i]) for i in ids], tree)
     else:
         body = attestation(repo, _commit_paths(repo, ref), _commit_time(repo, ref),
-                           _window(repo, f"{ref}^"))
+                           _window(repo, f"{ref}^"), tree)
     if body is None:
         return None, (
             f"{short}: claims {claimed[:14]}… but the turn record no longer covers this commit "
@@ -326,6 +406,11 @@ def verify(repo: Path, ref: str = "HEAD") -> tuple[bool | None, str]:
         )
     actual = record_mod.digest(body)
     if actual == claimed:
+        if require_verified and not (body.get("verdicts") or {}).get("VERIFIED"):
+            return False, (
+                f"{short}: attestation matches the record, but no turn ever reached VERIFIED "
+                f"— {summary(body)}"
+            )
         return True, f"{short}: attestation VERIFIED against the record — {summary(body)}"
     return False, (
         f"{short}: attestation does NOT match the record — commit claims {claimed[:14]}…, "

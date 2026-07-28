@@ -14,6 +14,8 @@ identity on the command line, so nothing reads or writes the developer's real gi
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -631,3 +633,194 @@ def test_a_tampered_digest_is_still_caught_when_the_turns_are_all_there(repo: Pa
 
     assert ok is False, said
     assert "does NOT match" in said
+
+
+# --- bound to this commit, not to a set of paths -----------------------------
+
+
+def test_a_trailer_copied_onto_another_commit_does_not_verify(wired: Path):
+    """The forgery that used to work: the body named turns and nothing else, so a legitimate
+    trailer was equally true of any commit touching the same files. Lift it onto a
+    hand-written, never-verified commit and it read `attestation VERIFIED`, exit 0."""
+    _record(wired, "a.py")
+    _commit(wired, "a.py", "feat: add a")
+    stolen = [ln for ln in _git(wired, "log", "-1", "--format=%B").stdout.splitlines()
+              if ln.startswith("Tycho-Attestation:")][0]
+
+    (wired / "b.py").write_text("# hand written\n")
+    _git(wired, "add", "b.py")
+    _git(wired, "commit", "-q", "--no-verify", "-m", f"chore: mine\n\n{stolen}")
+
+    ok, said = attest.verify(wired)
+
+    assert ok is not True, said
+    assert "VERIFIED against the record" not in said
+    assert "cannot confirm" in said
+
+
+def test_a_revert_does_not_inherit_the_attestation(repo: Path):
+    """No hook here on purpose: a revert carries the original message, trailer and all, on
+    any machine where Tycho isn't installed to rewrite it."""
+    _record(repo, "a.py")
+    (repo / "a.py").write_text("x = 1\n")
+    _git(repo, "add", "a.py")
+    line = attest.trailer(repo)
+    _git(repo, "commit", "-qm", f"feat: add a\n\n{line}")
+    assert attest.verify(repo)[0] is True
+
+    _git(repo, "revert", "--no-edit", "-n", "HEAD")
+    _git(repo, "commit", "-qm", f"Revert \"feat: add a\"\n\n{line}")
+
+    ok, said = attest.verify(repo)
+
+    assert ok is not True, said
+    assert "cannot confirm" in said
+
+
+def test_the_same_turns_over_different_content_do_not_share_a_digest(repo: Path):
+    """Two commits covered by the same turns used to digest byte-identically, which is what
+    made a trailer portable between them."""
+    _record(repo, "a.py")
+    turns = attest.covered(repo, ["a.py"])
+
+    one = record_mod.digest(attest._body(turns, "a" * 40))
+    two = record_mod.digest(attest._body(turns, "b" * 40))
+
+    assert one != two
+
+
+def test_the_trailer_names_the_tree_it_was_written_for(repo: Path):
+    _record(repo, "a.py")
+    (repo / "a.py").write_text("x = 1\n")
+    _git(repo, "add", "a.py")
+
+    line = attest.trailer(repo)
+
+    assert attest.claimed_tree(line) == attest.staged_tree(repo)
+
+
+# --- git commit -v -----------------------------------------------------------
+
+
+def test_the_trailer_survives_the_verbose_scissors(repo: Path, tmp_path: Path):
+    """`commit.verbose=true` puts the diff below a scissors line, and its body is not
+    comment-prefixed — so the trailer was appended *inside the diff* and thrown away with it."""
+    _record(repo, "a.py")
+    _staged(repo)
+    msg = tmp_path / MSG
+    msg.write_text(
+        "feat: add a\n"
+        "# Please enter the commit message…\n"
+        "# ------------------------ >8 ------------------------\n"
+        "# Do not modify or remove the line above.\n"
+        "diff --git a/a.py b/a.py\n"
+        "+++ b/a.py\n"
+        "@@ -0,0 +1 @@\n"
+        "+x = 1\n"
+    )
+
+    attest.write_message(repo, msg)
+
+    lines = msg.read_text().splitlines()
+    scissors = next(i for i, ln in enumerate(lines) if ">8" in ln)
+    trailer = next(i for i, ln in enumerate(lines) if ln.startswith("Tycho-Attestation:"))
+    assert trailer < scissors, "written below the scissors, git discards it"
+    assert lines[-1] == "+x = 1", "the diff below is left exactly as it was"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="needs a shell editor")
+def test_a_real_verbose_commit_still_carries_a_verifiable_trailer(wired: Path):
+    """`commit.verbose` only appends the diff when git opens an editor, so this drives a real
+    one — the scissors block has to be there for the bug to exist."""
+    _record(wired, "a.py")
+    (wired / "a.py").write_text("x = 1\n")
+    _git(wired, "add", "a.py")
+    editor = wired / "editor.sh"
+    editor.write_text('#!/bin/sh\nprintf "feat: add a\\n" | cat - "$1" > "$1.new"'
+                      ' && mv "$1.new" "$1"\n')
+    editor.chmod(0o755)
+
+    done = subprocess.run(
+        ["git", "-C", str(wired), "-c", "user.email=t@t", "-c", "user.name=t",
+         "-c", "commit.gpgsign=false", "-c", "commit.verbose=true", "commit"],
+        capture_output=True, text=True,
+        # No global config: this needs git's own defaults, not the developer's
+        # commit.template or commit.verbose.
+        env={**os.environ, "GIT_EDITOR": str(editor),
+             "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull},
+    )
+
+    assert done.returncode == 0, done.stderr
+    assert _trailer_of(wired) is not None, "the trailer went below the scissors"
+    ok, said = attest.verify(wired)
+    assert ok is True, said
+
+
+# --- the gate ----------------------------------------------------------------
+
+
+def test_require_verified_fails_a_commit_whose_every_turn_failed(wired: Path):
+    """A matching attestation over a red turn is a valid receipt for broken work. As a CI
+    gate, exit 0 on `NEVER VERIFIED: 1 FAILED` is decoration."""
+    _record(wired, "a.py", verdict="FAILED")
+    _commit(wired, "a.py", "feat: add a")
+
+    assert attest.verify(wired)[0] is True
+    ok, said = attest.verify(wired, require_verified=True)
+
+    assert ok is False
+    assert "no turn ever reached VERIFIED" in said
+
+
+def test_require_verified_leaves_cannot_tell_alone(repo: Path):
+    """It downgrades a True, never an unknown — accusing a commit Tycho can't read is the
+    failure mode this whole module exists to avoid."""
+    _commit(repo, "a.py", "chore: no attestation here")
+    assert attest.verify(repo, require_verified=True)[0] is None
+
+
+# --- the two clocks and the two encodings ------------------------------------
+
+
+def test_a_turn_recorded_in_the_same_second_as_the_commit_verifies(wired: Path):
+    """The normal agent flow, and the clock-slack asymmetry: the trailer is written before the
+    commit exists, the Stop hook records the turn a moment after it lands, and verification
+    used to sweep that turn in (commit time + 1s) though the trailer could not have. The
+    trailer naming its own turns is what makes the two sides agree."""
+    _record(wired, "a.py")
+    _commit(wired, "a.py", "feat: add a")
+    assert attest.verify(wired)[0] is True
+
+    committed = float(_git(wired, "show", "-s", "--format=%ct", "HEAD").stdout.strip())
+    _record(wired, "a.py", verdict="STALE", ended_at=committed + 0.5)  # the Stop hook, after
+
+    ok, said = attest.verify(wired)
+
+    assert ok is True, said
+    assert "1 turn" in said, "the turn recorded after the commit is not part of it"
+
+
+def test_a_non_ascii_path_still_attests_and_verifies(wired: Path):
+    """`git show --name-only` renders `café.py` octal-escaped and quoted unless
+    core.quotePath is off, which matches nothing the record stores."""
+    _record(wired, "café.py")
+    _commit(wired, "café.py", "feat: add café")
+
+    assert _trailer_of(wired) is not None
+    ok, said = attest.verify(wired)
+    assert ok is True, said
+
+
+def test_amend_with_a_new_message_does_not_report_a_mismatch(wired: Path):
+    """`git commit --amend -m` reaches the hook as source=message, so the write side reads a
+    different diff base than verify does. Under-covering is survivable; accusing the commit
+    of a mismatch is not."""
+    _record(wired, "a.py")
+    _commit(wired, "a.py", "feat: add a")
+    (wired / "a.py").write_text("x = 2\n")
+    _git(wired, "add", "a.py")
+    _git(wired, "commit", "-q", "--amend", "-m", "feat: add a, better")
+
+    ok, said = attest.verify(wired)
+
+    assert ok is not False, said
