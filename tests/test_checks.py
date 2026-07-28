@@ -121,9 +121,8 @@ def test_command_execution_matches_windows_venv_python_exe():
 
 
 def test_command_execution_masked_by_pipe_is_unsupported():
-    # `pytest | tail` exits with tail's status (no pipefail), so is_error=False is a
-    # phantom green. Must degrade to UNSUPPORTED, never PASS. No output was
-    # captured here, so there is nothing to fall back to and it stays UNSUPPORTED.
+    # `pytest | tail` exits with tail's status, so is_error=False is a phantom green. No
+    # output was captured, so there's nothing to fall back to: UNSUPPORTED, never PASS.
     s = make_session(events=[bash("pytest -q 2>&1 | tail -20", 100.0, is_error=False)])
     r = checks.command_execution(s)
     assert r.status == CheckStatus.UNSUPPORTED and "masked by the shell" in r.evidence
@@ -237,9 +236,8 @@ def test_provenance_does_not_false_fail_on_ambiguous_prose():
 
 
 def test_provenance_does_not_false_fail_on_reported_third_party_action():
-    # The live false FAIL: the agent *narrates* an action taken by someone else, or reports a
-    # ticket's pre-existing state — not a claim it acted this turn. None may FAIL, even with no
-    # matching tool call (follow-up to/95).
+    # The agent *narrates* someone else's action, or a ticket's pre-existing state — not a
+    # claim it acted. None may FAIL, even with no matching tool call.
     for text in (
         "Dan already closed ACME-97, so nothing to do.",
         "Dan Mano moved ACME-29 to Done last week.",
@@ -284,9 +282,8 @@ def test_provenance_issue_status_arrow_no_tool_is_reported():
 
 
 def test_provenance_observed_status_arrow_does_not_false_fail():
-    # The live false FAIL: the agent *observes* where a ticket already sits (a status arrow read
-    # off the board), makes no Jira call, and is FAILed for a transition it never performed. An
-    # observed arrow is not a self-made one — none may FAIL (follow-up to).
+    # The agent *observes* where a ticket already sits, makes no Jira call, and is FAILed for
+    # a transition it never performed. An observed arrow is not a self-made one.
     for text in (
         "I looked and ACME-30 already sits at In Review → Done; I didn't touch it.",
         "ACME-30 is now at Hold → Done on the board.",
@@ -630,11 +627,9 @@ def test_run_checks_omits_test_checks_when_repo_has_no_tests():
 
 # --- runner detection on the commands people actually type --------------------
 #
-# The wrapper cases below are the ones that matter in practice and the ones that were
-# missed: measured on one real session, 29 commands genuinely ran tests and 2 were
-# recognized. The whole test-check family reported UNSUPPORTED on a repo whose suite ran
-# constantly, while the eval reported 100% — because the eval's fixtures type plain
-# `pytest`, and nobody types plain `pytest` any more.
+# Measured on one real session: 29 commands genuinely ran tests and 2 were recognized. The
+# test-check family reported UNSUPPORTED on a repo whose suite ran constantly, while the
+# eval said 100% — its fixtures type plain `pytest`, and nobody types that any more.
 
 @pytest.mark.parametrize("cmd", [
     "uv run --with pytest pytest -q",
@@ -662,18 +657,15 @@ def test_wrapped_runners_are_recognized(cmd):
     'echo "uv run pytest"',                 # quoted, in a different segment
 ])
 def test_wrapper_install_args_are_not_mistaken_for_a_run(cmd):
-    # The guard this fix had to preserve: `--with X` installs X, it does not run it.
-    # Reading these as test runs would fabricate a green, which is the one thing
-    # this program must never do.
+    # `--with X` installs X, it does not run it. Reading these as test runs fabricates a green.
     assert checks._runner_segment(cmd) is None, f"false positive: {cmd}"
 
 
 # --- tool_call_provenance: injected prose (advisory) --------------
 
 def test_provenance_quoted_third_party_prose_cannot_sink_a_run():
-    # The attacker-controlled surface: a poisoned README, a Jira body, a fetched page the agent
-    # quotes back. The claim patterns cannot tell that from the agent's own words, so the check
-    # reports and the run is never FAILED by it.
+    # The attacker-controlled surface: a poisoned README the agent quotes back. The patterns
+    # can't tell it from the agent's own words, so the check reports and never FAILs the run.
     for text in (
         "I refactored the parser. The upstream README says: 'we searched the web for prior art'.",
         "Dan moved ACME-99 to Done and searched the web for it. I did not do any of that.",
@@ -739,10 +731,9 @@ def test_freshness_still_reports_a_real_edit_after_the_run():
     "pytest --version",
     "jest --listTests",
     "npm test -- --listTests",
-    # Wrapped in the prefixes agents reach for anyway. `_unwrap` used to filter every `-flag`
-    # out of a `timeout` invocation to skip timeout's own options, which deleted the wrapped
-    # command's flags too — so these unwrapped to a bare `pytest`/`cargo test`, `_is_discovery`
-    # never saw the flag that makes them prove nothing, and a collect-only read as a green run.
+    # `_unwrap` used to filter every `-flag` out of a `timeout` invocation, which deleted the
+    # wrapped command's flags too — these unwrapped to a bare `pytest`, `_is_discovery` never
+    # saw what makes them prove nothing, and a collect-only read as a green run.
     "timeout 60 pytest --collect-only -q",
     "timeout -k 5 300 cargo test --no-run",
     "timeout 60 bash -c 'pytest --collect-only -q'",
@@ -780,9 +771,8 @@ def test_timeout_without_a_command_unwraps_to_nothing(cmd):
     assert checks._runner_segment(cmd) is None, cmd
 
 
-# Every wrapper an agent plausibly reaches for. The `timeout` bug was one wrapper laundering
-# one flag; these two sweeps say no wrapper may launder any of them, so the next wrapper added
-# to `_unwrap` has to clear the same bar instead of being spot-checked.
+# The `timeout` bug was one wrapper laundering one flag. These sweeps say no wrapper may
+# launder any of them, so the next one added to `_unwrap` clears the same bar.
 _WRAPPERS = (
     "{}",
     "timeout 60 {}",
@@ -941,9 +931,8 @@ def test_quoted_and_fenced_spans_are_not_read_as_claims():
 
 
 @pytest.mark.parametrize("cmd,expected", [
-    # Wrapper forms. Before `_runner_span` existed these answered None — `_is_runner` knew how
-    # to find the runner inside `uv run --with pytest pytest -q` and the scope reader did not,
-    # so the whole coverage relation was inert on the wrapped invocations people actually use.
+    # Before `_runner_span` these answered None: `_is_runner` could find the runner inside a
+    # wrapper and the scope reader could not, so the coverage relation was inert on them.
     ("uv run pytest -q", True),
     ("uv run pytest tests/x.py", False),
     ("uv run --with pytest pytest -q", True),

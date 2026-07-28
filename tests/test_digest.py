@@ -317,9 +317,9 @@ def test_speaks_never_raises_on_junk_history():
 
 # --- the hook: silence on routine turns, a digest on anomalous ones -----------
 #
-# Real Stop payloads through `hook.run`, because the seam being tested (relay vs digest) only
-# exists there. The transcripts are synthesized rather than fixtures because the whole point is
-# a *sequence* of turns in one repo — history is what the selectivity reads.
+# Real Stop payloads through `hook.run`, because the relay/digest seam only exists there.
+# Transcripts are synthesized, not fixtures: the point is a *sequence* of turns in one repo,
+# and history is what the selectivity reads.
 
 BASE = time.time() - 10_000.0
 

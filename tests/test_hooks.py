@@ -47,11 +47,9 @@ def test_output_channels_differ():
 
 # --- cursor Stop payload (pinned to cursor-agent 2026.07.09-a3815c0) ---------
 #
-# The adapter used to *infer* Cursor's field names. These pin them to the shipped
-# contract: the payload keys come from executeHookForStep (3143.index.js) plus the
-# stop call sites (1683.index.js); the output key from the stop validator, which
-# accepts exactly one field. If Cursor renames any of these, these tests fail here
-# rather than in a user's dead hook.
+# The adapter used to *infer* Cursor's field names. These pin them to the shipped contract
+# (payload keys from executeHookForStep, the output key from the stop validator), so a
+# rename fails here rather than in a user's dead hook.
 
 def test_cursor_stop_payload_is_detected_as_cursor():
     payload = json.loads(CURSOR_STOP_PAYLOAD.read_text())
@@ -214,9 +212,8 @@ def test_codex_reader_distinguishes_current_pytest_completion_output():
 
 
 def test_codex_reader_keeps_the_runner_output_not_just_its_verdict():
-    # The rollout carries the text ("77 passed in 0.79s"); the reader used to distil
-    # is_error from it and then drop it. is_error is worthless once the shell masks the
-    # status — the engine has to re-read the output, and can only read what we kept.
+    # The rollout carries the text; the reader used to distil is_error from it and drop it.
+    # is_error is worthless once the shell masks the status — the engine must re-read output.
     evs = events.parse_codex(CODEX_FIXTURE)
     runs = [e for e in evs if e.tool == "Bash" and "pytest" in e.input.get("command", "")]
     assert runs and any("passed" in (e.result.get("stdout") or "") for e in runs)
@@ -407,11 +404,8 @@ def test_hook_stays_silent_when_turn_has_no_verifiable_activity(tmp_path: Path):
 
 
 # --- tycho init -------------------------------------------------------------
-#
-# init only touches harnesses it detects, and asks before each one. These
-# tests state both preconditions outright: the dotdirs make every harness "present in
-# this repo", and assume_yes stands in for the human saying yes. Detection and consent
-# are themselves tested in test_init_safety.py.
+# init only touches harnesses it detects, and asks first. Both preconditions are stated
+# outright here; detection and consent themselves are tested in test_init_safety.py.
 
 
 def _init_all(repo: Path, **kw) -> list[str]:
@@ -521,16 +515,14 @@ def test_relpath_normalizes_absolute_in_repo_paths(tmp_path: Path):
     assert engine._relpath(str(tmp_path / "docs/x.md"), tmp_path) == "docs/x.md"
     assert engine._relpath("src/a.py", tmp_path) == "src/a.py"  # already relative
     assert engine._relpath("/etc/passwd", tmp_path) == "/etc/passwd"  # outside repo, unchanged
-    # always forward slashes, so paths reconcile with git / scope globs. On
-    # Windows str(relative_to()) yields backslashes; a backslash relative input must
-    # normalize too. Both hold on any host OS (string form is OS-independent here).
+    # Always forward slashes, so paths reconcile with git and scope globs. Holds on any
+    # host OS — the string form is OS-independent here.
     assert engine._relpath("src\\a.py", tmp_path) == "src/a.py"
 
 
 def test_relpath_relativizes_posix_absolute_paths_on_any_host():
     # `Path.is_absolute()` is host-flavored: on Windows a drive-less POSIX path reads as
-    # relative, so `/repo/old.md` never normalizes and the codex fixture failed only on
-    # Windows CI. `_relpath` must recognize POSIX-absolute paths regardless of host OS.
+    # relative, so `/repo/old.md` never normalized and the codex fixture failed only there.
     assert engine._relpath("/repo/old.md", Path("/repo")) == "old.md"
     assert engine._relpath("/repo/docs/new.md", Path("/repo")) == "docs/new.md"
     assert engine._relpath("/other/x.md", Path("/repo")) == "/other/x.md"  # outside, unchanged
@@ -618,9 +610,8 @@ def test_discover_none_when_nothing_found(tmp_path, monkeypatch):
 
 
 def test_encode_maps_windows_separators_and_spaces():
-    # real ~/.claude/projects ground truth — drive colon, backslashes, and
-    # spaces all collapse to '-'. Pure*Path fixes the string form regardless of host OS,
-    # so this pins the encoding on Linux/macOS CI as well as Windows.
+    # Real ~/.claude/projects ground truth: drive colon, backslashes and spaces all collapse
+    # to '-'. Pure*Path fixes the string form, so this pins the encoding on every CI host.
     from pathlib import PurePosixPath, PureWindowsPath
 
     assert (

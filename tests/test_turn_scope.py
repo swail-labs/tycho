@@ -64,10 +64,9 @@ def test_turn_start_of_single_turn_transcript_is_zero():
 
 # --- the relay boundary: each re-check scopes to its own prose ----------------
 #
-# The verdict relay re-invokes the assistant with no new user message, so several
-# iterations share one user turn. A Tycho stop_hook_summary opens the next iteration's
-# turn the way a user message opens the first — otherwise a re-check re-reads (and
-# re-fails) prose an earlier iteration already answered.
+# The relay re-invokes the assistant with no new user message, so several iterations share
+# one user turn. A stop_hook_summary opens the next iteration the way a user message opens
+# the first — else a re-check re-fails prose an earlier one already answered.
 
 _RELAY_ENTRY = {
     "type": "system",
@@ -107,10 +106,9 @@ def test_turn_start_anchors_on_a_later_relay_boundary(tmp_path):
 
 # --- opencode's boundary -----------------------------------------
 #
-# The fixture is three real consecutive turns from a captured opencode.db: turn A edits
-# tycho/opencode.py, turn B runs nothing, turn C only greps. Same asymmetry as above, on
-# the harness that used to be session-scoped because the materializer dropped the user
-# messages that mark these boundaries.
+# Three real consecutive turns from a captured opencode.db. Same asymmetry as above, on the
+# harness that used to be session-scoped because the materializer dropped the user messages
+# marking these boundaries.
 
 def test_turn_start_opencode_is_the_last_user_message():
     # Turn C's user message. In seconds, not the ms OpenCode stores — Event.ts is

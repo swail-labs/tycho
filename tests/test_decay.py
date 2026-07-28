@@ -98,9 +98,8 @@ def test_blind_rate_is_reported_per_model(tmp_path: Path):
 # --- per-check denominators (the whole point) --------------------------------
 
 def test_spoke_excludes_the_turns_a_check_could_not_speak_to(tmp_path: Path):
-    # 10 turns: the check is UNSUPPORTED on 8, PASSes on 1, FAILs on 1. Catch rate is 1/2
-    # (50%) over the turns it could speak to — NOT 1/10 — and the 80% blind rate sits beside
-    # it so nobody reads the 50% as "this check catches half of everything".
+    # 10 turns: UNSUPPORTED on 8, PASS on 1, FAIL on 1. Catch rate is 1/2 over the turns it
+    # could speak to, not 1/10, with the 80% blind rate beside it for context.
     for _ in range(8):
         write(tmp_path, turn(checks=(("command_execution", "UNSUPPORTED"),)))
     write(tmp_path, turn(checks=(("command_execution", "PASS"),)))
@@ -195,10 +194,9 @@ def test_empty_denominator_never_renders_as_zero_percent():
 
 
 def test_a_thin_sample_renders_the_fraction_not_a_confident_percentage(tmp_path, monkeypatch, capsys):
-    # "0 (0%)" off three turns reads as "this check is dead". It isn't a rate yet — say so by
-    # showing the fraction. And the footer must not call a low catch rate the retirement
-    # signal: a check that PASSed on every turn it spoke to caught nothing because nothing
-    # was wrong, which is the check working.
+    # "0 (0%)" off three turns reads as "dead" when it isn't a rate yet — show the fraction.
+    # And a low catch rate isn't the retirement signal: a check that PASSed on every turn it
+    # spoke to caught nothing because nothing was wrong.
     monkeypatch.chdir(tmp_path)
     assert cli._rate(0, 3) == "0/3"
     assert cli._rate(2, 10) == "2 (20%)"

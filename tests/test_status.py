@@ -338,9 +338,9 @@ def test_init_composes_with_a_repo_level_statusline_and_restores_it(tmp_path: Pa
 
 
 def test_init_composes_with_a_user_level_statusline(tmp_path: Path, monkeypatch):
-    # The real case: a user status line lives in ~/.claude/settings.json (user level), which a
-    # repo-level line would shadow. Tycho records it (origin "user") and composes; we never
-    # write the user file, so it resurfaces on its own when ours is removed.
+    # A user status line lives in ~/.claude/settings.json, which a repo-level line shadows.
+    # Tycho records it as origin "user" and composes; the user file is never written, so it
+    # resurfaces on its own.
     home = tmp_path / "home"
     (home / ".claude").mkdir(parents=True)
     (home / ".claude" / "settings.json").write_text(
@@ -386,10 +386,9 @@ def test_uninstall_leaves_someone_elses_statusline_alone(tmp_path: Path):
 
 # --- finding the repo from a subdirectory -------------------------
 #
-# A shell prompt follows the user into subdirectories and supplies no payload, so `repo`
-# arrives as the cwd rather than the root. Root-only resolution made that read as "not
-# installed" — the badge silently blank for most of a session, indistinguishable from
-# Tycho being absent, which is the exact silence Tycho exists to prevent.
+# A shell prompt follows the user into subdirectories, so `repo` arrives as the cwd.
+# Root-only resolution read that as "not installed" — the badge blank for most of a session,
+# indistinguishable from Tycho being absent.
 
 def test_the_badge_survives_a_subdirectory(tmp_path: Path):
     _install(tmp_path)
@@ -439,10 +438,9 @@ def test_config_resolves_from_a_subdirectory(tmp_path: Path):
 
 
 def test_doctor_from_a_subdirectory_does_not_cry_wolf(tmp_path: Path):
-    # state resolution and *harness config* resolution must agree. If only the
-    # former walks, doctor finds the root's install record, looks for `.claude/settings.json`
-    # beside itself one directory down, finds none, and reports the hook as ripped out —
-    # a false alarm about wiring that is fine, which is its own kind of lie.
+    # State and harness-config resolution must agree. If only the former walks, doctor finds
+    # the root's install record, looks for `.claude/settings.json` one directory down, and
+    # reports the hook ripped out — a false alarm about wiring that is fine.
     from tycho import doctor
 
     _install(tmp_path)

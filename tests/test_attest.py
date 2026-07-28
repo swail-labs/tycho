@@ -366,10 +366,8 @@ def test_main_write_always_exits_zero_even_with_a_broken_repo(tmp_path: Path, mo
 
 
 # --- end to end: real commits, real hook -------------------------------------
-#
-# Everything above proves the logic. These prove the *product*: that the hook git actually
-# runs produces a trailer, survives amend / squash / merge / --no-verify, and — the one that
-# matters most — that `git commit` still succeeds when Tycho is broken or absent.
+# The hook git actually runs produces a trailer, survives amend/squash/merge/--no-verify,
+# and — the one that matters most — `git commit` still succeeds when Tycho is broken.
 
 
 @pytest.fixture

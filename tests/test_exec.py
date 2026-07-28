@@ -414,10 +414,9 @@ def test_the_turn_record_reports_what_tycho_observed(tmp_path: Path):
 
 # --- Windows launchability ----------------------------------------------------
 #
-# npm/yarn/pnpm/npx/gradlew/mvnw ship as .cmd shims, and Windows CreateProcess runs only PE
-# images — so these are exactly the runners `checks.py` recognizes and exactly the ones a
-# bare Popen cannot start. Getting it wrong turns a passing build into exit 127 from a
-# command whose whole contract is forwarding the child's status unchanged.
+# npm/yarn/pnpm/npx/gradlew/mvnw ship as .cmd shims and Windows CreateProcess runs only PE
+# images — exactly the runners `checks.py` recognizes, and exactly the ones a bare Popen
+# cannot start. Getting it wrong turns a passing build into exit 127.
 
 
 def test_launchable_is_a_passthrough_off_windows(monkeypatch):

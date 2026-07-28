@@ -22,9 +22,8 @@ CLAUDE = Path(".claude/settings.json")
 CURSOR = Path(".cursor/hooks.json")
 HOOK = "prepare-commit-msg"
 
-# The POSIX permission model (an executable/mode bit, dir perms that block a child
-# write) has no faithful Windows equivalent — chmod there only toggles read-only. These
-# guard the tests that assert on it; the behaviour they cover is real, just POSIX-only.
+# chmod on Windows only toggles read-only, so mode-bit assertions have no faithful
+# equivalent there. The behaviour these cover is real, just POSIX-only.
 posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX file-mode semantics")
 
 
@@ -555,10 +554,9 @@ def test_cli_init_rejects_an_unknown_harness(tmp_path: Path, monkeypatch):
 
 # --- the commit-trailer git hook (strategy §6.6) ------------------------------
 #
-# `.git/hooks/prepare-commit-msg` is the highest-risk file this module writes: it is not
-# config, it is *code that runs inside every `git commit` the developer makes*. The bar is
-# the same as everywhere else here — merge, back up, refuse what we can't parse — plus one
-# more that only applies to a hook: never, ever fail the commit.
+# The highest-risk file this module writes: not config, but code that runs inside every
+# `git commit`. Same bar as everywhere else — merge, back up, refuse what we can't parse —
+# plus one only a hook has: never fail the commit.
 
 
 def _init_repo(tmp_path: Path) -> Path:
@@ -713,9 +711,8 @@ def test_the_hook_lands_where_core_hookspath_points(tmp_path: Path):
 
 # --- the machine-wide install (strategy §6.7) --------------------------------
 #
-# A user-level hook fires in every repo on the machine — a categorically bigger blast radius
-# than one someone opted into per repo. These pin the three things that make that safe:
-# consent, a run-time guard, and an uninstall that puts the file back exactly as it was.
+# A user-level hook fires in every repo on the machine. These pin the three things that make
+# that safe: consent, a run-time guard, and an uninstall that restores the file exactly.
 
 
 @pytest.fixture
@@ -885,10 +882,9 @@ def test_a_guarded_global_command_is_recognized_on_every_platform_form():
 
 # --- .gitignore for `.tycho/` -----------------------------------
 #
-# `.tycho/` is machine-local: a per-repo tally, the last-run heartbeat, and `turns.jsonl`,
-# which carries the agent's own prose. Left untracked it dirties every `git status`; committed
-# by accident it carries that prose into someone else's PR. Same bar as every other file init
-# touches: append politely, be idempotent, back up, and restore byte-for-byte on uninstall.
+# Machine-local, and `turns.jsonl` carries the agent's prose. Untracked it dirties every
+# `git status`; committed by accident it carries that prose into someone else's PR. Same bar
+# as every other file init touches, including byte-for-byte restore on uninstall.
 
 
 def _gitignore(repo: Path) -> Path:
@@ -974,9 +970,9 @@ def test_a_refused_commit_hook_does_not_cost_the_gitignore_entry(tmp_path: Path,
 
 # --- the adversarial install: nine ways a real machine bites back ------------
 #
-# Every case below was reproduced against a released build before it was fixed. They share
-# one rule: init runs against files the developer owns, so the worst outcome is not "Tycho
-# didn't install" — it is "Tycho changed something the developer can't get back".
+# Every case was reproduced against a released build before it was fixed. init runs against
+# files the developer owns, so the worst outcome is not "Tycho didn't install" — it is
+# "Tycho changed something the developer can't get back".
 
 
 def _statusline(repo: Path) -> dict:
@@ -984,9 +980,8 @@ def _statusline(repo: Path) -> dict:
 
 
 def test_a_second_init_does_not_forget_the_statusline_it_wrapped(tmp_path: Path):
-    # init; init; uninstall must still put the user's badge back. The second init used to
-    # clear the compose record, so uninstall had nothing to restore and the badge was gone
-    # — with the .bak holding only Tycho's own line, unrecoverably.
+    # init; init; uninstall must still restore the user's badge. The second init used to
+    # clear the compose record, and by then the .bak held only Tycho's own line.
     settings = tmp_path / CLAUDE
     settings.parent.mkdir(parents=True)
     settings.write_text(json.dumps({"statusLine": {"type": "command", "command": "my-badge"}}))
@@ -1033,9 +1028,8 @@ def test_a_hooks_shape_we_cannot_parse_is_refused_on_uninstall_too(tmp_path: Pat
 
 
 def test_a_hooks_path_outside_the_repo_is_refused(tmp_path: Path, monkeypatch):
-    # `git config --global core.hooksPath ~/.githooks` makes `--git-path hooks` answer with a
-    # path shared by every repo on the machine. Installing there turns a repo-local init into
-    # a machine-wide one, and the next repo's uninstall takes it away from all of them.
+    # A global `core.hooksPath` makes `--git-path hooks` answer with a path shared by every
+    # repo, so a repo-local init becomes machine-wide and the next uninstall strips them all.
     shared = tmp_path / "githooks"
     shared.mkdir()
     gitconfig = tmp_path / "gitconfig"
@@ -1074,8 +1068,7 @@ def test_uninstalling_one_harness_keeps_the_shared_git_integration(tmp_path: Pat
 
 def test_a_damaged_fence_is_repaired_not_duplicated(tmp_path: Path):
     # Someone deletes the closing marker by hand. Re-init must repair the block, not stack a
-    # second one — two blocks means `attest` runs twice per commit, and uninstall then takes
-    # out only one, leaving an orphan firing forever.
+    # second — uninstall takes out only one, leaving an orphan firing forever.
     repo = _init_repo(tmp_path)
     init_mod.init(repo, only="claude", assume_yes=True)
     hook = _hook_path(repo)
@@ -1119,10 +1112,9 @@ def test_a_clean_uninstall_leaves_no_backup_files(tmp_path: Path):
 
 @pytest.mark.skipif(sys.platform == "win32", reason="runs the hook through a POSIX /bin/sh")
 def test_a_commit_still_succeeds_when_the_hook_runs_under_set_u(tmp_path: Path):
-    # `set -eu` is ordinary hygiene in a hand-written hook, and git passes no second argument
-    # to `prepare-commit-msg` for an editor commit. Under `set -u` the unset expansion kills
-    # the shell *before* our `|| :` is reached, so the fail-open guard doesn't hold and the
-    # commit is refused outright. `git commit -m` would hide it — that one does pass `$2`.
+    # `set -eu` is ordinary hygiene, and git passes no `$2` for an editor commit. Under
+    # `set -u` the unset expansion kills the shell before our `|| :`, so the fail-open guard
+    # doesn't hold. `git commit -m` hides it — that one does pass `$2`.
     from conftest import git
 
     repo = _init_repo(tmp_path)

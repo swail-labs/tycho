@@ -174,11 +174,9 @@ def test_a_stale_path_to_a_deleted_venv_is_broken(tmp_path: Path):
 
 
 def test_the_console_script_form_is_not_flagged(tmp_path: Path):
-    # Regression, caught by running doctor on the real repo: `init.hook_command()` returns
-    # the console script (`.venv/bin/tycho hook`) or `<python> -m tycho.cli hook` depending
-    # on whether the venv is on PATH at that instant. Comparing the installed command
-    # against it marked four perfectly working hooks OUTDATED. Both forms run; both are
-    # healthy. Anything that resolves and is ours passes.
+    # `init.hook_command()` returns a console script or `<python> -m` depending on whether
+    # the venv is on PATH right then, and comparing against it marked four working hooks
+    # OUTDATED. Both forms run: anything that resolves and is ours passes.
     script = tmp_path / "venv" / "bin" / "tycho"
     script.parent.mkdir(parents=True)
     script.write_text("#!/bin/sh\n")
@@ -199,10 +197,8 @@ def test_malformed_config_is_broken_not_a_traceback(tmp_path: Path):
 
 
 # --- the turn record's exposure to git ---------------------------------------
-#
-# 0.1.0 shipped no gitignore step. An upgraded repo can therefore be committing turns.jsonl —
-# the agent's own prose, every command it ran, check evidence — and `tycho init` cannot undo
-# the tracked half of that, because an ignore rule does not untrack what git already follows.
+# 0.1.0 shipped no gitignore step, so an upgraded repo can be committing turns.jsonl — the
+# agent's prose and every command it ran. An ignore rule doesn't untrack what git follows.
 
 
 def _repo(tmp_path: Path) -> Path:
@@ -285,8 +281,7 @@ def test_diagnose_reports_exposure(tmp_path: Path):
 
 def test_an_old_schema_install_is_told_that_0_2_0_is_quiet(tmp_path: Path):
     # "I updated and Tycho stopped working" is this release's likeliest ticket. Said once,
-    # to the upgrader who is already running doctor to find out, alongside the same
-    # `tycho init` the schema finding asks for — not per turn.
+    # to the upgrader already running doctor — not per turn.
     _install(tmp_path)
     path = state.dir_for(tmp_path) / "install.json"
     data = json.loads(path.read_text())
@@ -356,9 +351,8 @@ def test_probe_version_never_raises_on_a_missing_binary():
 
 
 def test_every_enabled_harness_has_a_version_pin():
-    # The pin is what lets `doctor` say "your harness moved past the contract we checked".
-    # An enabled harness with no pin fails open silently — it would never warn, which looks
-    # exactly like "the contract is fine".
+    # The pin lets `doctor` say "your harness moved past the contract we checked". Without
+    # one it never warns, which looks exactly like "the contract is fine".
     for name in doctor.harness_mod.ENABLED_NAMES:
         pinned = doctor.harness_mod.VERIFIED_AGAINST.get(name)
         assert pinned, f"{name} is enabled but has no verified-against pin"
@@ -378,9 +372,8 @@ def test_resolves_absolute_path_only_when_executable(tmp_path: Path):
 
 
 def test_resolves_an_existing_path_regardless_of_platform(tmp_path: Path):
-    # The cross-platform half of the rule: an existing program path resolves, a
-    # missing one doesn't. On Windows existence is the whole test (no +x bit); on
-    # POSIX the sibling test above adds the executable-bit requirement.
+    # An existing program path resolves, a missing one doesn't. On Windows existence is the
+    # whole test; the POSIX sibling above adds the executable bit.
     prog = tmp_path / "prog"
     prog.write_text("#!/bin/sh\n")
     prog.chmod(0o755)
@@ -417,9 +410,8 @@ def test_cli_doctor_exits_unhealthy_when_broken(tmp_path: Path, monkeypatch, cap
 
 
 def test_cli_doctor_survives_a_legacy_codepage_console(tmp_path: Path, monkeypatch):
-    # doctor prints ✓/✗/•/→; a cp1252 (legacy Windows) console can't encode
-    # them, and an unguarded print() raises UnicodeEncodeError — a traceback where the
-    # whole point is a fail-open verdict. cli._force_utf8 must keep that from happening.
+    # A cp1252 console can't encode ✓/✗/•/→, and an unguarded print() then raises — a
+    # traceback where the whole point is a fail-open verdict.
     monkeypatch.chdir(tmp_path)
     _install(tmp_path)
     buf = io.BytesIO()

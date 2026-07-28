@@ -187,9 +187,7 @@ def test_update_on_windows_defers_the_upgrade_past_process_exit(_online, monkeyp
                                     "/home/u/.local/share/uv/tools/tycho-cli",
                                     "/usr"])  # pipx, uv, plain-pip branches
 def test_upgrade_command_names_the_distribution_not_the_taken_tycho(monkeypatch, prefix):
-    # Must upgrade `tycho-cli`, never `tycho` — the bare name is an unrelated PyPI project, so
-    # `pip install --upgrade tycho` would pull that and `pipx/uv upgrade tycho` wouldn't resolve
-    # the installed tool.
+    # `tycho-cli`, never `tycho` — the bare name is an unrelated PyPI project.
     monkeypatch.setattr(cli.sys, "prefix", prefix)
     cmd = cli._upgrade_command()
     assert "tycho-cli" in " ".join(cmd)
@@ -197,10 +195,9 @@ def test_upgrade_command_names_the_distribution_not_the_taken_tycho(monkeypatch,
 
 
 def test_upgrade_command_npm_channel_overrides_prefix(monkeypatch):
-    # The npm wrapper sets TYCHO_INSTALL=npm before exec'ing the frozen binary. That binary has no
-    # pipx/uv/pip prefix, so without this it falls through to a `pip install` it can't run (no
-    # bundled pip in a PyInstaller build). npm owns its upgrade: reinstall the global package, and
-    # the channel signal must win over any incidental sys.prefix.
+    # The npm wrapper sets TYCHO_INSTALL before exec'ing the frozen binary, which has no
+    # pipx/uv/pip prefix and no bundled pip. The channel signal must beat any incidental
+    # sys.prefix, or it falls through to a `pip install` it can't run.
     monkeypatch.setenv("TYCHO_INSTALL", "npm")
     monkeypatch.setattr(cli.sys, "prefix", "/usr")  # would otherwise be the plain-pip branch
     assert cli._upgrade_command() == ["npm", "install", "-g", "@swail-labs/tycho@latest"]
@@ -209,9 +206,8 @@ def test_upgrade_command_npm_channel_overrides_prefix(monkeypatch):
 @pytest.mark.parametrize("executable", ["/opt/homebrew/Cellar/tycho/0.1.0/bin/tycho",
                                         "/home/linuxbrew/.linuxbrew/Cellar/tycho/0.1.0/bin/tycho"])
 def test_upgrade_command_detects_a_homebrew_binary_from_its_path(monkeypatch, executable):
-    # The formula installs a bare binary — no wrapper to set TYCHO_INSTALL the way npm does — so
-    # the channel comes from the Cellar path. Without this it falls through to a `pip install`
-    # the frozen binary can't run.
+    # A bare binary with no wrapper to set TYCHO_INSTALL, so the channel comes from the
+    # Cellar path — else it falls through to a `pip install` the frozen binary can't run.
     monkeypatch.setattr(cli.sys, "frozen", True, raising=False)
     monkeypatch.setattr(cli.sys, "executable", executable)
     monkeypatch.setattr(cli.os.path, "realpath", lambda p: p)
@@ -315,10 +311,8 @@ def test_session_start_never_raises_and_prints_nothing_on_error(monkeypatch, cap
 
 
 # --- Stop-hook update notice -------------------------------------
-#
-# The Stop hook appends a human-only "newer Tycho available" line to the verdict the user is
-# already reading — cache-only (no network on the hot path), never in the model-facing
-# additionalContext, and suppressed where there's no human-only channel (Cursor).
+# Appended to the verdict the user is already reading: cache-only (no network on the hot
+# path), never model-facing, suppressed where there is no human-only channel.
 
 from pathlib import Path as _Path  # noqa: E402
 
