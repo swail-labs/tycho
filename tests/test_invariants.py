@@ -74,23 +74,30 @@ def no_network(monkeypatch):
     return _forbidden
 
 
-def test_the_whole_verify_path_opens_no_socket(tmp_path, no_network):
-    """gather -> checks -> verdict, on a real transcript fixture."""
+def test_nothing_a_user_can_invoke_opens_a_socket(tmp_path, no_network):
+    """gather -> checks -> verdict -> build -> append, then every surface that reads it back:
+    digest / review / blame / log / attest / the decay ledger."""
+    from tycho import archaeology, attest, cli, state
+
     session = engine.gather(FIXTURE, tmp_path)
     results = engine.run_checks(session)
     verdict = engine.verdict_of(results)
     assert isinstance(verdict, Verdict)
     assert results  # it really did run, rather than short-circuiting to nothing
 
-
-def test_the_record_path_opens_no_socket(tmp_path, no_network):
-    """build -> digest -> append -> read, the substrate every surface reads."""
-    session = engine.gather(FIXTURE, tmp_path)
-    results = engine.run_checks(session)
-    rec = record.build(session, results, engine.verdict_of(results), "claude", 1.0)
+    rec = record.build(session, results, verdict, "claude", 1.0)
     assert record.digest(rec).startswith("sha256:")
     record.append(tmp_path, rec)
     assert record.read(tmp_path)
+
+    assert digest.render(rec)
+    digest.speaks(rec, record.read(tmp_path))
+    review.review(tmp_path)
+    archaeology.log(tmp_path)
+    archaeology.blame(tmp_path, "src/app.py")
+    attest.trailer(tmp_path)
+    assert state.ledger(tmp_path)["turns"] == 1
+    assert cli._ledger_lines(state.ledger(tmp_path))
 
 
 def test_the_stop_hook_opens_no_socket(tmp_path, no_network):
@@ -103,23 +110,6 @@ def test_the_stop_hook_opens_no_socket(tmp_path, no_network):
         "hook_event_name": "Stop",
     })
     hook.run(payload)  # never raises by contract, and must not reach the network
-
-
-def test_the_read_surfaces_open_no_socket(tmp_path, no_network):
-    """digest / review / blame / log / attest — everything a user can invoke."""
-    from tycho import archaeology, attest
-
-    session = engine.gather(FIXTURE, tmp_path)
-    results = engine.run_checks(session)
-    rec = record.build(session, results, engine.verdict_of(results), "claude", 1.0)
-    record.append(tmp_path, rec)
-
-    assert digest.render(rec)
-    digest.speaks(rec, record.read(tmp_path))
-    review.review(tmp_path)
-    archaeology.log(tmp_path)
-    archaeology.blame(tmp_path, "src/app.py")
-    attest.trailer(tmp_path)
 
 
 def test_no_trust_path_module_imports_an_llm_sdk():

@@ -7,74 +7,41 @@ commits in a real throwaway repo** with the hook actually installed, because the
 feature must not have (a hook that fails a commit) only exists at the git level: no amount of
 unit testing of `write_message` proves `git commit` still returns 0 when Tycho is broken.
 
-Every git repo here is built under `tmp_path` with `-c user.email=…` on the command line, so
-nothing reads or writes the developer's real git config, and `harness_mod.home` is redirected
-so nothing reads their real `~/.claude`.
+Every git repo here comes from the shared `git_repo` fixture, built under `tmp_path` with its
+identity on the command line, so nothing reads or writes the developer's real git config.
 """
 
 from __future__ import annotations
 
 import json
-import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+from conftest import git as _git
+from conftest import turn_record
 
 from tycho import attest
-from tycho import harness as harness_mod
 from tycho import init as init_mod
 from tycho import record as record_mod
 
 MSG = "commit-message.txt"
 
 
-@pytest.fixture(autouse=True)
-def _isolate_home(tmp_path_factory, monkeypatch):
-    """No test here may see a real `~/.claude` — `init` reads it to detect a global install."""
-    monkeypatch.setattr(
-        harness_mod, "home", lambda name: tmp_path_factory.mktemp("harness-home") / f".{name}"
-    )
-
-
-def _git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t",
-         "-c", "commit.gpgsign=false", *args],
-        capture_output=True, text=True, encoding="utf-8", errors="replace", check=check,
-    )
-
-
 @pytest.fixture
-def repo(tmp_path: Path) -> Path:
-    """A real, self-contained git repo with one commit — the thing every path here reads."""
-    root = tmp_path / "repo"
-    root.mkdir()
-    _git(root, "init", "-q", "-b", "main")
-    (root / "seed.txt").write_text("seed\n")
-    _git(root, "add", "seed.txt")
-    _git(root, "commit", "-qm", "seed")
-    return root
+def repo(git_repo: Path) -> Path:
+    return git_repo
 
 
 def _record(repo: Path, *paths: str, verdict: str = "VERIFIED", ended_at: float = 1000.0) -> dict:
     """Append a minimal but schema-shaped turn record touching `paths`."""
-    row = {
-        "schema": record_mod.SCHEMA,
-        "id": f"{abs(hash((paths, verdict, ended_at))):016x}"[:16],
-        "session": "s1",
-        "harness": "claude",
-        "model": "opus",
-        "agent_version": "1.0",
-        "started_at": ended_at - 10,
-        "ended_at": ended_at,
-        "verdict": verdict,
-        "stage": "claim_supported",
-        "checks": [],
-        "files": [{"path": p, "kind": "edit", "ts": ended_at} for p in paths],
-        "commands": [],
-        "claims": ["did the thing"],
-    }
+    row = turn_record(
+        id=f"{abs(hash((paths, verdict, ended_at))):016x}"[:16],
+        session="s1", model="opus", agent_version="1.0",
+        started_at=ended_at - 10, ended_at=ended_at, verdict=verdict,
+        files=[{"path": p, "kind": "edit", "ts": ended_at} for p in paths],
+        claims=["did the thing"],
+    )
     record_mod.append(repo, row)
     return row
 
@@ -121,14 +88,6 @@ def test_attestation_ignores_turns_recorded_after_the_commit(repo: Path):
 
     assert len(attest.attestation(repo, ["a.py"], until=2000.0)["turns"]) == 1
     assert len(attest.attestation(repo, ["a.py"])["turns"]) == 2
-
-
-def test_a_corrupt_record_line_is_skipped_not_fatal(repo: Path):
-    _record(repo, "a.py")
-    with record_mod.path_for(repo).open("a", encoding="utf-8") as fh:
-        fh.write("{not json\n")
-
-    assert len(attest.attestation(repo, ["a.py"])["turns"]) == 1
 
 
 # --- the trailer line --------------------------------------------------------

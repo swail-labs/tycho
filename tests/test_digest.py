@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 
 import pytest
+from conftest import turn_record
 
 from tycho import digest, hook, record, state
 from tycho.model import Stage, Verdict
@@ -35,24 +36,19 @@ def rec(
     turn_id: str = "abc123",
 ) -> dict:
     """A record dict shaped exactly like `record.build` writes one."""
-    return {
-        "schema": 1,
-        "id": turn_id,
-        "session": "s",
-        "harness": "claude",
-        "model": None,
-        "agent_version": None,
-        "started_at": 1.0,
-        "ended_at": 2.0,
-        "verdict": verdict,
-        "stage": stage,
-        "checks": list(checks),
-        "files": [{"path": f"src/f{i}.py", "kind": "edit", "ts": 1.0} for i in range(files)],
-        "commands": [{"cmd": "pytest -q", "runner": True, "outcome": "passed"}]
+    return turn_record(
+        id=turn_id,
+        model=None,
+        agent_version=None,
+        verdict=verdict,
+        stage=stage,
+        checks=list(checks),
+        files=[{"path": f"src/f{i}.py", "kind": "edit", "ts": 1.0} for i in range(files)],
+        commands=[{"cmd": "pytest -q", "runner": True, "outcome": "passed"}]
         if commands is None
         else list(commands),
-        "claims": list(claims),
-    }
+        claims=list(claims),
+    )
 
 
 def check(name: str, status: str, evidence: str = "because") -> dict:

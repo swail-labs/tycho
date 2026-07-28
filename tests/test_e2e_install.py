@@ -34,6 +34,8 @@ from pathlib import Path
 import pytest
 from packaging.version import Version
 
+from conftest import git
+
 import tycho
 from tycho.cli import ExitCode
 
@@ -56,14 +58,6 @@ def _run(*cmd: object, cwd: Path | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(
         [str(c) for c in cmd], cwd=cwd, capture_output=True, text=True,
         encoding="utf-8", errors="replace",
-    )
-
-
-def _git(repo: Path, *args: str) -> None:
-    subprocess.run(
-        ["git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t", *args],
-        check=True,
-        capture_output=True,
     )
 
 
@@ -180,10 +174,10 @@ def test_installed_cli_verifies_a_real_session_and_honours_the_exit_code_contrac
     (cli.ExitCode) rather than freezing today's outcome into the test.
     """
     # Arrange: a real git repo — verify reads git state.
-    _git(tmp_path, "init")
+    git(tmp_path, "init")
     (tmp_path / "seed.txt").write_text("seed\n")
-    _git(tmp_path, "add", "seed.txt")
-    _git(tmp_path, "commit", "-m", "init")
+    git(tmp_path, "add", "seed.txt")
+    git(tmp_path, "commit", "-m", "init")
 
     # Act
     r = _run(tycho_cmd, "verify", "--session", FIXTURE, cwd=tmp_path)

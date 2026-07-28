@@ -12,9 +12,10 @@ The second is the **evidence clause**. "no test ran" / "pytest passed" / "never 
 is the whole reason this isn't a worse `git log`, and each state has to come out of the
 record rather than out of a guess.
 
-The third is that it **never raises**. A truncated append, a hand-edited line, a null
-`model` or `session` (both nullable by design — `record.py` never guesses attribution) must
-each cost one row at most, never the command.
+The third is that it **never raises**. A record missing every optional field, a null `model`
+or `session` (both nullable by design — `record.py` never guesses attribution) must each cost
+one row at most, never the command. (Corrupt JSONL lines are `record.iter_records`' job and
+are guarded in `test_record.py`.)
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
+from conftest import turn_record
 
 from tycho import archaeology, record
 
@@ -51,17 +53,16 @@ def turn(
 ) -> dict:
     """One record in the shape `record.build` writes. Defaults to the happy turn."""
     paths = [path] if isinstance(path, str) else path
-    return {
-        "schema": 1, "id": id, "session": session, "harness": "claude", "model": model,
-        "agent_version": "2.1.220", "started_at": ended_at - 60, "ended_at": ended_at,
-        "verdict": verdict, "stage": stage,
-        "checks": [{"name": "command_execution", "status": "PASS", "evidence": "ran"}]
+    return turn_record(
+        id=id, session=session, model=model,
+        started_at=ended_at - 60, ended_at=ended_at, verdict=verdict, stage=stage,
+        checks=[{"name": "command_execution", "status": "PASS", "evidence": "ran"}]
         if checks is None else checks,
-        "files": [{"path": p, "kind": "edit", "ts": ended_at - 30} for p in paths],
-        "commands": [{"cmd": "pytest -q", "runner": True, "outcome": "passed"}]
+        files=[{"path": p, "kind": "edit", "ts": ended_at - 30} for p in paths],
+        commands=[{"cmd": "pytest -q", "runner": True, "outcome": "passed"}]
         if commands is None else commands,
-        "claims": [claim] if claim else [],
-    }
+        claims=[claim] if claim else [],
+    )
 
 
 def write(repo: Path, *records: dict) -> Path:
@@ -403,17 +404,6 @@ def test_filters_combine(tmp_path: Path):
 
 
 # --- corrupt, partial, and nullable input ------------------------------------
-
-
-def test_corrupt_and_truncated_lines_are_skipped_not_fatal(tmp_path: Path):
-    path = write(tmp_path, turn(claim="good one"))
-    with path.open("a", encoding="utf-8") as fh:
-        fh.write("not json at all\n")
-        fh.write('{"schema":1,"id":"deadbeef","fil\n')  # a crashed mid-append
-        fh.write("[]\n")  # valid JSON, wrong type
-    assert len(log(tmp_path)) == 1
-    assert '"good one"' in log(tmp_path)[0]
-    assert blame(tmp_path, "src/app.py")[0].startswith("src/app.py — 1 turn")
 
 
 def test_a_missing_record_file_is_an_empty_history_not_an_error(tmp_path: Path):

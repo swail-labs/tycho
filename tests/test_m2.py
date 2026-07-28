@@ -1,8 +1,9 @@
 """M2 readers: transcript parsing, git/fs readers, and gather()."""
 
 import hashlib
-import subprocess
 from pathlib import Path
+
+from conftest import git
 
 from tycho import events, fsstate, gitstate
 from tycho import verify as engine
@@ -83,19 +84,11 @@ def test_parse_skips_malformed_lines(tmp_path: Path):
 
 # --- git / fs readers -------------------------------------------------------
 
-def _git(repo: Path, *args: str) -> None:
-    subprocess.run(
-        ["git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t", *args],
-        check=True,
-        capture_output=True,
-    )
-
-
 def test_git_reader_on_a_real_repo(tmp_path: Path):
-    _git(tmp_path, "init")
+    git(tmp_path, "init")
     (tmp_path / "a.py").write_text("x = 1\n")
-    _git(tmp_path, "add", "a.py")
-    _git(tmp_path, "commit", "-m", "init")
+    git(tmp_path, "add", "a.py")
+    git(tmp_path, "commit", "-m", "init")
 
     assert gitstate.is_repo(tmp_path)
     assert gitstate.head_sha(tmp_path)
@@ -113,13 +106,13 @@ def test_git_reader_on_non_repo(tmp_path: Path):
     assert gitstate.diff_names(tmp_path, "HEAD") == ()
 
 
-def test_with_baseline_recovers_null_original_from_git(tmp_path: Path):
+def test_with_baseline_recovers_null_original_fromgit(tmp_path: Path):
     # TYCHO-32: Claude Code sends originalFile: null on repeat edits. gather() must recover
     # the pre-session baseline from git so the AST tamper checks keep a real "before".
-    _git(tmp_path, "init")
+    git(tmp_path, "init")
     (tmp_path / "test_x.py").write_text("def test():\n    assert x == 1\n")
-    _git(tmp_path, "add", "test_x.py")
-    _git(tmp_path, "commit", "-m", "init")
+    git(tmp_path, "add", "test_x.py")
+    git(tmp_path, "commit", "-m", "init")
 
     fe = FileEdit(path="test_x.py", ts=1.0, original=None, kind="create")
     out = engine._with_baseline(fe, tmp_path, "HEAD")

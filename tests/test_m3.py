@@ -1,10 +1,11 @@
 """M3: astdiff + the 8 checks + end-to-end run_checks."""
 
-import subprocess
 
 import pytest
 from dataclasses import replace
 from pathlib import Path
+
+from conftest import git
 
 from tycho import astdiff, checks
 from tycho import verify as engine
@@ -596,22 +597,14 @@ def test_scope_drift_unsupported_without_config_points_at_the_command():
 FIXTURE = Path(__file__).parent / "fixtures" / "transcript_sample.jsonl"
 
 
-def _git(repo: Path, *args: str) -> None:
-    subprocess.run(
-        ["git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t", *args],
-        check=True,
-        capture_output=True,
-    )
-
-
 def test_run_checks_end_to_end(tmp_path: Path):
     (tmp_path / "src").mkdir()
     (tmp_path / "tests").mkdir()
     (tmp_path / "src" / "auth.py").write_text("def ok():\n    return True\n")
     (tmp_path / "tests" / "test_auth.py").write_text("def test_ok():\n    assert ok()\n")
-    _git(tmp_path, "init")
-    _git(tmp_path, "add", "-A")
-    _git(tmp_path, "commit", "-m", "init")
+    git(tmp_path, "init")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-m", "init")
 
     session = engine.gather(FIXTURE, tmp_path)
     results = engine.run_checks(session)

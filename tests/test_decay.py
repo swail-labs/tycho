@@ -6,8 +6,7 @@ harder than the formatting: a rate whose denominator drifts is worse than no rat
 - catch rate = caught / **spoke** (turns the check reached PASS|FAIL|STALE)
 - blind rate = blind / **seen** (every turn the check ran in, spoke + blind)
 
-Also pinned: nothing here leaves the machine, a legacy `catches.json` with no attribution
-still renders, a null model id is its own bucket (never guessed, never merged), and the
+Also pinned: a legacy `catches.json` with no attribution still renders, a null model id is its own bucket (never guessed, never merged), and the
 whole thing fails open the way every other reader in `state.py` does.
 """
 
@@ -16,6 +15,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from conftest import turn_record
 from test_record import make_session
 from tycho import cli, record, state
 from tycho.model import Attribution, CheckResult, CheckStatus, Verdict
@@ -23,16 +23,13 @@ from tycho.model import Attribution, CheckResult, CheckStatus, Verdict
 
 def turn(model="claude-opus-5", agent_version="2.1.220", harness="claude",
          verdict="VERIFIED", checks=(), started_at=1000.0, ended_at=1001.0) -> dict:
-    """One hand-built turn record — the shape `record.build` writes, minus the fields the
-    ledger never reads. Hand-built on purpose: the ledger's contract is with the *file*."""
-    return {
-        "schema": record.SCHEMA, "id": "0" * 16, "session": "s", "harness": harness,
-        "model": model, "agent_version": agent_version,
-        "started_at": started_at, "ended_at": ended_at,
-        "verdict": verdict, "stage": "claim_supported",
-        "checks": [{"name": n, "status": s, "evidence": ""} for n, s in checks],
-        "files": [], "commands": [], "claims": [],
-    }
+    """One hand-built turn record. Hand-built on purpose: the ledger's contract is with the
+    *file*, not with `record.build`."""
+    return turn_record(
+        harness=harness, model=model, agent_version=agent_version,
+        started_at=started_at, ended_at=ended_at, verdict=verdict,
+        checks=[{"name": n, "status": s, "evidence": ""} for n, s in checks],
+    )
 
 
 def write(repo: Path, *records: dict) -> None:
@@ -244,7 +241,7 @@ def test_ledger_is_empty_before_anything_is_recorded(tmp_path: Path):
     }
 
 
-def test_corrupt_and_partial_lines_are_skipped_not_fatal(tmp_path: Path):
+def test_rows_the_ledger_cannot_read_are_dropped_field_by_field(tmp_path: Path):
     path = record.path_for(tmp_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -288,17 +285,3 @@ def test_ledger_reads_state_from_the_repo_root_not_a_subdirectory(tmp_path, monk
     assert cli.main(["count", "--ledger"]) == cli.ExitCode.OK
     assert "ledger: 1 turn on the record" in capsys.readouterr().out
 
-
-def test_the_ledger_opens_no_socket(tmp_path, monkeypatch):
-    # §8/§10: nothing about measuring decay may become telemetry. The ledger is one local
-    # file read, and this is the test that keeps it that way.
-    import socket
-
-    def _no(*_a, **_k):
-        raise AssertionError("the decay ledger must never open a socket")
-
-    monkeypatch.setattr(socket, "socket", _no)
-    monkeypatch.setattr(socket, "create_connection", _no)
-    write(tmp_path, turn())
-    assert state.ledger(tmp_path)["turns"] == 1
-    assert cli._ledger_lines(state.ledger(tmp_path))
