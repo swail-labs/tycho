@@ -739,6 +739,13 @@ def test_freshness_still_reports_a_real_edit_after_the_run():
     "pytest --version",
     "jest --listTests",
     "npm test -- --listTests",
+    # Wrapped in the prefixes agents reach for anyway. `_unwrap` used to filter every `-flag`
+    # out of a `timeout` invocation to skip timeout's own options, which deleted the wrapped
+    # command's flags too — so these unwrapped to a bare `pytest`/`cargo test`, `_is_discovery`
+    # never saw the flag that makes them prove nothing, and a collect-only read as a green run.
+    "timeout 60 pytest --collect-only -q",
+    "timeout -k 5 300 cargo test --no-run",
+    "timeout 60 bash -c 'pytest --collect-only -q'",
 ])
 def test_discovery_runs_are_not_passing_test_runs(cmd):
     # These exit 0 having proved nothing. Read as a green run they fabricate a green — and
@@ -752,6 +759,25 @@ def test_discovery_runs_are_not_passing_test_runs(cmd):
     assert checks.command_execution(s).status == CheckStatus.UNSUPPORTED
     assert checks.test_freshness(s).status == CheckStatus.UNSUPPORTED
     assert engine.verdict_of(engine.run_checks(s)) is not Verdict.VERIFIED
+
+
+@pytest.mark.parametrize("cmd,inner", [
+    ("timeout 60 pytest -q", "pytest -q"),
+    ("timeout 1.5h pytest -q", "pytest -q"),
+    ("timeout -k 5 60 npm test", "npm test"),           # -k consumes its value, not the duration
+    ("timeout --kill-after=5 60 pytest -q", "pytest -q"),  # ...unless it's written --flag=value
+    ("timeout -s SIGKILL 60 pytest -q", "pytest -q"),
+    ("timeout 60 bash -c 'pytest -q'", "pytest -q"),    # two layers, both must survive
+])
+def test_timeout_keeps_the_wrapped_commands_flags(cmd, inner):
+    """Skipping timeout's own options must stop at the duration. Over-skipping loses the
+    wrapped command's flags (see the discovery cases above); under-skipping loses the command."""
+    assert checks._runner_segment(cmd) == inner, cmd
+
+
+@pytest.mark.parametrize("cmd", ["timeout 60", "timeout", "timeout -k 5", "timeout notaduration pytest"])
+def test_timeout_without_a_command_unwraps_to_nothing(cmd):
+    assert checks._runner_segment(cmd) is None, cmd
 
 
 @pytest.mark.parametrize("cmd", [

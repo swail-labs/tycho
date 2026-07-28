@@ -218,6 +218,33 @@ _MAX_CMD_LEN = 4096
 _MAX_UNWRAP_DEPTH = 10
 
 
+_TIMEOUT_DURATION = re.compile(r"[\d.]+[smhd]?")
+# `timeout`'s own options that consume the next argument when not written as `--flag=value`.
+_TIMEOUT_VALUE_FLAGS = ("-k", "--kill-after", "-s", "--signal")
+
+
+def _after_timeout_duration(args: list[str]) -> list[str]:
+    """The wrapped command in `timeout [OPTION...] DURATION COMMAND [ARG...]`, else [].
+
+    Only `timeout`'s *own* leading options are skipped, and the scan stops dead at the
+    duration. Filtering every `-flag` out of the whole argument list instead — which is what
+    this replaced — silently deleted flags belonging to the wrapped command, and one of them
+    was load-bearing: `timeout 60 pytest --collect-only` unwrapped to a bare `pytest`, so
+    `_is_discovery` never saw the flag that makes it a discovery run and Tycho read a
+    collect-only as a passing suite. That is a fabricated green, from a prefix agents add for
+    unrelated reasons.
+    """
+    i = 0
+    while i < len(args) and args[i].startswith("-"):
+        if args[i] in _TIMEOUT_VALUE_FLAGS:
+            i += 1  # its value is the next token, not the duration
+        i += 1
+    # args[i] is the duration; a command must follow it.
+    if i + 1 >= len(args) or not _TIMEOUT_DURATION.fullmatch(args[i]):
+        return []
+    return args[i + 1:]
+
+
 def _unwrap(segment: str) -> str | None:
     """The inner command a wrapper carries in an argument, else None. Peels one layer; callers
     recurse. Takes the RAW segment so a quoted `-c '<cmd>'` stays a single token."""
@@ -243,9 +270,9 @@ def _unwrap(segment: str) -> str | None:
 
     # `timeout [flags] <duration> <cmd...>` — agents wrap long suites in it routinely.
     if head == "timeout":
-        rest = [t for t in parts[1:] if not t.startswith("-")]
-        if len(rest) >= 2 and re.fullmatch(r"[\d.]+[smhd]?", rest[0]):
-            return shlex.join(rest[1:])
+        rest = _after_timeout_duration(parts[1:])
+        if rest:
+            return shlex.join(rest)
 
     # `<shell> ... -c '<cmd>'`
     if head in _C_SHELLS:
