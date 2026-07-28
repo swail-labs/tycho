@@ -569,12 +569,14 @@ def test_a_record_from_a_newer_tycho_is_skipped_not_misread(tmp_path: Path):
 
 # --- redaction: the bound on the work it does --------------------------------
 
+# `ids` is not cosmetic: pytest puts the test id in `PYTEST_CURRENT_TEST`, and Windows caps an
+# environment variable at 32767 characters — a generated id from these inputs errors the test.
 @pytest.mark.parametrize("hostile", [
     "TOKEN" * 30_000,                       # the `_SECRET_NAME` row's quadratic shape
     "http://" + "a-" * 15_000,              # the URL-credential row's
     "cat log: " + "A" * 150_000,            # a plain `cat` of a large file
     "sk-live-" + "a_" * 15_000,
-])
+], ids=["secret-name", "url-credential", "large-cat", "sk-live"])
 def test_redaction_of_a_hostile_input_is_bounded_in_wall_time(hostile):
     """Command strings are agent-controlled, `_clean` used to redact *before* truncating, and
     a hang is not an exception — the Stop hook's fail-open never sees one. Measured through

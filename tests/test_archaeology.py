@@ -131,7 +131,9 @@ def test_bare_basename_that_is_not_here_stays_a_basename(tmp_path: Path):
 
 def test_a_path_outside_the_repo_survives_as_itself(tmp_path: Path):
     outside = tmp_path.parent / "elsewhere" / "app.py"
-    assert archaeology.resolve(tmp_path / "repo", str(outside)) == str(outside)
+    # POSIX-separated even on Windows: `resolve` normalizes before it decides, and the record
+    # it feeds stores POSIX. See test_windows_separators_are_normalized.
+    assert archaeology.resolve(tmp_path / "repo", str(outside)) == outside.as_posix()
 
 
 def test_windows_separators_are_normalized(tmp_path: Path):

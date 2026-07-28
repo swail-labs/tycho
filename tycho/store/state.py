@@ -51,10 +51,36 @@ def dir_for(repo: Path) -> Path:
     return root_for(repo) / _DIR
 
 
+_SHARING_RETRY = 0.5
+
+
+def retry_sharing(op):
+    """Run `op`, retrying a `PermissionError` for up to `_SHARING_RETRY` seconds.
+
+    Windows refuses to `os.replace` onto a file another process has open, and refuses to
+    open one that is mid-replace — both raise `PermissionError`, both clear in microseconds.
+    Unretried, a concurrent reader turns a write into a lost write and a read into "no state
+    at all": `vetoed()` returning [] while another agent writes is a veto that stops
+    applying. POSIX never takes the retry. Only `PermissionError` is retried — `_read_json`
+    hits `FileNotFoundError` constantly and must stay instant.
+
+    ponytail: a retry loop, not a `FILE_SHARE_DELETE` handle through ctypes. Ceiling: a
+    reader holding the file longer than `_SHARING_RETRY` still loses the write.
+    """
+    deadline = time.monotonic() + _SHARING_RETRY
+    while True:
+        try:
+            return op()
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.005)
+
+
 def _read_json(path: Path) -> dict | None:
     """Our own state, so unreadable or corrupt means "unknown", never an error."""
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(retry_sharing(lambda: path.read_text(encoding="utf-8")))
     except (OSError, json.JSONDecodeError):
         return None
     return data if isinstance(data, dict) else None
@@ -134,7 +160,7 @@ def _write_json(path: Path, data: dict) -> None:
         with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, _FILE_MODE),
                   "w", encoding="utf-8") as fh:
             fh.write(json.dumps(data, indent=2) + "\n")
-        tmp.replace(path)
+        retry_sharing(lambda: tmp.replace(path))
     except OSError:
         # A lost write, never a corrupt file (Windows `replace` fails if the target is open).
         tmp.unlink(missing_ok=True)

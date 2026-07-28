@@ -137,7 +137,7 @@ def _walk_for_tests(repo: Path) -> bool:
                 return True
             if suffix == ".rs" and name != "build.rs":
                 try:
-                    text = (Path(root) / name).read_text(errors="ignore")
+                    text = (Path(root) / name).read_text(encoding="utf-8", errors="ignore")
                     if any(marker in text for marker in ("#[test]", "#[rstest]", "proptest!")):
                         return True
                 except OSError:

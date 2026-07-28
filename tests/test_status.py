@@ -274,7 +274,9 @@ def test_init_installs_the_slash_command_and_subcommands(tmp_path: Path):
     assert 'description: "Full diagnostics:' in (commands / "tycho-doctor.md").read_text()
     # /tycho-show is the turn digest, not the status badge. Before 0.2.0 this name was bound
     # to `statusline --on`, which would have shadowed the release's most useful command.
-    assert "tycho show" in (commands / "tycho-show.md").read_text()
+    # The CLI spelling is host-flavoured (`tycho`, `tycho.EXE`, `python -m tycho.cli`) — what
+    # matters is the subcommand it ends in.
+    assert "show $ARGUMENTS`" in (commands / "tycho-show.md").read_text()
     assert not (commands / "tycho-hide.md").exists()  # renamed to badge-off, cleaned up
 
 

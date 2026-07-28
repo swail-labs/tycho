@@ -374,7 +374,7 @@ def _prune(path: Path, cap: int, slack: int | None = None) -> None:
         with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600),
                   "w", encoding="utf-8") as fh:
             fh.writelines(line if line.endswith("\n") else line + "\n" for line in kept)
-        tmp.replace(path)
+        state.retry_sharing(lambda: tmp.replace(path))
     except OSError:
         tmp.unlink(missing_ok=True)
 

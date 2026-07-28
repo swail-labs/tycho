@@ -134,7 +134,7 @@ def test_one_turn_is_singular(repo: Path):
 
 def test_trailer_reads_the_staged_diff(repo: Path):
     _record(repo, "a.py")
-    (repo / "a.py").write_text("x = 1\n")
+    (repo / "a.py").write_text("x = 1\n", encoding="utf-8")
     _git(repo, "add", "a.py")
 
     assert attest.trailer(repo).startswith("Tycho-Attestation: sha256:")
@@ -143,14 +143,14 @@ def test_trailer_reads_the_staged_diff(repo: Path):
 def test_a_merge_commit_gets_no_trailer(repo: Path):
     """A merge carries no work of its own — its content was attested on the merged commits."""
     _record(repo, "a.py")
-    (repo / "a.py").write_text("x = 1\n")
+    (repo / "a.py").write_text("x = 1\n", encoding="utf-8")
     _git(repo, "add", "a.py")
 
     assert attest.trailer(repo, source="merge") is None
 
 
 def test_no_trailer_in_a_repo_with_no_records(repo: Path):
-    (repo / "a.py").write_text("x = 1\n")
+    (repo / "a.py").write_text("x = 1\n", encoding="utf-8")
     _git(repo, "add", "a.py")
     assert attest.trailer(repo) is None
 
@@ -164,7 +164,7 @@ def test_no_trailer_outside_a_git_repo(tmp_path: Path):
 
 
 def _staged(repo: Path) -> None:
-    (repo / "a.py").write_text("x = 1\n")
+    (repo / "a.py").write_text("x = 1\n", encoding="utf-8")
     _git(repo, "add", "a.py")
 
 
@@ -172,11 +172,11 @@ def test_write_message_appends_the_trailer_after_a_blank_line(repo: Path, tmp_pa
     _record(repo, "a.py")
     _staged(repo)
     msg = tmp_path / MSG
-    msg.write_text("feat: add a\n\nsome body prose\n")
+    msg.write_text("feat: add a\n\nsome body prose\n", encoding="utf-8")
 
     assert attest.write_message(repo, msg) is True
 
-    lines = msg.read_text().splitlines()
+    lines = msg.read_text(encoding="utf-8").splitlines()
     assert lines[:3] == ["feat: add a", "", "some body prose"]
     assert lines[3] == ""
     assert lines[4].startswith("Tycho-Attestation:")
@@ -186,12 +186,12 @@ def test_write_message_is_idempotent_and_replaces_rather_than_stacks(repo: Path,
     _record(repo, "a.py")
     _staged(repo)
     msg = tmp_path / MSG
-    msg.write_text("feat: add a\n")
+    msg.write_text("feat: add a\n", encoding="utf-8")
 
     attest.write_message(repo, msg)
-    first = msg.read_text()
+    first = msg.read_text(encoding="utf-8")
     assert attest.write_message(repo, msg) is False  # nothing changed, nothing rewritten
-    assert msg.read_text() == first
+    assert msg.read_text(encoding="utf-8") == first
     assert first.count("Tycho-Attestation:") == 1
 
 
@@ -199,11 +199,11 @@ def test_write_message_joins_an_existing_trailer_block(repo: Path, tmp_path: Pat
     _record(repo, "a.py")
     _staged(repo)
     msg = tmp_path / MSG
-    msg.write_text("feat: add a\n\nSigned-off-by: Someone <s@example.com>\n")
+    msg.write_text("feat: add a\n\nSigned-off-by: Someone <s@example.com>\n", encoding="utf-8")
 
     attest.write_message(repo, msg)
 
-    lines = msg.read_text().splitlines()
+    lines = msg.read_text(encoding="utf-8").splitlines()
     assert lines[-2] == "Signed-off-by: Someone <s@example.com>"  # no blank wedged between
     assert lines[-1].startswith("Tycho-Attestation:")
 
@@ -215,11 +215,11 @@ def test_a_conventional_commit_subject_is_not_mistaken_for_a_trailer(repo: Path,
     _record(repo, "a.py")
     _staged(repo)
     msg = tmp_path / MSG
-    msg.write_text("fix: tweak\n")
+    msg.write_text("fix: tweak\n", encoding="utf-8")
 
     attest.write_message(repo, msg)
 
-    lines = msg.read_text().splitlines()
+    lines = msg.read_text(encoding="utf-8").splitlines()
     assert lines[0] == "fix: tweak"
     assert lines[1] == "", "the subject always gets its separating blank line"
     assert lines[2].startswith("Tycho-Attestation:")
@@ -231,11 +231,11 @@ def test_write_message_stays_above_gits_comment_block(repo: Path, tmp_path: Path
     _record(repo, "a.py")
     _staged(repo)
     msg = tmp_path / MSG
-    msg.write_text("feat: add a\n\n# Please enter the commit message…\n# On branch main\n")
+    msg.write_text("feat: add a\n\n# Please enter the commit message…\n# On branch main\n", encoding="utf-8")
 
     attest.write_message(repo, msg)
 
-    lines = msg.read_text().splitlines()
+    lines = msg.read_text(encoding="utf-8").splitlines()
     assert lines[-1] == "# On branch main"
     assert any(ln.startswith("Tycho-Attestation:") for ln in lines)
     assert lines.index("# Please enter the commit message…") > [
@@ -247,11 +247,11 @@ def test_an_empty_editor_message_keeps_room_for_the_subject(repo: Path, tmp_path
     _record(repo, "a.py")
     _staged(repo)
     msg = tmp_path / MSG
-    msg.write_text("\n# Please enter the commit message…\n")
+    msg.write_text("\n# Please enter the commit message…\n", encoding="utf-8")
 
     attest.write_message(repo, msg)
 
-    lines = msg.read_text().splitlines()
+    lines = msg.read_text(encoding="utf-8").splitlines()
     # blank, blank, trailer — a subject typed on line 1 still gets its separating blank line.
     assert lines[0] == "" and lines[1] == ""
     assert lines[2].startswith("Tycho-Attestation:")
@@ -266,9 +266,9 @@ def test_write_message_never_raises_and_leaves_the_message_alone_on_failure(
     assert attest.write_message(repo, missing) is False  # unreadable → no trailer, no raise
 
     msg = tmp_path / MSG
-    msg.write_text("feat: add a\n")
+    msg.write_text("feat: add a\n", encoding="utf-8")
     assert attest.write_message(tmp_path / "not-a-repo", msg) is False
-    assert msg.read_text() == "feat: add a\n"  # untouched
+    assert msg.read_text(encoding="utf-8") == "feat: add a\n"  # untouched
 
 
 def test_a_stale_trailer_is_kept_when_there_is_nothing_to_replace_it_with(
@@ -277,25 +277,25 @@ def test_a_stale_trailer_is_kept_when_there_is_nothing_to_replace_it_with(
     """A pruned record must degrade to "stale trailer", never to a silently dropped one —
     dropping it would erase the only evidence the commit was ever attested."""
     msg = tmp_path / MSG
-    msg.write_text("feat: add a\n\nTycho-Attestation: sha256:" + "0" * 64 + "\n")
-    before = msg.read_text()
+    msg.write_text("feat: add a\n\nTycho-Attestation: sha256:" + "0" * 64 + "\n", encoding="utf-8")
+    before = msg.read_text(encoding="utf-8")
 
     assert attest.write_message(repo, msg) is False
-    assert msg.read_text() == before
+    assert msg.read_text(encoding="utf-8") == before
 
 
 # --- verification ------------------------------------------------------------
 
 
 def _commit(repo: Path, path: str, message: str, *extra: str) -> None:
-    (repo / path).write_text(f"# {message}\n")
+    (repo / path).write_text(f"# {message}\n", encoding="utf-8")
     _git(repo, "add", path)
     _git(repo, "commit", "-qm", message, *extra)
 
 
 def test_verify_says_yes_when_the_trailer_matches_the_record(repo: Path):
     _record(repo, "a.py")
-    (repo / "a.py").write_text("x = 1\n")
+    (repo / "a.py").write_text("x = 1\n", encoding="utf-8")
     _git(repo, "add", "a.py")
     line = attest.trailer(repo)
     _git(repo, "commit", "-qm", f"feat: add a\n\n{line}")
@@ -308,7 +308,7 @@ def test_verify_says_yes_when_the_trailer_matches_the_record(repo: Path):
 
 def test_verify_says_no_when_the_trailer_was_tampered_with(repo: Path):
     _record(repo, "a.py")
-    (repo / "a.py").write_text("x = 1\n")
+    (repo / "a.py").write_text("x = 1\n", encoding="utf-8")
     _git(repo, "add", "a.py")
     _git(repo, "commit", "-qm", "feat: add a\n\nTycho-Attestation: sha256:" + "0" * 64)
 
@@ -330,7 +330,7 @@ def test_verify_cannot_tell_when_there_is_no_trailer(repo: Path):
 
 def test_verify_cannot_tell_when_the_record_is_gone(repo: Path):
     _record(repo, "a.py")
-    (repo / "a.py").write_text("x = 1\n")
+    (repo / "a.py").write_text("x = 1\n", encoding="utf-8")
     _git(repo, "add", "a.py")
     _git(repo, "commit", "-qm", f"feat: add a\n\n{attest.trailer(repo)}")
     record_mod.path_for(repo).unlink()  # the `--purge` / pruned / fresh-clone case
@@ -403,7 +403,7 @@ def test_amend_replaces_the_trailer_rather_than_stacking_it(wired: Path):
     _commit(wired, "a.py", "feat: add a")
     first = _trailer_of(wired)
     _record(wired, "a.py", verdict="STALE")
-    (wired / "a.py").write_text("x = 2\n")
+    (wired / "a.py").write_text("x = 2\n", encoding="utf-8")
     _git(wired, "add", "a.py")
     _git(wired, "commit", "-q", "--amend", "--no-edit")
 
@@ -458,7 +458,7 @@ def test_no_verify_still_attests_because_git_does_not_skip_this_hook(wired: Path
     Worth pinning rather than assuming: it means rushing past a failing linter doesn't also
     silently drop the attestation, which is the behaviour we want and did not have to build."""
     _record(wired, "a.py")
-    (wired / "a.py").write_text("x = 1\n")
+    (wired / "a.py").write_text("x = 1\n", encoding="utf-8")
     _git(wired, "add", "a.py")
     _git(wired, "commit", "-q", "--no-verify", "-m", "feat: add a")
 
@@ -480,7 +480,7 @@ def test_the_commit_still_succeeds_when_tycho_is_gone(repo: Path, monkeypatch):
     (repo / ".claude").mkdir()
     init_mod.init(repo, only="claude", assume_yes=True)
     _record(repo, "a.py")
-    (repo / "a.py").write_text("x = 1\n")
+    (repo / "a.py").write_text("x = 1\n", encoding="utf-8")
     _git(repo, "add", "a.py")
 
     result = _git(repo, "commit", "-m", "feat: add a", check=False)
@@ -494,14 +494,15 @@ def test_the_commit_still_succeeds_under_set_e_in_a_foreign_hook(repo: Path):
     """Our block is inserted into someone else's script, which may well have `set -e`. A
     non-zero exit from Tycho must not take their commit with it."""
     hooks = init_mod.git_hooks_dir(repo)
-    (hooks / "prepare-commit-msg").write_text("#!/bin/sh\nset -e\necho theirs >&2\n")
+    (hooks / "prepare-commit-msg").write_text("#!/bin/sh\nset -e\necho theirs >&2\n", encoding="utf-8")
     (hooks / "prepare-commit-msg").chmod(0o755)
     (repo / ".claude").mkdir()
     init_mod.init(repo, only="claude", assume_yes=True)
     Path(hooks / "prepare-commit-msg").write_text(
-        (hooks / "prepare-commit-msg").read_text().replace(
+        (hooks / "prepare-commit-msg").read_text(encoding="utf-8").replace(
             init_mod.attest_command(), "/nonexistent/python -m tycho.attest"
-        )
+        ),
+        encoding="utf-8",
     )
 
     result = _git(repo, "commit", "--allow-empty", "-m", "chore: x", check=False)
@@ -513,7 +514,7 @@ def test_the_commit_still_succeeds_under_set_e_in_a_foreign_hook(repo: Path):
 def test_uninstall_stops_the_trailer_and_a_commit_still_works(wired: Path):
     init_mod.uninstall(wired, only="claude")
     _record(wired, "a.py")
-    (wired / "a.py").write_text("x = 1\n")
+    (wired / "a.py").write_text("x = 1\n", encoding="utf-8")
     _git(wired, "add", "a.py")
 
     result = _git(wired, "commit", "-m", "feat: add a", check=False)
@@ -539,7 +540,7 @@ def test_a_frozen_build_falls_back_to_the_console_script(monkeypatch):
 
 def test_hook_json_survives_a_round_trip_through_the_settings_file(wired: Path):
     """Sanity: nothing about the git hook disturbed the harness config it ships beside."""
-    data = json.loads((wired / ".claude" / "settings.json").read_text())
+    data = json.loads((wired / ".claude" / "settings.json").read_text(encoding="utf-8"))
     assert init_mod._is_tycho_hook(data["hooks"]["Stop"][0]["hooks"][0]["command"])
 
 
@@ -556,7 +557,7 @@ def test_old_green_turns_do_not_bury_todays_failure(wired: Path):
     _commit(wired, "app.py", "feat: last month's work")  # those three are that commit's
     _record(wired, "app.py", verdict="FAILED")
 
-    (wired / "app.py").write_text("# today\n")
+    (wired / "app.py").write_text("# today\n", encoding="utf-8")
     _git(wired, "add", "app.py")
     line = attest.trailer(wired)
 
@@ -567,7 +568,7 @@ def test_old_green_turns_do_not_bury_todays_failure(wired: Path):
 def test_the_window_starts_at_the_previous_commit(repo: Path):
     _record(repo, "a.py", ended_at=100.0)      # long before this repo's only commit
     _record(repo, "a.py", verdict="STALE")     # now
-    (repo / "a.py").write_text("x = 1\n")
+    (repo / "a.py").write_text("x = 1\n", encoding="utf-8")
     _git(repo, "add", "a.py")
 
     assert "1 turn" in attest.trailer(repo)
@@ -585,9 +586,9 @@ def test_a_pruned_turn_reads_as_cannot_tell_not_as_a_forgery(wired: Path):
     _commit(wired, "a.py", "feat: add a")
     assert attest.verify(wired)[0] is True
 
-    kept = [ln for ln in record_mod.path_for(wired).read_text().splitlines()
+    kept = [ln for ln in record_mod.path_for(wired).read_text(encoding="utf-8").splitlines()
             if json.loads(ln)["id"] != first["id"]]
-    record_mod.path_for(wired).write_text("\n".join(kept) + "\n")
+    record_mod.path_for(wired).write_text("\n".join(kept) + "\n", encoding="utf-8")
 
     ok, said = attest.verify(wired)
 
@@ -598,7 +599,7 @@ def test_a_pruned_turn_reads_as_cannot_tell_not_as_a_forgery(wired: Path):
 
 def test_the_trailer_carries_the_ids_of_the_turns_it_covers(repo: Path):
     row = _record(repo, "a.py")
-    (repo / "a.py").write_text("x = 1\n")
+    (repo / "a.py").write_text("x = 1\n", encoding="utf-8")
     _git(repo, "add", "a.py")
 
     line = attest.trailer(repo)
@@ -610,7 +611,7 @@ def test_the_trailer_carries_the_ids_of_the_turns_it_covers(repo: Path):
 def test_verification_still_works_on_a_trailer_written_before_turn_ids(repo: Path):
     """Old commits keep verifying: no `turns=` means fall back to reconstructing the set."""
     _record(repo, "a.py")
-    (repo / "a.py").write_text("x = 1\n")
+    (repo / "a.py").write_text("x = 1\n", encoding="utf-8")
     _git(repo, "add", "a.py")
     legacy = attest.trailer(repo).split(" turns=")[0]
     _git(repo, "commit", "-qm", f"feat: add a\n\n{legacy}")
@@ -622,7 +623,7 @@ def test_verification_still_works_on_a_trailer_written_before_turn_ids(repo: Pat
 
 def test_a_tampered_digest_is_still_caught_when_the_turns_are_all_there(repo: Path):
     _record(repo, "a.py")
-    (repo / "a.py").write_text("x = 1\n")
+    (repo / "a.py").write_text("x = 1\n", encoding="utf-8")
     _git(repo, "add", "a.py")
     tampered = attest._DIGEST_RE.sub("sha256:" + "b" * 64, attest.trailer(repo))
     _git(repo, "commit", "-qm", f"feat: add a\n\n{tampered}")
@@ -645,7 +646,7 @@ def test_a_trailer_copied_onto_another_commit_does_not_verify(wired: Path):
     stolen = [ln for ln in _git(wired, "log", "-1", "--format=%B").stdout.splitlines()
               if ln.startswith("Tycho-Attestation:")][0]
 
-    (wired / "b.py").write_text("# hand written\n")
+    (wired / "b.py").write_text("# hand written\n", encoding="utf-8")
     _git(wired, "add", "b.py")
     _git(wired, "commit", "-q", "--no-verify", "-m", f"chore: mine\n\n{stolen}")
 
@@ -660,7 +661,7 @@ def test_a_revert_does_not_inherit_the_attestation(repo: Path):
     """No hook here on purpose: a revert carries the original message, trailer and all, on
     any machine where Tycho isn't installed to rewrite it."""
     _record(repo, "a.py")
-    (repo / "a.py").write_text("x = 1\n")
+    (repo / "a.py").write_text("x = 1\n", encoding="utf-8")
     _git(repo, "add", "a.py")
     line = attest.trailer(repo)
     _git(repo, "commit", "-qm", f"feat: add a\n\n{line}")
@@ -689,7 +690,7 @@ def test_the_same_turns_over_different_content_do_not_share_a_digest(repo: Path)
 
 def test_the_trailer_names_the_tree_it_was_written_for(repo: Path):
     _record(repo, "a.py")
-    (repo / "a.py").write_text("x = 1\n")
+    (repo / "a.py").write_text("x = 1\n", encoding="utf-8")
     _git(repo, "add", "a.py")
 
     line = attest.trailer(repo)
@@ -714,12 +715,13 @@ def test_the_trailer_survives_the_verbose_scissors(repo: Path, tmp_path: Path):
         "diff --git a/a.py b/a.py\n"
         "+++ b/a.py\n"
         "@@ -0,0 +1 @@\n"
-        "+x = 1\n"
+        "+x = 1\n",
+        encoding="utf-8",
     )
 
     attest.write_message(repo, msg)
 
-    lines = msg.read_text().splitlines()
+    lines = msg.read_text(encoding="utf-8").splitlines()
     scissors = next(i for i, ln in enumerate(lines) if ">8" in ln)
     trailer = next(i for i, ln in enumerate(lines) if ln.startswith("Tycho-Attestation:"))
     assert trailer < scissors, "written below the scissors, git discards it"
@@ -731,11 +733,11 @@ def test_a_real_verbose_commit_still_carries_a_verifiable_trailer(wired: Path):
     """`commit.verbose` only appends the diff when git opens an editor, so this drives a real
     one — the scissors block has to be there for the bug to exist."""
     _record(wired, "a.py")
-    (wired / "a.py").write_text("x = 1\n")
+    (wired / "a.py").write_text("x = 1\n", encoding="utf-8")
     _git(wired, "add", "a.py")
     editor = wired / "editor.sh"
     editor.write_text('#!/bin/sh\nprintf "feat: add a\\n" | cat - "$1" > "$1.new"'
-                      ' && mv "$1.new" "$1"\n')
+                      ' && mv "$1.new" "$1"\n', encoding="utf-8")
     editor.chmod(0o755)
 
     done = subprocess.run(
@@ -815,7 +817,7 @@ def test_amend_with_a_new_message_does_not_report_a_mismatch(wired: Path):
     of a mismatch is not."""
     _record(wired, "a.py")
     _commit(wired, "a.py", "feat: add a")
-    (wired / "a.py").write_text("x = 2\n")
+    (wired / "a.py").write_text("x = 2\n", encoding="utf-8")
     _git(wired, "add", "a.py")
     _git(wired, "commit", "-q", "--amend", "-m", "feat: add a, better")
 
