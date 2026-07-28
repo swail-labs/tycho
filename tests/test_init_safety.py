@@ -306,6 +306,17 @@ def test_uninstall_purge_removes_repo_local_state_and_config(tmp_path: Path):
     assert all(init_mod.REFUSED not in ln for ln in again)  # idempotent, not an error
 
 
+def test_purge_removes_a_read_only_file(tmp_path: Path):
+    """The shadow repo's objects are read-only, and Windows won't unlink a read-only file — so
+    a gitless project's `.tycho/` survived `--purge` entirely. Exercised on the handler because
+    POSIX deletes such a file happily and would never reach it."""
+    victim = tmp_path / "object"
+    victim.write_text("x")
+    victim.chmod(0o444)
+    init_mod._clear_readonly(os.unlink, victim, None)
+    assert not victim.exists()
+
+
 def test_uninstall_refuses_malformed_json_too(tmp_path: Path):
     # Same rule both ways: removing our hook isn't worth risking the rest of the file.
     settings = tmp_path / CLAUDE

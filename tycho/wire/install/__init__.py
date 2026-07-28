@@ -17,7 +17,9 @@ it can't parse rather than guessing.
 
 from __future__ import annotations
 
+import os
 import shutil
+import stat
 import sys
 from pathlib import Path
 
@@ -360,6 +362,21 @@ def uninstall(repo: Path, only: str | None = None, purge: bool = False) -> list[
     return lines
 
 
+def _clear_readonly(func, path, _exc) -> None:
+    """Retry a failed unlink after clearing the read-only bit.
+
+    Git writes loose objects and packs read-only, and on Windows `unlink` refuses a read-only
+    file outright — so `--purge` left the whole shadow repo behind in a project that has no git
+    of its own. POSIX doesn't need this (the directory's write bit governs), and a chmod that
+    still doesn't help re-raises into the caller's handler."""
+    os.chmod(path, stat.S_IWRITE)
+    func(path)
+
+
+# 3.12 renamed `onerror` to `onexc` and warns on the old name; 3.11 only knows the old one.
+_RMTREE_ONFAIL = "onexc" if sys.version_info >= (3, 12) else "onerror"
+
+
 def _purge_repo_local(repo: Path) -> list[str]:
     """Delete the two repo-local artifacts Tycho owns whole: `.tycho/` and `.tycho.toml`.
     Idempotent. The machine-wide state under `~/.local/share/tycho` (the all-time tally,
@@ -368,7 +385,7 @@ def _purge_repo_local(repo: Path) -> list[str]:
     for path in (state.dir_for(repo), config_mod.path(repo)):
         try:
             if path.is_dir():
-                shutil.rmtree(path)
+                shutil.rmtree(path, **{_RMTREE_ONFAIL: _clear_readonly})
                 lines.append(f"removed {path.name}/")
             elif path.exists():
                 path.unlink()
