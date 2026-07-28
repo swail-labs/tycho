@@ -6,11 +6,66 @@ Point TYCHO_HOME at a per-test tmp dir for every test, always.
 
 The update check reaches PyPI; opt every test out by default so nothing makes a
 real network call. Tests that exercise the check delete the env var and monkeypatch the fetch.
+
+Also home to the three pieces of scaffolding the whole suite needs: a git runner, a repo
+with one commit, and a turn record in the shape `record.build` writes.
 """
 
 from __future__ import annotations
 
+import subprocess
+from pathlib import Path
+
 import pytest
+
+from tycho import record
+
+
+def git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
+    """Run git against `repo` with an identity and signing config of our own.
+
+    `commit.gpgsign=false` is load-bearing: on a machine with global commit signing every
+    commit made here would otherwise block on a passphrase prompt or fail outright.
+    """
+    return subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t",
+         "-c", "commit.gpgsign=false", *args],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", check=check,
+    )
+
+
+@pytest.fixture
+def git_repo(tmp_path: Path) -> Path:
+    """A real, self-contained git repo with one commit — what `review`/`attest` diff against."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    git(root, "init", "-q", "-b", "main")
+    (root / "seed.txt").write_text("seed\n")
+    git(root, "add", "seed.txt")
+    git(root, "commit", "-qm", "seed")
+    return root
+
+
+def turn_record(**overrides) -> dict:
+    """One turn record, in the shape `record.build` writes one."""
+    rec = {
+        "schema": record.SCHEMA,
+        "id": "0" * 16,
+        "session": "s",
+        "harness": "claude",
+        "model": "claude-opus-5",
+        "agent_version": "2.1.220",
+        "started_at": 1.0,
+        "ended_at": 2.0,
+        "verdict": "VERIFIED",
+        "stage": "claim_supported",
+        "checks": [],
+        "files": [],
+        "commands": [],
+        "claims": [],
+    }
+    rec.update(overrides)
+    return rec
 
 
 @pytest.fixture(autouse=True)

@@ -12,23 +12,17 @@ review tool starts lying.
 """
 
 import json
-import subprocess
 from pathlib import Path
 
-from tycho import gitstate, review
+import pytest
+from conftest import git, turn_record
+
+from tycho import gitstate, record, review
 
 NOW = 1_000_000.0
 
 
 # --- helpers -----------------------------------------------------------------
-
-
-def _git(repo: Path, *args: str) -> None:
-    subprocess.run(
-        ["git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t", *args],
-        check=True,
-        capture_output=True,
-    )
 
 
 def test_a_machine_without_git_degrades_instead_of_raising(tmp_path: Path, monkeypatch):
@@ -44,30 +38,25 @@ def test_a_machine_without_git_degrades_instead_of_raising(tmp_path: Path, monke
     assert "not a git repository" in lines[0]
 
 
-def repo_with_commit(tmp_path: Path) -> Path:
-    _git(tmp_path, "init")
-    (tmp_path / "src.py").write_text("".join(f"line{i}\n" for i in range(1, 31)))
-    _git(tmp_path, "add", "-A")
-    _git(tmp_path, "commit", "-m", "init")
-    return tmp_path
+@pytest.fixture
+def repo(git_repo: Path) -> Path:
+    """The shared repo, plus the 30-line source file the hunk tests address into."""
+    (git_repo / "src.py").write_text("".join(f"line{i}\n" for i in range(1, 31)))
+    git(git_repo, "add", "-A")
+    git(git_repo, "commit", "-qm", "src")
+    return git_repo
 
 
 def write_record(repo: Path, files=(), commands=(), started=0.0, ended=0.0, checks=()) -> None:
     """One turn record on disk, in the shape `record.build` writes."""
-    path = repo / ".tycho" / "turns.jsonl"
+    path = record.path_for(repo)
     path.parent.mkdir(parents=True, exist_ok=True)
-    row = {
-        "schema": 1,
-        "id": "0" * 16,
-        "started_at": started,
-        "ended_at": ended,
-        "verdict": "VERIFIED",
-        "stage": "claim_supported",
-        "checks": [{"name": n, "status": s, "evidence": ""} for n, s in checks],
-        "files": [{"path": p, "kind": "edit", "ts": ts} for p, ts in files],
-        "commands": [{"cmd": c, "runner": r, "outcome": o} for c, r, o in commands],
-        "claims": [],
-    }
+    row = turn_record(
+        started_at=started, ended_at=ended,
+        checks=[{"name": n, "status": s, "evidence": ""} for n, s in checks],
+        files=[{"path": p, "kind": "edit", "ts": ts} for p, ts in files],
+        commands=[{"cmd": c, "runner": r, "outcome": o} for c, r, o in commands],
+    )
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(row) + "\n")
 
@@ -205,8 +194,7 @@ def test_parse_is_bounded_by_limit():
     assert len(gitstate.parse_hunks(diff, limit=10)) == 10
 
 
-def test_diff_hunks_on_a_real_repo(tmp_path: Path):
-    repo = repo_with_commit(tmp_path)
+def test_diff_hunks_on_a_real_repo(repo: Path):
     text = (repo / "src.py").read_text().splitlines()
     text[4] = "CHANGED"
     del text[9:12]
@@ -216,8 +204,7 @@ def test_diff_hunks_on_a_real_repo(tmp_path: Path):
     assert gitstate.untracked(repo) == ()
 
 
-def test_diff_hunks_reports_unknown_ref_as_none_not_as_clean(tmp_path: Path):
-    repo = repo_with_commit(tmp_path)
+def test_diff_hunks_reports_unknown_ref_as_none_not_as_clean(repo: Path):
     assert gitstate.diff_hunks(repo, "nosuchref") is None
     assert gitstate.diff_hunks(repo, "HEAD") == ()
 
@@ -250,7 +237,7 @@ def test_command_before_the_edit_does_not_count(tmp_path: Path):
     assert "no recorded command ran after it" in f.reason
 
 
-def test_same_turn_run_counts_unless_the_turn_recorded_stale(tmp_path: Path):
+def test_same_turn_run_counts_unless_the_turn_recorded_stale(tmp_path: Path, tmp_path_factory):
     # Commands carry no timestamp of their own, so a same-turn run is credited by default
     # — except when that turn's own test_freshness said a source outran the run. Mirroring
     # the check rather than re-deriving it is what keeps the two from disagreeing.
@@ -258,7 +245,9 @@ def test_same_turn_run_counts_unless_the_turn_recorded_stale(tmp_path: Path):
                  commands=[("pytest -q", True, "passed")])
     assert levels(review.classify(tmp_path, [hunk()], now=NOW)) == [review.EXERCISED]
 
-    fresh = tmp_path / "stale"
+    # A separate root, not a subdirectory: `state.root_for` walks up, so a nested repo would
+    # read the record written above rather than this one.
+    fresh = tmp_path_factory.mktemp("stale")
     write_record(fresh, files=[("src.py", NOW - 20)], started=NOW - 30, ended=NOW - 10,
                  commands=[("pytest -q", True, "passed")],
                  checks=[("test_freshness", "STALE")])
@@ -319,7 +308,7 @@ def test_status_note_names_new_and_deleted_hunks(tmp_path: Path):
 
 
 def test_corrupt_and_junk_records_never_raise(tmp_path: Path):
-    path = tmp_path / ".tycho" / "turns.jsonl"
+    path = record.path_for(tmp_path)
     path.parent.mkdir(parents=True)
     path.write_text(
         "not json at all\n"
@@ -378,8 +367,7 @@ def test_render_caps_the_detail_list(tmp_path: Path):
 # --- end to end --------------------------------------------------------------
 
 
-def test_review_on_a_real_repo(tmp_path: Path):
-    repo = repo_with_commit(tmp_path)
+def test_review_on_a_real_repo(repo: Path):
     text = (repo / "src.py").read_text().splitlines()
     text[4] = "CHANGED"
     (repo / "src.py").write_text("\n".join(text) + "\n")
@@ -390,8 +378,7 @@ def test_review_on_a_real_repo(tmp_path: Path):
     assert "README.md" in out            # untracked, and classified as prose
 
 
-def test_review_reports_no_changes_and_non_repos(tmp_path: Path):
-    repo = repo_with_commit(tmp_path)
+def test_review_reports_no_changes_and_non_repos(repo: Path, tmp_path: Path):
     assert review.review(repo) == ["tycho: no changes against HEAD."]
     assert review.review(repo, "nosuchref") == [
         "tycho: can't diff against nosuchref — no such commit."]
@@ -400,15 +387,14 @@ def test_review_reports_no_changes_and_non_repos(tmp_path: Path):
 
 
 def test_review_of_a_repo_with_no_commits_still_sees_untracked_files(tmp_path: Path):
-    _git(tmp_path, "init")
+    git(tmp_path, "init", "-q")
     (tmp_path / "brand_new.py").write_text("x = 1\n")
     out = "\n".join(review.review(tmp_path))
     assert "untracked files only" in out
     assert "brand_new.py:1" in out
 
 
-def test_review_never_credits_a_run_recorded_before_the_edit_end_to_end(tmp_path: Path):
-    repo = repo_with_commit(tmp_path)
+def test_review_never_credits_a_run_recorded_before_the_edit_end_to_end(repo: Path):
     (repo / "src.py").write_text("changed\n")
     write_record(repo, files=[("src.py", 10.0)], started=1.0, ended=20.0,
                  commands=[("pytest -q", True, "passed")])
