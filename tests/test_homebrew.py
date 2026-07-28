@@ -6,7 +6,7 @@ sha256 breaks `brew install` for everyone, and nothing upstream of the tap would
 
 import importlib.util
 import re
-import sys
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -93,8 +93,15 @@ def test_both_publish_paths_call_the_same_script():
         assert "packaging/homebrew/publish.sh" in text, f"{name} no longer calls publish.sh"
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="no executable bit on Windows")
 def test_publish_script_is_executable():
     # Both workflows invoke it as a bare path, so a lost +x is "permission denied" mid-release —
-    # after the binaries are already attached and PyPI has already published.
-    assert _PUBLISH.stat().st_mode & 0o111, "publish.sh must be executable"
+    # after the binaries are attached and PyPI has already published.
+    #
+    # Ask git, not the filesystem: a Windows checkout doesn't carry POSIX mode bits, so stat()
+    # can't see this on one of the CI platforms. The mode git records is the one the Linux
+    # runner checks out, which is the thing that actually has to be right.
+    out = subprocess.run(
+        ["git", "ls-files", "-s", "--", _PUBLISH.relative_to(_REPO).as_posix()],
+        cwd=_REPO, capture_output=True, text=True, check=True,
+    ).stdout.split()
+    assert out and out[0] == "100755", f"publish.sh must be mode 100755 in git, got {out[:1]}"
