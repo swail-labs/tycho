@@ -17,11 +17,12 @@ from `.tycho/turns.jsonl`.
 from __future__ import annotations
 
 import re
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from statistics import median
 
-from .archaeology import _count, _trunc
+from .archaeology import _ago, _count, _trunc
 from .model import Stage, Verdict
 from .record import _claims, _rows
 
@@ -32,8 +33,8 @@ HISTORY = 12
 # Verdicts worth interrupting for. VERIFIED/UNSUPPORTED are routine and earn silence.
 _ADVERSE = frozenset({Verdict.FAILED.name, Verdict.STALE.name, Verdict.OVERRIDDEN.name})
 
-# Check statuses that mean "this turn is not proven" — the lines worth a headline.
-_UNPROVEN = frozenset({"FAIL", "STALE", "INDETERMINATE"})
+# Check statuses that mean "this turn is not proven" — the lines worth a headline, worst first.
+_UNPROVEN = ("FAIL", "STALE", "INDETERMINATE")
 
 _LADDER = tuple(s.value for s in Stage)
 
@@ -121,18 +122,24 @@ def signals(record: dict, history: Sequence[dict] = ()) -> tuple[Signal, ...]:
 def _adverse(record: dict) -> Signal | None:
     """FAILED / STALE / OVERRIDDEN — a check we ran says the turn is not proven.
 
-    The headline is the first *unproven check*, not the verdict word: "test_freshness — app.py
-    edited after the last run" says where to look; "FAILED" says go find out.
+    The headline is the worst *unproven check*, not the verdict word: "test_freshness — app.py
+    edited after the last run" says where to look; "FAILED" says go find out. Worst, not first,
+    because `checks` is in registry order — a standing STALE would otherwise headline over the
+    FAIL that actually failed the turn.
+
+    The decay key carries the verdict and the *whole* set of unproven checks, so a turn that gets
+    worse (or an OVERRIDDEN run that becomes a real FAILED) mints a new key and is news again.
     """
     verdict = _text(record.get("verdict"))
     if verdict not in _ADVERSE:
         return None
     bad = _unproven_checks(record)
+    key = f"adverse:{verdict}:" + ",".join(sorted(f"{n}={s}" for n, s, _ in bad))
     if bad:
-        name, evidence = bad[0]
-        return Signal(f"adverse:{name}", f"{verdict} — {name}: {evidence}")
+        name, _, evidence = min(bad, key=lambda c: _UNPROVEN.index(c[1]))
+        return Signal(key, f"{verdict} — {name}: {evidence}")
     # OVERRIDDEN can reach here with everything PASS, so there is nothing to name.
-    return Signal(f"adverse:{verdict}", f"{verdict} — no check could confirm this turn")
+    return Signal(key, f"{verdict} — no check could confirm this turn")
 
 
 # Prose that asserts the work is finished. Only ever used to ask a question, never to fail a
@@ -243,15 +250,19 @@ def brief(record: dict, signal: Signal | None = None) -> str:
     return "\n".join(lines)
 
 
-def render(record: dict) -> str:
+def render(record: dict, now: float | None = None) -> str:
     """The full digest for one turn record — the on-demand view (`tycho show`).
 
     Ordered the way a developer reconstructs a turn: how far it got, what it changed, what it
     ran, what it said, what is still unproven.
+
+    The age is in the header because `tycho show` falls back to the newest record there is: on a
+    turn the hook wrote nothing for, an undated receipt reads as this turn's.
     """
     turn = _text(record.get("id")) or "?"
     verdict = _text(record.get("verdict")) or "?"
-    lines = [f"🔍 Tycho: turn {turn} · {verdict}", f"   ladder   {_ladder(record)}"]
+    age = _ago(record.get("ended_at"), time.time() if now is None else now)
+    lines = [f"🔍 Tycho: turn {turn} · {verdict} · {age}", f"   ladder   {_ladder(record)}"]
     files = _files(record)
     if files:
         shown = ", ".join(f"{f['path']}{'*' if f['kind'] == 'create' else ''}" for f in files[:12])
@@ -262,7 +273,7 @@ def render(record: dict) -> str:
     for i, claim in enumerate(_claims(record)[:4]):
         lines.append(_wrap("claimed" if i == 0 else "", f'"{_trunc(claim, 100)}"'))
     unproven = _unproven_checks(record)
-    for i, (name, evidence) in enumerate(unproven):
+    for i, (name, _, evidence) in enumerate(unproven):
         lines.append(_wrap("open" if i == 0 else "", f"{name} — {evidence}"))
     if not unproven and verdict == Verdict.VERIFIED.name:
         lines.append(_wrap("open", "nothing — every check that applied passed"))
@@ -279,7 +290,8 @@ def _ladder(record: dict) -> str:
     that *matches* by priority, not a chain, so a turn that wrote a file but ran nothing is
     `artifact_changed` and ticking `executed` under it would assert a test run that never
     happened. The two independently confirmable rungs are re-checked, and that can only remove
-    a tick.
+    a tick — including `claim_supported`, which needs one of them under it or the chain it draws
+    is one nothing ran and nothing changed.
     """
     try:
         reached = _LADDER.index(_text(record.get("stage")))
@@ -288,6 +300,7 @@ def _ladder(record: dict) -> str:
     ticked = [i <= reached for i in range(len(_LADDER))]
     ticked[1] = ticked[1] and any(c["runner"] for c in _commands(record))
     ticked[2] = ticked[2] and bool(_files(record))
+    ticked[3] = ticked[3] and (ticked[1] or ticked[2])
     return "  ".join(f"{'✓' if ticked[i] else '·'} {r}" for i, r in enumerate(_LADDER))
 
 
@@ -342,10 +355,14 @@ def _commands(record: dict) -> list[dict]:
     ]
 
 
-def _unproven_checks(record: dict) -> list[tuple[str, str]]:
-    """(name, evidence) for every check that didn't prove out, in the order they were run."""
+def _unproven_checks(record: dict) -> list[tuple[str, str, str]]:
+    """(name, status, evidence) for every check that didn't prove out, in the order they ran."""
     return [
-        (_text(r.get("name")) or "check", _text(r.get("evidence")) or "no evidence recorded")
+        (
+            _text(r.get("name")) or "check",
+            _text(r.get("status")),
+            _text(r.get("evidence")) or "no evidence recorded",
+        )
         for r in _rows(record, "checks")
         if _text(r.get("status")) in _UNPROVEN
     ]

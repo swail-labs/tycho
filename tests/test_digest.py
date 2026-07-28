@@ -34,10 +34,12 @@ def rec(
     claims=(),
     commands=None,
     turn_id: str = "abc123",
+    ended_at: float = 2.0,
 ) -> dict:
     """A record dict shaped exactly like `record.build` writes one."""
     return turn_record(
         id=turn_id,
+        ended_at=ended_at,
         model=None,
         agent_version=None,
         verdict=verdict,
@@ -86,6 +88,13 @@ def test_ladder_never_claims_a_run_that_did_not_happen():
 def test_ladder_never_claims_a_file_landed_when_none_is_recorded():
     line = digest._ladder(rec(stage=Stage.CLAIM_SUPPORTED.value, files=0))
     assert "· artifact_changed" in line and "✓ claim_supported" in line
+
+
+def test_ladder_never_ticks_a_claim_with_no_rung_under_it():
+    """An MCP-only turn matches `claim_supported` with nothing executed and nothing changed —
+    a top rung ticked over two dots reads as a chain that isn't there."""
+    line = digest._ladder(rec(stage=Stage.CLAIM_SUPPORTED.value, files=0, commands=[]))
+    assert line == "✓ attempted  · executed  · artifact_changed  · claim_supported"
 
 
 def test_ladder_ticks_nothing_for_an_unknown_stage():
@@ -201,6 +210,26 @@ def test_a_signal_that_fired_once_two_turns_ago_is_still_news():
     assert digest.speaks(bad, [rec(), bad]) is not None
 
 
+def test_a_turn_that_gets_worse_is_news_again():
+    """The worst false silence: two turns fail one check, the third fails three, and keying the
+    decay on the first bad check alone made *that* the turn Tycho stopped mentioning."""
+    standing = [check("command_execution", "FAIL", "pytest exited 1")]
+    prior = rec(verdict="FAILED", checks=standing)
+    worse = rec(verdict="FAILED", checks=[
+        *standing,
+        check("assertion_weakening", "FAIL", "assert removed"),
+        check("scope_drift", "FAIL", "touched vendor/"),
+    ])
+    assert digest.speaks(worse, [prior, prior]) is not None
+
+
+def test_a_genuine_failure_after_two_overrides_is_still_news():
+    """An agent that overrides the same check twice must not silence the real failure after."""
+    over = rec(verdict="OVERRIDDEN", checks=[check("test_freshness", "STALE", "not run")])
+    genuine = rec(verdict="FAILED", checks=[check("test_freshness", "STALE", "not run")])
+    assert digest.speaks(genuine, [over, over]) is not None
+
+
 def test_decay_can_be_switched_off_for_a_caller_who_asked_for_everything():
     bad = rec(verdict="FAILED", checks=[check("test_freshness", "STALE")])
     assert digest.speaks(bad, [bad, bad], decay=False) is not None
@@ -219,6 +248,25 @@ def test_the_brief_leads_with_why_we_spoke_not_with_the_verdict():
     signal = digest.speaks(rec(verdict="FAILED", checks=[check("scope_drift", "FAIL", "wat")]))
     first = digest.brief(rec(verdict="FAILED"), signal).splitlines()[0]
     assert "scope_drift" in first
+
+
+def test_the_headline_names_the_worst_check_not_the_first_one_registered():
+    """`CHECKS` order is registry order, not severity: a standing STALE that happens to sort
+    earlier must not headline over the FAIL that actually failed the turn."""
+    signal = digest.speaks(rec(verdict="FAILED", checks=[
+        check("test_freshness", "STALE", "src/core.py still uncovered"),
+        check("assertion_weakening", "FAIL", "assert removed from test_core.py"),
+    ]))
+    assert signal is not None
+    assert "assertion_weakening" in signal.headline
+    assert "test_freshness" not in signal.headline
+
+
+def test_the_full_digest_dates_the_record_it_is_showing():
+    """`tycho show` on a turn the hook never wrote is stale information with nothing saying so."""
+    old = digest.render(rec(ended_at=time.time() - 400 * 86400)).splitlines()[0]
+    assert "20" in old  # an absolute date, not a bare relative
+    assert "ago" in digest.render(rec(ended_at=time.time() - 7200)).splitlines()[0]
 
 
 def test_the_full_digest_is_a_receipt_of_the_turn():
