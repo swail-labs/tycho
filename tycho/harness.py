@@ -38,9 +38,8 @@ class Harness:
     # Model id, agent version, session id, for the per-turn record. Default supplies
     # nothing: an unattributable harness stores nulls, never a guess.
     attribution: Callable[[Path], Attribution] = lambda _: Attribution()
-    # Bootup update-notice channel. *Human-only*, and deliberately NOT `format_output`: on
-    # Cursor that field is model-facing, and a notice reaching the model could commission it
-    # to go update Tycho. None (the default) suppresses it.
+    # Human-only, and deliberately NOT `format_output`: on Cursor that field is model-facing,
+    # and a notice reaching the model could commission a self-update. None suppresses it.
     notice_output: Callable[[str], dict] | None = None
 
 
@@ -76,9 +75,8 @@ def home(name: str) -> Path:
     return Path.home() / f".{name}"
 
 
-# Claude and Cursor key transcripts by the start-time cwd, every separator and space turned
-# into "-"; Claude keeps the leading dash, Cursor strips it. Verified against real dirs,
-# including Windows: `C:\Users\me\Swail Labs\tycho` -> `C--Users-me-Swail-Labs-tycho`.
+# Transcripts are keyed by the start-time cwd with every separator turned into "-"; Claude
+# keeps the leading dash, Cursor strips it. Checked against real dirs, Windows included.
 _DIR_SEP_CHARS = str.maketrans({c: "-" for c in "\\/:. "})
 
 
@@ -207,15 +205,13 @@ OPENCODE = Harness(
 ALL = (CLAUDE, CURSOR, CODEX, OPENCODE)
 BY_NAME = {h.name: h for h in ALL}
 
-# Which harnesses are exposed in normal usage: init, `--harness` and discovery skip the rest
-# (their adapters stay unit-tested).
-# ponytail: single gate; re-widen by adding names here when another harness is re-enabled.
+# Exposed in normal usage; the rest keep their adapters and unit tests but aren't wired.
+# ponytail: single gate — re-widen by adding a name here.
 ENABLED_NAMES = ("claude",)
 ENABLED = tuple(h for h in ALL if h.name in ENABLED_NAMES)
 
-# The harness version each hook contract was last verified against, plus the local
-# `--version` probe. The version each adapter's contract was last checked against; a
-# test pins the two together. OpenCode has no CLI version contract, so it isn't probed.
+# The harness version each hook contract was last checked against, plus the local
+# `--version` probe; a test pins the two together. OpenCode has no CLI version to probe.
 VERIFIED_AGAINST = {
     "claude": {"version": "2.1.210", "probe": ("claude", "--version")},
     "cursor": {"version": "2026.07.09-a3815c0", "probe": ("cursor-agent", "--version")},

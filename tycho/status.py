@@ -119,9 +119,8 @@ def _wrapped_output(repo: Path, stdin_text: str) -> str:
 def main(off: bool = False, on: bool = False) -> int:
     for stream in (sys.stdin, sys.stdout):
         try:
-            # Both directions are UTF-8; on Windows a pipe defaults to cp1252, which raises
-            # on output and silently mojibakes the repo path on input. reconfigure may be
-            # absent on an already-wrapped stream, hence the catch.
+            # On Windows a pipe defaults to cp1252, which raises on output and mojibakes the
+            # repo path on input. `reconfigure` may be absent on a wrapped stream.
             stream.reconfigure(encoding="utf-8", errors="replace")
         except Exception:
             pass

@@ -1,16 +1,11 @@
-"""Read a test runner's own verdict out of its terminal output. Stdlib `re`, no I/O.
+"""Read a test runner's own verdict out of its terminal output — the fallback for when the
+exit code isn't available. Failure is checked before success because a red summary names
+both ("1 failed, 76 passed in 1.07s").
 
-Fallback for when the exit code isn't available (shell masked it, harness recorded none).
-
-Failure is checked before success because a red summary names both ("1 failed, 76 passed
-in 1.07s") — the other order reads a red run as green.
-
-**`.pytest_cache` looks like a better source and is not — don't reach for it.**
-`v/cache/lastfailed` is not a record of the last run: pytest only *removes* an entry when
-that test runs and passes, so entries for deselected/renamed/deleted tests persist forever.
-Measured here: it named a test that no longer exists and survived a fully green 316-test
-run untouched — and isn't rewritten when nothing changed, so its mtime can't date the run
-either. Trusting it would report FAILED on a green repo.
+`.pytest_cache/v/cache/lastfailed` looks like a better source and is not: pytest only
+*removes* an entry when that test runs and passes, so deselected/renamed/deleted tests
+persist forever. Measured here, it named a test that no longer exists and survived a fully
+green 316-test run untouched. Trusting it would report FAILED on a green repo.
 """
 
 from __future__ import annotations

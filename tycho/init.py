@@ -1,17 +1,13 @@
 """`tycho init` / `tycho uninstall` — manage the completion hook in each harness's config.
 
-Writes are **repo-local** by default: only `<repo>/.claude`, `.cursor`, `.codex`,
-`.opencode` and `<repo>/.git/hooks`. A harness's `$HOME` dir is *read* (never written) as a
-detection signal. Two deliberate exceptions: the git `prepare-commit-msg` hook (still
-repo-local, but runs inside `git commit`, so it fails open by construction), and `--global`
-(`init_global`), which writes the user-level Claude config behind an explicit prompt.
+Writes are repo-local by default; a harness's `$HOME` dir is read, never written, as a
+detection signal. The one exception is `--global` (`init_global`), which writes the
+user-level Claude config behind an explicit prompt.
 
-Idempotent both ways. Install and uninstall share `_is_tycho_hook` + `_strip_claude_tycho`
-so "which entry is ours" can't drift between them.
-
-Every mutation is defensive because it runs against a real developer's real settings:
-refuse what we can't parse rather than "recovering" it to `{}`, back up first, write
-atomically, and skip the write when the file is already correct.
+Idempotent both ways — install and uninstall share `_is_tycho_hook` + `_strip_claude_tycho`
+so "which entry is ours" can't drift. Every mutation runs against a real developer's real
+settings, so: refuse what we can't parse rather than "recovering" it to `{}`, back up first,
+write atomically, and skip the write when the file is already correct.
 """
 
 from __future__ import annotations
@@ -55,10 +51,9 @@ GLOBAL = "global"
 _GIT_HOOK = "prepare-commit-msg"
 _GIT_BEGIN = "# >>> tycho"
 _GIT_END = "# <<< tycho"
-# Our block, tolerant of a hand-damaged fence: the closing marker is optional, and the body
-# matches only lines we write (a comment of ours, or one naming tycho), so an unterminated
-# block is repaired in place instead of stacking a second one — and repairing it never eats
-# the user's own lines below.
+# Tolerant of a hand-damaged fence: the closing marker is optional and the body matches only
+# lines we write, so an unterminated block is repaired in place instead of stacking a second
+# one, without eating the user's own lines below.
 _GIT_BLOCK_RE = re.compile(
     rf"[ \t]*{re.escape(_GIT_BEGIN)}\b[^\n]*\n"
     rf"(?:(?![ \t]*# (?:>>>|<<<) tycho)[ \t]*"
@@ -72,8 +67,7 @@ _SH_SHEBANG = re.compile(r"^#!.*\b(sh|bash|dash|ash|zsh|ksh)\b")
 # Per-repo config dir; created by the harness on first use, so its presence is a signal.
 _LOCAL_DIR = {"claude": ".claude", "cursor": ".cursor", "codex": ".codex", "opencode": ".opencode"}
 
-# Claude Code's `refreshInterval` is milliseconds.
-# A user who sets their own value keeps it.
+# Milliseconds. A user who sets their own value keeps it.
 _STATUS_REFRESH_MS = 1000
 
 
@@ -101,9 +95,8 @@ def status_command() -> str:
 
 
 def _command_for(subcommand: str) -> str:
-    # Claude Code runs hook/statusLine commands through Git Bash, which eats unquoted
-    # backslashes as escapes, so a native Windows path silently never fires. Emit forward
-    # slashes via a blunt separator swap (not Path.as_posix, which is host-flavored).
+    # Claude Code runs hook commands through Git Bash, which eats unquoted backslashes, so a
+    # native Windows path never fires. A blunt swap, not Path.as_posix (host-flavored).
     found = shutil.which("tycho")
     program = _quote_program((found or sys.executable).replace("\\", "/"))
     return f"{program} {subcommand}" if found else f"{program} -m tycho.cli {subcommand}"
@@ -184,13 +177,12 @@ def config_path(repo: Path, name: str) -> Path:
     }[name]
 
 
-# The guard every *global* hook command carries. Two `exit 0`s: outside a git repo we do
-# nothing (else a user-level hook would sprinkle `.tycho/` across the filesystem), and in a
-# repo with its own Tycho hook we defer to it (anti-double-fire, checked at run time so it
-# holds for repos wired before `--global` existed). Plain `/bin/sh` — no bashisms — because
-# that's what Claude Code runs hook commands with (Git Bash on Windows). Every branch exits
-# 0. ponytail: grepping for our own hook spelling is a cheap proxy for "the repo-local
-# install owns this"; a false match only makes global stay quiet where repo-local is wired.
+# Two `exit 0`s: outside a git repo we do nothing (else a user-level hook sprinkles `.tycho/`
+# across the filesystem), and in a repo with its own Tycho hook we defer to it — checked at
+# run time, so it holds for repos wired before `--global` existed. Plain `/bin/sh`, no
+# bashisms: that's what Claude Code runs hook commands with.
+# ponytail: grepping for our own hook spelling is a cheap proxy for "repo-local owns this";
+# a false match only makes global stay quiet where repo-local is already wired.
 _GLOBAL_GUARD = (
     'git rev-parse --show-toplevel >/dev/null 2>&1 || exit 0; '
     'grep -qsE "tycho(\\.exe)? hook|tycho\\.cli hook" '
@@ -265,9 +257,8 @@ def installed_command(repo: Path, name: str) -> str | None:
 
 
 # --- detection ---------------------------------------------------------------
-#
-# Two cheap directory probes, either sufficient: the harness has run in this repo (dotdir)
-# or is installed for the user (home). Never executed.
+# Two cheap directory probes, either sufficient: the harness has run in this repo, or is
+# installed for the user. Nothing is executed.
 
 
 def detect(repo: Path) -> list[str]:
@@ -314,8 +305,8 @@ def init(
     if only:
         names = [only]
     else:
-        # A machine-wide install already covers this repo; installing again would give it
-        # two Stop hooks per turn. Wire only the commit trailer, which global can't.
+        # Global already covers this repo — a second Stop hook per turn. Wire only the
+        # commit trailer, which global can't.
         if global_installed():
             return [
                 "tycho: a global install is active — the Claude Code hooks already cover this "
@@ -344,11 +335,10 @@ def init(
         except ConfigRefused as exc:
             lines.append(f"{name}{REFUSED}{exc}")
     installed_any = bool(installed)
-    # Read *before* `ensure` creates one, so the relay setup can tell "user configured
-    # this" from "we just seeded it".
+    # Read *before* `ensure` creates one, so relay setup can tell "user configured this"
+    # from "we just seeded it".
     config_existed = config_mod.path(repo).is_file()
-    # Seed a .tycho.toml only once a harness got wired: a declined/refused install leaves
-    # no config behind. Never clobbers an existing one.
+    # Only once a harness got wired, so a declined install leaves no config behind.
     if installed_any and config_mod.ensure(repo):
         lines.append(
             f"created {config_mod.CONFIG_NAME} — no scope set yet, so nothing changes until you "
@@ -457,14 +447,11 @@ def offer_first_run(repo: Path, confirm=None) -> list[str]:
 
 # --- the machine-wide install (strategy §6.7) --------------------------------
 #
-# `tycho init --global` writes the user-level Claude Code config once. Nothing below writes
-# a `.tycho.toml` — zero-config must stay zero-config (`scope_drift` returns UNSUPPORTED
-# with no config). Safety properties, since blast radius is the whole cost here: opt-in and
-# loud (`_ask_global` names every path, defaults to NO); guarded at run time, not just
-# install time (`_GLOBAL_GUARD`); additive only, leaving an existing user-level statusLine
-# untouched (`_global_statusline`); and no `core.hooksPath`, which set machine-wide would
-# silently disable every repo's own `.git/hooks` (husky, pre-commit, lefthook) — so the
-# commit trailer stays per-repo.
+# `tycho init --global` writes the user-level Claude Code config once. Nothing below writes a
+# `.tycho.toml` — zero-config stays zero-config. Blast radius is the whole cost here, so:
+# opt-in and loud (`_ask_global` names every path, defaults to NO), guarded at run time
+# (`_GLOBAL_GUARD`), additive only, and no `core.hooksPath` — set machine-wide that silently
+# disables every repo's own `.git/hooks` (husky, pre-commit, lefthook).
 
 
 def _global_targets() -> list[Path]:
@@ -543,9 +530,8 @@ def uninstall(repo: Path, only: str | None = None, purge: bool = False) -> list[
         except ConfigRefused as exc:
             # Same rule as install: a config we can't parse is one we can't safely rewrite.
             lines.append(f"{name}{REFUSED}{exc}")
-    # The commit-trailer hook and the gitignore entry are shared by every harness, so they
-    # only come out once nothing is wired here any more — otherwise `uninstall --harness x`
-    # would silently strip the commit trailer the harness you kept still relies on.
+    # Shared by every harness, so they only come out once nothing is wired here any more —
+    # else `uninstall --harness x` strips the trailer the harness you kept relies on.
     if not state.read_install(repo):
         try:
             lines += filter(None, [_uninstall_git_hook(repo), _uninstall_gitignore(repo)])
@@ -645,14 +631,13 @@ def _write_text(path: Path, text: str, backup: bool = True) -> bool:
     if current == text:
         return False  # already correct: no write, no backup, no mtime churn
     if current is not None and not os.access(target, os.W_OK):
-        # A rename lands regardless of the *file's* mode, so without this a deliberate
-        # `chmod -w` would be silently undone. Every other refusal is caught below.
+        # A rename lands regardless of the file's mode, so a deliberate `chmod -w` would
+        # otherwise be silently undone.
         raise ConfigRefused(f"{target} is read-only — chmod +w (or move it), then re-run")
     tmp = target.with_name(target.name + _TMP_SUFFIX)
     try:
         if current is not None and backup:
-            # .bak is the file you'd restore to undo *this* change, not a frozen pristine
-            # original — so overwriting an older .bak is correct.
+            # .bak undoes *this* change, not a frozen original, so overwriting is correct.
             shutil.copy2(target, target.with_name(target.name + _BACKUP_SUFFIX))
         target.parent.mkdir(parents=True, exist_ok=True)
         tmp.write_text(text, encoding="utf-8")
@@ -660,8 +645,7 @@ def _write_text(path: Path, text: str, backup: bool = True) -> bool:
             shutil.copymode(target, tmp)  # the user's permissions, not our umask's
         tmp.replace(target)
     except OSError as exc:
-        # Any filesystem refusal (unwritable dir, full disk, quota) is a refusal, not a
-        # traceback. The original is still whole — nothing has replaced it yet.
+        # A filesystem refusal is a refusal, not a traceback. The original is still whole.
         tmp.unlink(missing_ok=True)
         raise ConfigRefused(f"cannot write {target} ({exc.strerror}) — fix that, then re-run") from exc
     return True
@@ -706,8 +690,8 @@ def _install_claude(repo: Path, scope: str = REPO) -> str:
     ss_groups, ss_existed = _strip_claude_tycho(_groups_of(hooks, "SessionStart", path))
     ss_groups.append({"hooks": [{"type": "command", "command": ss_command}]})
     hooks["SessionStart"] = ss_groups
-    # UserPromptSubmit: mark a run in flight at prompt time so the badge shows "verifying"
-    # for the whole turn, not just a flicker at Stop. The Stop hook clears it to the verdict.
+    # Mark a run in flight at prompt time, so the badge shows "verifying" for the whole turn
+    # rather than flickering at Stop.
     ups_command = _command_for_scope("prompt-submit", scope)
     ups_groups, ups_existed = _strip_claude_tycho(_groups_of(hooks, "UserPromptSubmit", path))
     ups_groups.append({"hooks": [{"type": "command", "command": ups_command}]})
@@ -724,18 +708,15 @@ def _install_claude(repo: Path, scope: str = REPO) -> str:
     return "\n".join(filter(None, (hook_line, ss_line, ups_line, statusline, slash)))
 
 
-# One flat file per subcommand (`.claude/commands/tycho-status.md` → `/tycho-status`) so
-# each gets its own description in Claude Code's `/` autocomplete.
+# One flat file per subcommand, so each gets its own `/` autocomplete description.
 _SLASH_SUBCOMMANDS = {
     "status": ("Is Tycho live here, and its last verdict", "statusline"),
     "doctor": ("Full diagnostics: is Tycho installed, current, and firing?", "doctor"),
     "verify": ("Verify the latest session and render a verdict", "verify $ARGUMENTS"),
     "help": ("What Tycho is, whether it's live here, and every command", "help"),
     "count": ("How many problems Tycho has caught here, and all-time", "count"),
-    # The record-backed commands. `show` names the turn digest, not the status badge —
-    # the badge toggles are `badge-on`/`badge-off`, renamed in 0.2.0 because `/tycho-show`
-    # pointing at a status-bar toggle would shadow the release's most useful command in
-    # autocomplete. Re-init removes the old files, so the rename costs nothing.
+    # `show` is the turn digest; the badge toggles are `badge-on`/`badge-off`, renamed in
+    # 0.2.0 so `/tycho-show` doesn't shadow the release's most useful command.
     "show": ("The full receipt of a turn: what changed, what ran, what's unverified", "show $ARGUMENTS"),
     "log": ("What agents did in this repo, newest first", "log $ARGUMENTS"),
     "blame": ("Which turn touched this file, what it claimed, what backed it", "blame $ARGUMENTS"),
@@ -754,8 +735,8 @@ _SLASH_SUBCOMMANDS = {
 
 
 def _commands_dir(repo: Path, scope: str = REPO) -> Path:
-    # Repo scope keeps `<repo>/.claude/commands` (not `state.root_for`); changing it would
-    # move every already-installed command file.
+    # `<repo>/.claude/commands`, not `state.root_for` — changing it would move every
+    # already-installed command file.
     return (claude_dir(repo, GLOBAL) if scope == GLOBAL else repo / ".claude") / "commands"
 
 
@@ -769,8 +750,8 @@ def _slash_body(description: str, cli_args: str, argument_hint: str = "") -> str
     """A prompt-style command file backed by the real CLI: relies only on the stable
     `.claude/commands/*.md` convention and `$ARGUMENTS`, not on `!`-exec / `allowed-tools`
     glob matching against a quoted interpreter path."""
-    # The YAML frontmatter MUST start at line 1 or Claude Code won't parse it, so the
-    # marker goes in the body, not above it.
+    # Frontmatter must start at line 1 or Claude Code won't parse it, so the marker goes
+    # in the body.
     hint = f"argument-hint: {_q(argument_hint)}\n" if argument_hint else ""
     return (
         "---\n"
@@ -784,9 +765,8 @@ def _slash_body(description: str, cli_args: str, argument_hint: str = "") -> str
     )
 
 
-# The scope commands: (description, cli action, argument-hint). set/add/remove take path
-# globs, which MUST be single-quoted so the shell doesn't expand them before Tycho stores
-# them — the body says so explicitly.
+# (description, cli action, argument-hint). Globs must be single-quoted so the shell doesn't
+# expand them before Tycho stores them — the body says so explicitly.
 _SCOPE_SLASH = {
     "scope-list": ("List the files/dirs the agent may edit (the scope_drift allowlist)", "list", ""),
     "scope-set": ("Replace the scope_drift allowlist with these path globs", "set", "<glob>… e.g. 'src/**' 'tests/**'"),
@@ -835,8 +815,7 @@ def _install_slash_commands(repo: Path, scope: str = REPO) -> str | None:
     stays put."""
     target = _slash_files(repo, scope)
     d = _commands_dir(repo, scope)
-    # Drop our files from the old `tycho/` namespace layout, plus `.bak` clutter — a
-    # command file is wholly ours, so it never needed a backup.
+    # Old `tycho/` namespace layout, plus `.bak` clutter — a command file is wholly ours.
     for path in [*_tycho_command_files(repo, scope), *d.glob("tycho*.tycho.bak")]:
         if path not in target and (path.suffix == ".bak" or _SLASH_MARKER in (_current_text(path) or "")):
             path.unlink()
@@ -936,10 +915,9 @@ def _with_statusline(repo: Path, data: dict, path: Path, scope: str = REPO) -> t
         state.write_statusline_wrap(repo, foreign, origin="repo")
         _remember_statusline(repo, current)
     elif not (ours and (state.read_statusline_wrap(repo) or {}).get("origin") == "repo"):
-        # A re-init sees its own line where the user's used to be, so re-deriving here would
-        # clear the only record of what the first init wrapped — and the `.bak` by then holds
-        # Tycho's own line, making their status line unrecoverable. A "user" record is
-        # re-derived freely: that one is still readable from their own config.
+        # A re-init sees its own line where the user's was, so re-deriving would clear the
+        # only record of what the first init wrapped — and the `.bak` holds Tycho's line by
+        # then. A "user" record re-derives freely; it's still in their own config.
         if (user_cmd := _user_statusline_command(repo)) is not None:
             state.write_statusline_wrap(repo, user_cmd, origin="user")
         else:
@@ -948,8 +926,8 @@ def _with_statusline(repo: Path, data: dict, path: Path, scope: str = REPO) -> t
 
     base = current if (ours and isinstance(current, dict)) else {}  # keep our own extra keys only
     merged = {**base, "type": "command", "command": command}
-    # Claude Code renders the badge at the Stop event, which fires while our hook is still
-    # verifying — without polling the badge sits on "pending" until the *next* prompt.
+    # The badge renders at Stop, while our hook is still verifying — without polling it sits
+    # on "pending" until the *next* prompt.
     merged.setdefault("refreshInterval", _STATUS_REFRESH_MS)
     if merged == current and state.read_statusline_wrap(repo) is None:
         return data, ""  # already ours, nothing to compose — the Stop-hook line speaks for it
@@ -1011,12 +989,9 @@ def _install_codex(repo: Path) -> str:
 
 
 def _install_opencode(repo: Path) -> str:
-    # OpenCode has no Stop hook; a project plugin drives two entrypoints off the event bus,
-    # each handed the session id on stdin, toasting via client.tui.showToast:
-    #   - session.idle    → `tycho hook`          (the verdict, after every turn)
-    #   - session.created → `tycho session-start` (the update notice, once per session)
-    # The transcript comes from opencode.db, not `opencode export` (truncates at 128 KB
-    # over a pipe).
+    # No Stop hook here: a project plugin drives `tycho hook` off `session.idle` and
+    # `tycho session-start` off `session.created`, toasting via client.tui.showToast. The
+    # transcript comes from opencode.db — `opencode export` truncates at 128 KB over a pipe.
     path = config_path(repo, "opencode")
     command = hook_argv(hook_command())
     notice = hook_argv(_command_for("session-start"))
@@ -1193,9 +1168,8 @@ def _install_git_hook(repo: Path) -> str | None:
         head, _, rest = current.partition("\n")
         text = f"{head}\n{block}{rest}"
     changed = _write_text(path, text, backup=current is not None)
-    # Only ever chmod a hook that is ours. Git doesn't run a non-executable hook at all, so
-    # making a foreign one executable would start running code the user's git never ran —
-    # a dormant `exit 1` in someone's stale hook would begin failing every commit.
+    # Only ever chmod a hook that is ours: git doesn't run a non-executable hook at all, so
+    # making a foreign one executable starts running code the user's git never ran.
     if current is None or _GIT_BLOCK_RE.sub("", text, count=1).strip() in ("", "#!/bin/sh"):
         _make_executable(path)
     if not changed:
@@ -1204,8 +1178,7 @@ def _install_git_hook(repo: Path) -> str | None:
     return f"git: {verb} {_GIT_HOOK} hook → {path}"
 
 
-# `.tycho/` is machine-local (tally, heartbeat, and `turns.jsonl`, which carries the
-# agent's own prose). None of it is shareable or wanted in someone else's PR.
+# Machine-local, and `turns.jsonl` carries the agent's own prose. Not wanted in a PR.
 _IGNORE_ENTRY = ".tycho/"
 _IGNORE_NOTE = "# Tycho's machine-local state (tally, heartbeat, turn record)."
 _IGNORE_BLOCK = f"{_IGNORE_NOTE}\n{_IGNORE_ENTRY}\n"
@@ -1237,9 +1210,8 @@ def _install_gitignore(repo: Path) -> str | None:
     if current is None:
         text = _IGNORE_BLOCK
     else:
-        # One newline, then ours. A file that already ended in one therefore gets a blank
-        # separator line and one that didn't gets none — which is exactly how uninstall
-        # tells the two apart and puts the missing trailing newline back (or doesn't).
+        # One newline, then ours: a file that already ended in one gets a blank separator
+        # and one that didn't gets none, which is how uninstall tells them apart.
         text = f"{current}\n{_IGNORE_BLOCK}"
     if not _write_text(path, text, backup=current is not None):
         return None
@@ -1252,9 +1224,8 @@ def _uninstall_gitignore(repo: Path) -> str | None:
     current = _current_text(path)
     if not current or _IGNORE_BLOCK not in current:
         return None
-    # Longest match first, so the blank separator we added comes out with the block —
-    # `init; uninstall` must restore the file byte-for-byte. A single newline before the
-    # block means the file had no trailing one, so that newline is ours to take back too.
+    # Longest match first, so the separator we added comes out with the block —
+    # `init; uninstall` must restore the file byte-for-byte.
     for pattern, replacement in ((f"\n\n{_IGNORE_BLOCK}", "\n"), (f"\n{_IGNORE_BLOCK}", ""),
                                  (_IGNORE_BLOCK, "")):
         if pattern in current:
@@ -1300,10 +1271,9 @@ def _uninstall_git_hook(repo: Path) -> str | None:
 
 
 # --- uninstall ---------------------------------------------------------------
-#
-# We never delete a harness's config file — it may hold settings we didn't write. Remove
-# our entries, then drop a container only when it's empty *and* we would have created it.
-# The OpenCode plugin is the exception: that whole file is ours, so it goes.
+# Never delete a harness's config file — it may hold settings we didn't write. Remove our
+# entries, then drop a container only when it's empty *and* we would have created it. The
+# OpenCode plugin is the exception: that whole file is ours.
 
 
 def _prune(data: dict, hooks: dict, key: str, kept: list) -> dict:
@@ -1348,11 +1318,9 @@ def _uninstall_claude(repo: Path, scope: str = REPO) -> str:
     restored = False
     if had_statusline:
         merged = {k: v for k, v in merged.items() if k != "statusLine"}
-        # A foreign repo-level line we replaced is ours to put back; a user-level one
-        # resurfaces on its own.
+        # A repo-level line we replaced is ours to put back; a user-level one resurfaces.
         if isinstance(wrap, dict) and wrap.get("origin") == "repo" and isinstance(wrap.get("command"), str):
-            # Their whole object if we still have it — `padding` and friends were never ours
-            # to drop — else the one key we know for certain.
+            # Their whole object if we have it — `padding` was never ours to drop.
             merged = {**merged, "statusLine": wrapped or {"type": "command", "command": wrap["command"]}}
             restored = True
     _write(path, merged)

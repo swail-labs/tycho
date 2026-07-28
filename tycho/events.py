@@ -401,9 +401,8 @@ def _codex_is_error(value: object) -> bool | None:
         match = re.search(r'"exit_code"\s*:\s*(\d+)', value)
         if match:
             return int(match.group(1)) != 0
-        # Current Codex rollouts omit the exec exit code, so fall back to the runner's own
-        # summary via `runlog`, the one place a runner's output format is described.
-        # ("Script completed" is deliberately not success: it appears for failed commands.)
+        # Codex rollouts omit the exec exit code, so fall back to the runner's own summary.
+        # ("Script completed" is not success — it appears for failed commands too.)
         return runlog.outcome(value)
     return None
 

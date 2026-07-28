@@ -59,9 +59,8 @@ _MAX_DETAIL = 20
 # Bytes of an untracked file we'll read to size it. Beyond this the line range is a formality —
 # the whole file is new.
 _UNTRACKED_MAX_BYTES = 1 << 20
-# How far past a recorded edit a file's mtime may sit before we stop treating the record as the
-# whole story. The record is written after the write lands, so a small gap is bookkeeping; a
-# larger one is somebody else's edit.
+# The record is written after the write lands, so a small gap is bookkeeping; a larger one
+# is somebody else's edit.
 _MTIME_SLACK = 2.0
 
 

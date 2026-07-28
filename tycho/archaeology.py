@@ -36,9 +36,8 @@ from pathlib import Path
 
 from . import record as record_mod
 
-# ponytail: one fixed budget, not the real terminal width — `shutil.get_terminal_size` would make
-# output depend on the window and on `COLUMNS` leaking into a test run. Widen if someone
-# complains about a 200-column terminal.
+# ponytail: fixed, not the real terminal width — that makes output depend on the window and
+# on `COLUMNS` leaking into a test run.
 _WIDTH = 100
 _MAX_EVIDENCE = 56  # the evidence clause is the value — it gets its space before the claim
 _MIN_CLAIM = 24

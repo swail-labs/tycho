@@ -177,9 +177,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     lg.add_argument("--since", metavar="YYYY-MM-DD", help="only turns on or after this date")
     rv = sub.add_parser("review", help=_COMMANDS["review"])
     rv.add_argument("--since", default="HEAD", help="git ref to diff from (default: HEAD)")
-    # Advisory by default; this is the opt-in gate. Gates on UNEXERCISED/NO TEST RUN only —
-    # never on UNRECORDED, which just means no turn Tycho saw touched the file (hand-written,
-    # or predating the install), and gating on that would fail every honest commit.
+    # Gates on UNEXERCISED/NO TEST RUN only. Never UNRECORDED — that just means no turn
+    # Tycho saw touched the file, and gating on it would fail every honest commit.
     rv.add_argument(
         "--exit-code", action="store_true",
         help=f"exit {int(ExitCode.UNEXERCISED)} if a recorded change had no command run after "
@@ -191,9 +190,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                          help="check a commit's trailer against the record (default: HEAD)")
     at_mode.add_argument("--write", nargs="+", metavar=("MSGFILE", "SOURCE"),
                          help="prepare-commit-msg entrypoint (internal): add the trailer to MSGFILE")
-    # A matching trailer says the record is intact, not that the work was ever proven — a
-    # commit whose every turn came back FAILED matches its own record perfectly. A gate wants
-    # the stronger question, so it has to ask for it.
+    # A matching trailer says the record is intact, not that the work was proven — a commit
+    # whose every turn came back FAILED matches its own record perfectly.
     at.add_argument("--require-verified", action="store_true",
                     help="with --verify: also require every covered turn to have reached VERIFIED")
     r = sub.add_parser("run", help=_COMMANDS["run"])

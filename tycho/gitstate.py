@@ -13,18 +13,16 @@ def _git(repo: Path, *args: str) -> tuple[int, str]:
     from PATH must read as "git said no" on the review and commit-hook paths."""
     try:
         proc = subprocess.run(
-            # `core.quotePath=false` on every call, not just the ones that noticed: by default
-            # git renders a non-ASCII path as `"src/caf\303\251.py"` — quoted, octal-escaped,
-            # and equal to nothing we store. That silently cost `attest` its trailer on any
-            # commit touching such a file, and dropped those files out of `review` entirely.
+            # On every call: by default git octal-escapes a non-ASCII path into something
+            # equal to nothing we store, which cost `attest` its trailer on any commit
+            # touching such a file and dropped those files out of `review` entirely.
             ["git", "-C", str(repo), "-c", "core.quotePath=false", *args],
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
-            # A concurrent agent's `index.lock`, a network filesystem or a slow fsmonitor can
-            # block git indefinitely, and a Stop hook killed by the harness mid-append costs
-            # records. Time out and read it as "git said no".
+            # An `index.lock`, a network filesystem or a slow fsmonitor can block git
+            # indefinitely, and a Stop hook killed mid-append costs records.
             timeout=10,
         )
     except (OSError, ValueError, subprocess.TimeoutExpired):
@@ -72,10 +70,9 @@ def untracked(repo: Path) -> tuple[str, ...]:
 
 # --- diff hunks --------------------------------------------------------------
 #
-# The counts in the `@@` header are the authority for where a hunk body ends, NOT "until a
-# line that doesn't start with +/-/space": a blank context line and a diff of a diff both
-# break the latter. Anything unrecognized degrades to a whole-file `unparsed` entry — an
-# invented line number is worse than no line number.
+# The `@@` header's counts decide where a hunk body ends, not "until a line without +/-/space"
+# — a blank context line and a diff of a diff both break that. Anything unrecognized degrades
+# to a whole-file `unparsed` entry: an invented line number is worse than none.
 
 MAX_HUNKS = 2000  # a bound, not a policy — see `parse_hunks`
 
@@ -137,9 +134,9 @@ def parse_hunks(text: str, limit: int = MAX_HUNKS) -> tuple[Hunk, ...]:
     mode = False
 
     def flush() -> None:
-        # A pure rename or mode change has no `@@` yet the file did change — emit it with
-        # no range rather than dropping it. `chmod +x` is a real change to review: it is how
-        # a data file becomes something that runs.
+        # A rename or mode change has no `@@` yet the file did change — emit it with no
+        # range rather than dropping it. `chmod +x` is how a data file becomes something
+        # that runs.
         nonlocal produced, mode
         if path and not produced:
             if status in ("renamed", "deleted", "added"):

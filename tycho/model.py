@@ -155,9 +155,8 @@ class Session:
     attribution: Attribution = Attribution()
     # Epoch the turn under review began; 0.0 means "the whole transcript is the turn".
     turn_start: float = 0.0
-    # Commands Tycho ran itself (`tycho exec`). **Already bounded to this turn/session by
-    # gather's floor** — the log outlives every session, so admitting all of it would let
-    # yesterday's green run vouch for today's claim.
+    # Commands Tycho ran itself. Already bounded to this session by gather's floor — the log
+    # outlives every session, so all of it would let yesterday's green vouch for today.
     commands: tuple[CommandRun, ...] = ()
 
     @property

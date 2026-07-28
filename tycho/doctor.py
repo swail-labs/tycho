@@ -145,9 +145,8 @@ def _is_wired(repo: Path, name: str, recorded: dict, findings: list[Finding]) ->
         ))
         return True  # wired (the entry exists), just not working
 
-    # Deliberately *not* compared against `init.hook_command()`: that returns a console
-    # script or `<python> -m` depending on whether the venv is on PATH right now, so the
-    # same healthy install would read as two different "current" answers.
+    # Not compared against `init.hook_command()`: that answer depends on whether the venv is
+    # on PATH right now, so one healthy install would read as two different "current"s.
     findings.append(Finding(OK, f"{name}: hook installed and runnable — {command}"))
     return True
 

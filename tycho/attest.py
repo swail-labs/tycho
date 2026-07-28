@@ -51,9 +51,8 @@ _DIGEST_RE = re.compile(r"sha256:[0-9a-f]{64}")
 _IDS_RE = re.compile(r"turns=([0-9a-fA-F,]+)")
 _TREE_RE = re.compile(r"tree=([0-9a-f]{40,64})")
 
-# git's `-v` scissors: everything below it, diff included, is stripped from the message. The
-# diff body is *not* comment-prefixed, so a trailer appended to the end of the file lands
-# inside it and is silently discarded.
+# git's `-v` scissors: everything below is stripped from the message, and the diff body is
+# not comment-prefixed, so a trailer appended at the end lands inside it and is discarded.
 _SCISSORS = re.compile(r"^\S? ?-{3,} >8 -{3,}")
 
 # Stable ordering so the trailer prose is deterministic across dict orderings.
@@ -275,9 +274,8 @@ def _append(text: str, line: str) -> str:
         # the user types on line 1 still gets its separating blank line.
         block = ["", "", line]
     elif len(body) > 1 and _TRAILER_SHAPE.match(body[-1]):
-        # Already a trailer block (`Signed-off-by: …`) — join it. `len(body) > 1` is
-        # load-bearing: a conventional-commit subject (`fix: tweak`) is *exactly*
-        # trailer-shaped, and gluing the attestation onto it wrecks every `git log --oneline`.
+        # Already a trailer block — join it. `len(body) > 1` is load-bearing: a
+        # conventional-commit subject (`fix: tweak`) is exactly trailer-shaped.
         block = [*body, line]
     else:
         block = [*body, "", line]
@@ -375,18 +373,16 @@ def verify(repo: Path, ref: str = "HEAD",
         return None, f"{short}: no Tycho attestation — not agent-written, or Tycho wasn't installed"
     tree, actual_tree = claimed_tree(message), _tree_of(repo, ref)
     if tree and actual_tree and tree != actual_tree:
-        # The trailer is real but it was written for other content: copied onto a
-        # hand-written commit, inherited by a revert, or carried along by a rebase that
-        # rewrote the tree. Which of those it is, this cannot know — so it doesn't guess.
+        # A real trailer written for other content — copied, inherited by a revert, or
+        # carried by a rebase. Which one, this cannot know, so it doesn't guess.
         return None, (
             f"{short}: this attestation was written for tree {tree[:10]}…, but the commit "
             f"records {actual_tree[:10]}… — copied, reverted, or rebased — cannot confirm"
         )
     ids = claimed_ids(message)
     if ids:
-        # The trailer names its own turns, so this reads them back rather than re-deriving
-        # which turns *would* be covered — the derivation moves when the record is pruned or
-        # the commit is rebased, and a moved set is indistinguishable from a forged one.
+        # Read the turns the trailer names rather than re-deriving them: the derivation
+        # moves when the record is pruned, and a moved set looks exactly like a forged one.
         found = _lookup(repo, ids)
         gone = [i for i in ids if not found.get(i)]
         if gone:
