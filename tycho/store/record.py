@@ -61,6 +61,10 @@ _MAX_CEILING = 10_000_000
 # Slack before a prune, so a rewrite happens once per `_PRUNE_SLACK` turns instead of making
 # every Stop O(cap). ponytail: amortized rewrite; a ring file only if it shows in a profile.
 _PRUNE_SLACK = 250
+# Attempts at the lock before appending without it. The unlocked write keeps the promise that
+# a turn is never lost, but it is the only write a concurrent prune can erase, so it is worth
+# a few more tries first. Bounded: the Stop hook waits, it does not hang.
+_LOCK_ATTEMPTS = 3
 
 
 def _env_cap(var: str, default: int) -> int:
@@ -315,7 +319,13 @@ def append(repo: Path, record: dict) -> bool:
 
     One ``write()`` of one short line in append mode doesn't interleave — which is what
     ``build``'s field bounds buy. The lock is for the *prune*, which rewrites the file;
-    failing to take it still appends and skips the prune.
+    failing to take it still appends and skips the prune, because losing a turn is worse than
+    losing the prune.
+
+    That fallback is the last resort and not the first: an unlocked append is the only write a
+    concurrent prune can erase, so the lock is retried before giving up on it. `_locked`
+    already waits, but its deadline is a stuck holder's, and on Windows it reads progress from
+    a clock too coarse to see the lock change hands.
 
     ``ensure_ascii=True`` because a lone surrogate in the agent's prose isn't encodable UTF-8,
     and the raise lost the whole turn rather than one odd character.
@@ -325,13 +335,17 @@ def append(repo: Path, record: dict) -> bool:
         state._private_dir(path.parent)
         line = json.dumps(record, ensure_ascii=True, separators=(",", ":"))
         state._touch_private(path)
-        with state._locked(path) as held:
-            _terminate(path)
-            with path.open("a", encoding="utf-8") as fh:
-                fh.write(line + "\n")
-            if held:
-                _prune(path, max_records())
-        return True
+        for attempt in range(_LOCK_ATTEMPTS):
+            with state._locked(path) as held:
+                if not held and attempt < _LOCK_ATTEMPTS - 1:
+                    continue  # try again for the lock before writing where a prune can lose it
+                _terminate(path)
+                with path.open("a", encoding="utf-8") as fh:
+                    fh.write(line + "\n")
+                if held:
+                    _prune(path, max_records())
+                return True
+        return False  # unreachable: the last attempt always writes
     except (OSError, TypeError, ValueError):
         return False
 
@@ -358,12 +372,19 @@ def _prune(path: Path, cap: int, slack: int | None = None) -> None:
 
     **Call this holding ``state._locked(path)``** — it is read-all-then-rename, so an append
     landing mid-flight is dropped and two concurrent prunes spliced the file to one line.
+
+    Holding the lock is not enough on its own, because `append` writes whether or not it got
+    one: losing a turn is worse than losing the prune, so a writer that times out appends
+    anyway. That append lands after this read and is not in `kept`, and publishing over it
+    drops a record that was already on disk — the hole this trades away by publishing only
+    onto the file it read.
     """
     slack = _PRUNE_SLACK if slack is None else slack
     kept: deque[str] = deque(maxlen=cap)
     total = 0
     tmp = state._tmp_name(path)
     try:
+        before = path.stat().st_size
         with path.open(encoding="utf-8", errors="replace") as fh:
             for line in fh:
                 total += 1
@@ -374,9 +395,27 @@ def _prune(path: Path, cap: int, slack: int | None = None) -> None:
         with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600),
                   "w", encoding="utf-8") as fh:
             fh.writelines(line if line.endswith("\n") else line + "\n" for line in kept)
-        state.retry_sharing(lambda: tmp.replace(path))
+        _publish(tmp, path, before)
     except OSError:
         tmp.unlink(missing_ok=True)
+
+
+def _publish(tmp: Path, path: Path, size_before: int) -> bool:
+    """Rename `tmp` over `path`, but only if `path` is still what was read. False if it grew.
+
+    The file only ever grows by an append, and an append this prune never saw is a record it
+    would erase. Dropping the prune costs a file that stays over its cap until the next
+    append; publishing anyway costs a turn. The cap is soft and a turn is not.
+
+    ponytail: a size check, not a generation counter or an fcntl range lock. Ceiling: the
+    append could still land between this stat and the rename, so it narrows the window from
+    the whole read-and-rewrite to two syscalls rather than closing it.
+    """
+    if path.stat().st_size != size_before:
+        tmp.unlink(missing_ok=True)
+        return False
+    state.retry_sharing(lambda: tmp.replace(path))
+    return True
 
 
 def iter_jsonl(path: Path) -> Iterator[dict]:
