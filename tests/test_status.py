@@ -444,7 +444,7 @@ def test_doctor_from_a_subdirectory_does_not_cry_wolf(tmp_path: Path):
     # State and harness-config resolution must agree. If only the former walks, doctor finds
     # the root's install record, looks for `.claude/settings.json` one directory down, and
     # reports the hook ripped out — a false alarm about wiring that is fine.
-    from tycho.views import doctor
+    from tycho.wire import doctor
 
     _install(tmp_path)
     deep = tmp_path / "tycho"

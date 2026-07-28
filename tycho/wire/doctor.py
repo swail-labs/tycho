@@ -22,10 +22,10 @@ from pathlib import Path
 from .. import __version__
 from ..read import gitstate
 from ..read import harness as harness_mod
-from ..wire import install as init_mod
+from . import install as init_mod
 from ..store import state
-from ..wire import version as version_mod
-from .review import _elapsed
+from . import version as version_mod
+from ..views.review import _elapsed
 
 # Severities. BROKEN and OUTDATED mean "Tycho is not doing its job"; the rest is context.
 OK = "OK"

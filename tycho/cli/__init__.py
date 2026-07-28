@@ -136,7 +136,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         _print_update_notice()  # tell them if a newer Tycho exists
         return rc
     if args.command == "doctor":
-        from ..views import doctor
+        from ..wire import doctor
 
         _offer_first_run(Path.cwd())
         findings = doctor.diagnose(Path.cwd())

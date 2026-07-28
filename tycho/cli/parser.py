@@ -193,7 +193,7 @@ def build() -> argparse.ArgumentParser:
 def _help(cwd: Path) -> int:
     """One screen: what Tycho is, whether it's live *here*, and every command. The liveness
     line is the reason this exists — `-h` can't answer "is it on?"."""
-    from ..views import doctor
+    from ..wire import doctor
 
     print(f"tycho {__version__} — verify what an agent claims it did.")
     print(f"\n{_ABOUT}\n")

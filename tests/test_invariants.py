@@ -192,6 +192,49 @@ def test_the_engine_imports_nothing_that_can_do_io():
     assert not offenders, f"engine/ reached a package that does I/O: {offenders}"
 
 
+def test_the_layers_only_import_downward():
+    """`tycho/` is layered, and the layering is only real while it stays a DAG.
+
+    The engine test above protects the bottom of the stack. This protects the rest of it: a
+    cycle between two packages is how a layout quietly becomes a filing system, and it costs
+    one convenient import to create. Cheaper to fail here than to argue about it later.
+
+    `cli/` is exempt from being a target — nothing imports it, so it can't be part of a cycle.
+    """
+    import ast
+    from collections import defaultdict
+
+    import tycho
+
+    order = ["model", "engine", "store", "read", "views", "wire", "cli"]
+    rank = {name: i for i, name in enumerate(order)}
+    root = Path(tycho.__file__).parent
+    edges = defaultdict(set)
+    for source in sorted(root.rglob("*.py")):
+        parts = source.relative_to(root).parts
+        here = parts[0] if len(parts) > 1 else parts[0].removesuffix(".py")
+        depth = len(parts) - 1
+        for node in ast.walk(ast.parse(source.read_text(encoding="utf-8"))):
+            if not isinstance(node, ast.ImportFrom) or not node.module:
+                continue
+            head = node.module.split(".")[0]
+            # `level` dots reaching `tycho` means the head names a sibling layer.
+            if node.level >= depth + 1 and head in rank and head != here:
+                edges[here].add((head, f"{source.name}:{node.lineno}"))
+            elif node.level == 0 and node.module.startswith("tycho."):
+                head = node.module.split(".")[1]
+                if head in rank and head != here:
+                    edges[here].add((head, f"{source.name}:{node.lineno}"))
+
+    upward = [
+        f"{src} -> {dst} ({where})"
+        for src, targets in edges.items()
+        for dst, where in targets
+        if rank.get(dst, -1) >= rank.get(src, 99)
+    ]
+    assert not upward, f"a layer imported sideways or upward: {sorted(upward)}"
+
+
 def test_checks_are_pure_functions_of_the_session(tmp_path, no_network):
     """The seam that lets Pro/Enterprise swap the evidence source without touching a check.
 

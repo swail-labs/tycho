@@ -37,7 +37,7 @@ def _warn_if_hook_broken(cwd: Path) -> None:
     identical whether the Stop hook has been running all week or dead since the venv moved.
     Stderr so it can't pollute a piped report, and never fatal."""
     try:
-        from ..views import doctor
+        from ..wire import doctor
 
         for f in doctor.hook_health(cwd):
             print(f"tycho: {f.level} — {f.text}", file=sys.stderr)

@@ -30,9 +30,9 @@ bottom-up:
 | `engine/` | **pure.** The checks, the verdict reduction, the AST diff, the runner-output reader. Imports `model` and nothing else |
 | `store/` | `<repo>/.tycho/` — install record, turn record, exec log, config. Every writer here is a concurrent writer |
 | `read/` | the outside world: transcripts, git, the filesystem. `session.gather()` is the boundary |
-| `wire/` | writes into other tools: the harness hooks, the commit trailer, the status bar, the update check |
 | `views/` | recorded state → text a person reads |
-| `cli.py` | the argparse surface. Nothing imports it |
+| `wire/` | writes into other tools: harness hooks, commit trailer, status bar, `doctor`, the update check |
+| `cli/` | the argparse surface. Nothing imports it |
 
 The arrows only point down. `engine/` sits at the bottom because that is what "the checks are
 pure functions over a frozen `Session`" means when you write it as directories: a check cannot
