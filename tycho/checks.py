@@ -165,24 +165,48 @@ def _is_runner(segment: str) -> bool:
     """True if this already-normalized segment invokes a test/build runner."""
     if _is_discovery(segment):
         return False
-    java_runner = segment.startswith("java ") and ("junit" in segment.lower() or "testng" in segment.lower())
-    if java_runner or any(segment == r or segment.startswith(f"{r} ") for r in _TEST_RUNNERS):
+    if segment.startswith("java ") and ("junit" in segment.lower() or "testng" in segment.lower()):
         return True
+    return _runner_span(segment) is not None
+
+
+def _runner_span(segment: str) -> tuple[int, int] | None:
+    """Token span of the runner phrase within a normalized segment, or None.
+
+    One locator answers both "is this a runner" and "where do its arguments start", so the two
+    can never disagree. They did: a separate prefix matcher that only knew the `_TEST_RUNNERS`
+    spellings read `uv run --with pytest pytest -q` as having no recognizable runner, which
+    silently made every scope question about wrapped invocations unanswerable.
+    """
+    tokens = segment.split()
+    if not tokens:
+        return None
+    # Longest direct match wins, so `python -m pytest` isn't read as the shorter `pytest`.
+    longest = 0
+    for runner in _TEST_RUNNERS:
+        phrase = runner.split()
+        if tokens[:len(phrase)] == phrase:
+            longest = max(longest, len(phrase))
+    if longest:
+        return 0, longest
     # `<interpreter> -m pytest`, guarded so `echo -m pytest` doesn't count.
-    parts = segment.split()
     if (
-        len(parts) >= 3
-        and parts[1] == "-m"
-        and parts[2] in _MODULE_RUNNERS
-        and _looks_like_interpreter(parts[0])
+        len(tokens) >= 3
+        and tokens[1] == "-m"
+        and tokens[2] in _MODULE_RUNNERS
+        and _looks_like_interpreter(tokens[0])
     ):
-        return True
+        return 0, 3
     wrapper = next((w for w in _RUN_WRAPPERS if segment == w or segment.startswith(f"{w} ")), None)
     if wrapper is None:
-        return False
+        return None
+    start = len(wrapper.split())
     # A multi-word runner phrase anywhere after the wrapper (`uv run … python -m pytest`).
-    if any(f" {r} " in f" {segment} " for r in _PHRASE_RUNNERS):
-        return True
+    for i in range(start, len(tokens)):
+        for runner in _PHRASE_RUNNERS:
+            phrase = runner.split()
+            if tokens[i:i + len(phrase)] == phrase:
+                return i, i + len(phrase)
     # Otherwise find the wrapper's *own* command. The difficulty is one token: in `uv run
     # --with pytest pytest -q` the first "pytest" is an install argument and the second is the
     # command. So the value of an *install* flag is skipped outright, and everything else is
@@ -191,7 +215,8 @@ def _is_runner(segment: str) -> bool:
     # token cannot have taken a value.
     prev_was_flag = False
     skip_next = False
-    for token in segment[len(wrapper):].split():
+    for i in range(start, len(tokens)):
+        token = tokens[i]
         if skip_next:
             skip_next = prev_was_flag = False
             continue
@@ -200,11 +225,11 @@ def _is_runner(segment: str) -> bool:
             prev_was_flag = not skip_next
             continue
         if token in _BARE_RUNNERS:
-            return True
+            return i, i + 1
         if not prev_was_flag:
-            return False  # this is the wrapper's command, and it isn't a runner
+            return None  # this is the wrapper's command, and it isn't a runner
         prev_was_flag = False  # an unknown flag's value, or the command — the next one decides
-    return False
+    return None
 
 
 # These command strings come straight off the transcript — attacker/agent controlled, not
@@ -611,23 +636,18 @@ _WHOLE_SUITE_POSITIONALS = {
 
 def _runner_family(segment: str) -> str | None:
     """Which argument grammar this normalized runner segment speaks, or None if unmodelled."""
-    prefix = _runner_prefix(segment)
-    if prefix is None:
+    span = _runner_span(segment)
+    if span is None:
         return None
+    phrase = segment.split()[span[0]:span[1]]
     for family, markers in _FAMILIES:
-        # On word boundaries, never as a bare substring: `"go test" in "cargo test"` is true,
-        # which read every `cargo` invocation with Go's argument grammar.
-        if any(prefix == m or prefix.endswith(f" {m}") or prefix.startswith(f"{m} ")
-               for m in markers):
-            return family
+        # Token sublists, never substrings: `"go test" in "cargo test"` is true, which read
+        # every cargo invocation with Go's argument grammar.
+        for marker in markers:
+            mt = marker.split()
+            if any(phrase[i:i + len(mt)] == mt for i in range(len(phrase) - len(mt) + 1)):
+                return family
     return None
-
-
-def _runner_prefix(segment: str) -> str | None:
-    """The `_TEST_RUNNERS` entry this normalized segment invokes — longest match, so
-    `python -m pytest` isn't read as the shorter `pytest`."""
-    matches = [r for r in _TEST_RUNNERS if segment == r or segment.startswith(f"{r} ")]
-    return max(matches, key=len) if matches else None
 
 
 def _selects_whole_suite(segment: str) -> bool | None:
@@ -640,14 +660,14 @@ def _selects_whole_suite(segment: str) -> bool | None:
     exactly where they were before asking.
     """
     family = _runner_family(segment)
-    prefix = _runner_prefix(segment)
-    if family is None or prefix is None:
+    span = _runner_span(segment)
+    if family is None or span is None:
         return None
     value_opts = _VALUE_OPTIONS[family]
     narrowing = _NARROWING_OPTIONS[family]
     whole = _WHOLE_SUITE_POSITIONALS[family]
 
-    tokens = segment.split()[len(prefix.split()):]
+    tokens = segment.split()[span[1]:]
     i = 0
     while i < len(tokens):
         token = tokens[i]

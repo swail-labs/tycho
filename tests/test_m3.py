@@ -938,3 +938,31 @@ def test_quoted_and_fenced_spans_are_not_read_as_claims():
     # An apostrophe must not open a quote and swallow the rest of the sentence.
     s = make_session(messages=[_msg("I moved 39's context onto ACME-43.")], events=[_tool("Bash")])
     assert checks._claimed_families(s)
+
+
+@pytest.mark.parametrize("cmd,expected", [
+    # Wrapper forms. Before `_runner_span` existed these answered None — `_is_runner` knew how
+    # to find the runner inside `uv run --with pytest pytest -q` and the scope reader did not,
+    # so the whole coverage relation was inert on the wrapped invocations people actually use.
+    ("uv run pytest -q", True),
+    ("uv run pytest tests/x.py", False),
+    ("uv run --with pytest pytest -q", True),
+    ("uv run --group test pytest -q", True),
+    ("uv run --with pytest python -m pytest -q", True),
+    ("poetry run pytest -q", True),
+    ("poetry run pytest -k auth", False),
+    ("npx jest", True),
+    ("npx jest -t auth", False),
+])
+def test_wrapped_invocations_are_readable_too(cmd, expected):
+    assert checks._selects_whole_suite(cmd) is expected, cmd
+
+
+def test_one_locator_serves_recognition_and_scope():
+    """`_is_runner` and `_selects_whole_suite` must agree on where the runner ends. When they
+    were separate matchers they didn't, and the disagreement was silent."""
+    for cmd in ["uv run --with pytest pytest -q", "python -m pytest -q", "npx jest",
+                "poetry run pytest -k x", "cargo test --lib", "go test ./..."]:
+        assert checks._is_runner(cmd), cmd
+        assert checks._runner_span(cmd) is not None, cmd
+        assert checks._selects_whole_suite(cmd) is not None, cmd
