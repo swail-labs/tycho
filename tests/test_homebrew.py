@@ -10,7 +10,9 @@ from pathlib import Path
 
 import pytest
 
-_STAMP = Path(__file__).resolve().parents[1] / "packaging" / "homebrew" / "stamp.py"
+_REPO = Path(__file__).resolve().parents[1]
+_STAMP = _REPO / "packaging" / "homebrew" / "stamp.py"
+_PUBLISH = _STAMP.with_name("publish.sh")
 _spec = importlib.util.spec_from_file_location("tycho_brew_stamp", _STAMP)
 stamp_mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(stamp_mod)
@@ -77,3 +79,16 @@ def test_template_and_stamper_agree_on_markers_and_assets():
     assert set(re.findall(r"REPLACE_ME_SHA256[A-Z0-9_]*", TEMPLATE)) == set(stamp_mod.ASSETS)
     for asset in stamp_mod.ASSETS.values():
         assert asset in TEMPLATE, f"{asset} is not the tarball any formula URL points at"
+
+
+def test_both_publish_paths_call_the_same_script():
+    # The automatic path (release.yml, on a stable tag) and the manual repair path
+    # (homebrew-tap.yml, for a tag that already shipped) must stay one implementation. If either
+    # grows its own inlined copy, the repair path silently stops matching what releases actually
+    # push — the failure that leaves the tap on an old version with nobody noticing.
+    workflows = _REPO / ".github" / "workflows"
+    for name in ("release.yml", "homebrew-tap.yml"):
+        text = (workflows / name).read_text(encoding="utf-8")
+        assert "packaging/homebrew/publish.sh" in text, f"{name} no longer calls publish.sh"
+    # Executable, or the runner's `run:` step dies with permission denied.
+    assert _PUBLISH.stat().st_mode & 0o111, "publish.sh must be executable"
