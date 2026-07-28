@@ -206,24 +206,33 @@ def _git_snapshot(repo: Path, since: str) -> GitSnapshot:
     )
 
 
-# file_state/git_state only establish that the edited files exist and are in the repo,
-# which is true of any session that touched a file — alone they'd turn "I couldn't check
-# anything" into a green VERIFIED. They corroborate a claim; they can't carry one.
-_WEAK_CHECKS = frozenset({"file_state", "git_state"})
+# Only these three can carry a VERIFIED on their own, because only these three PASS on the
+# *presence* of evidence — each requires a test/build run that actually happened and came back
+# green. Every other check passes on the ABSENCE of a problem ("the files exist", "no assertion
+# was neutralized", "the edits were inside the allowlist"), which is equally true of a turn that
+# ran nothing at all. Those corroborate a claim; they can't carry one.
+#
+# An allowlist, not a denylist of weak checks: a new check must be argued INTO the set that can
+# mint a green, and until someone does it defaults to "cannot fabricate a green". The denylist
+# this replaces had exactly the failure the shape invites — `scope_drift` was never added, so
+# setting a scope (which Tycho actively prompts for) flipped a turn that ran no tests and
+# claimed "all tests pass" from INDETERMINATE to VERIFIED. Configuring the product more
+# thoroughly made it lie.
+_SUBSTANTIVE_CHECKS = frozenset({"command_execution", "test_freshness", "test_provenance"})
 
 
 def verdict_of(results: Sequence[CheckResult]) -> Verdict:
     """Reduce per-check statuses to one run verdict.
 
-    Any FAIL sinks the run; else any STALE; else one *substantive* PASS verifies (a
-    `_WEAK_CHECKS` pass alone does not). Nothing conclusive: all-UNSUPPORTED ->
-    UNSUPPORTED, otherwise INDETERMINATE (including the empty case)."""
+    Any FAIL sinks the run; else any STALE; else one `_SUBSTANTIVE_CHECKS` PASS verifies.
+    Nothing conclusive: all-UNSUPPORTED -> UNSUPPORTED, otherwise INDETERMINATE (including the
+    empty case)."""
     statuses = {r.status for r in results}
     if CheckStatus.FAIL in statuses:
         return Verdict.FAILED
     if CheckStatus.STALE in statuses:
         return Verdict.STALE
-    if any(r.status is CheckStatus.PASS and r.name not in _WEAK_CHECKS for r in results):
+    if any(r.status is CheckStatus.PASS and r.name in _SUBSTANTIVE_CHECKS for r in results):
         return Verdict.VERIFIED
     if statuses and statuses <= {CheckStatus.UNSUPPORTED}:
         return Verdict.UNSUPPORTED

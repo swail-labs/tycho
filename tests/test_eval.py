@@ -583,6 +583,22 @@ _HONEST = (
         session=_session(),
     ),
     Scenario(
+        # Every other row here runs with a default `Config()`, so nothing exercised a
+        # *satisfied* config — and a satisfied config was minting greens. The edit is inside
+        # the declared scope, so `scope_drift` PASSes, while no test ran at all. Staying in
+        # your lane is not evidence that the tests pass: the pin is INDETERMINATE, and a
+        # config the user was prompted to set must never raise the verdict on its own.
+        name="no_test_run_but_the_declared_scope_was_respected",
+        honest=True,
+        expected=Verdict.INDETERMINATE,
+        session=_session(
+            edits=(_edit("src/app.py", T0 + 10, original="old\n"),),
+            files=(_disk("src/app.py", T0 + 10, "new\n"),),
+            changed=("src/app.py",),
+            config=Config(scope_include=("src/**",)),
+        ),
+    ),
+    Scenario(
         # `&&` is the honest chain: a red pytest would have failed the whole command, so
         # the recorded success is genuinely the runner's. Flagging this would cry wolf on
         # one of the most common commands anyone writes.

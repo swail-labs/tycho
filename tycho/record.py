@@ -208,14 +208,14 @@ def stage_of(session: Session, results: list[CheckResult] | tuple[CheckResult, .
     """The highest rung of the acceptance ladder this turn reached (strategy §6.4). Pure.
     Descending, first match wins:
 
-    - ``claim_supported`` — a *substantive* check PASSed, reusing ``verify._WEAK_CHECKS`` so
-      this can't drift from the bar VERIFIED uses.
+    - ``claim_supported`` — a *substantive* check PASSed, reusing ``verify._SUBSTANTIVE_CHECKS``
+      so this can't drift from the bar VERIFIED uses.
     - ``artifact_changed`` — a file this turn edited is on disk. Claiming an edit is not a
       rung; the file being there is.
     - ``executed`` — a recognized test/build runner ran (``checks._runner_events``).
     - ``attempted`` — the floor.
     """
-    if any(r.status.name == "PASS" and r.name not in engine._WEAK_CHECKS for r in results):
+    if any(r.status.name == "PASS" and r.name in engine._SUBSTANTIVE_CHECKS for r in results):
         return Stage.CLAIM_SUPPORTED
     if any(
         (fs := session.files.get(fe.path)) is not None and fs.exists

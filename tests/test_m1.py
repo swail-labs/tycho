@@ -8,8 +8,10 @@ from tycho.model import CheckResult, CheckStatus, Verdict
 from tycho.report import render
 
 
-def _r(status: CheckStatus) -> CheckResult:
-    return CheckResult("c", status, "e")
+def _r(status: CheckStatus, name: str = "command_execution") -> CheckResult:
+    """Named for a substantive check by default — only those can carry a VERIFIED, so a
+    placeholder name would exercise the fallback rather than the rule under test."""
+    return CheckResult(name, status, "e")
 
 
 def test_fail_beats_everything():
@@ -37,6 +39,38 @@ def test_file_and_git_state_alone_do_not_verify():
     results = [
         CheckResult("file_state", CheckStatus.PASS, "e"),
         CheckResult("git_state", CheckStatus.PASS, "e"),
+        CheckResult("command_execution", CheckStatus.UNSUPPORTED, "e"),
+    ]
+    assert engine.verdict_of(results) == Verdict.INDETERMINATE
+
+
+def test_no_absence_of_a_problem_can_carry_a_verified():
+    """The turn that motivated the allowlist: an agent edits a file, runs no tests, and says
+    "all tests pass". Every check that can pass here passes on the absence of a problem — the
+    file is on disk, git agrees, the edit was inside the scope, no assertion was neutralized,
+    no skip was injected. None of them looked at a test run, because there wasn't one.
+
+    Under the old denylist `scope_drift` was simply never added to it, so setting a scope —
+    which `tycho init` prompts for — turned this exact turn from INDETERMINATE into a green.
+    """
+    results = [
+        CheckResult("file_state", CheckStatus.PASS, "e"),
+        CheckResult("git_state", CheckStatus.PASS, "e"),
+        CheckResult("scope_drift", CheckStatus.PASS, "e"),
+        CheckResult("assertion_weakening", CheckStatus.PASS, "e"),
+        CheckResult("skip_mock_injection", CheckStatus.PASS, "e"),
+        CheckResult("tool_call_provenance", CheckStatus.PASS, "e"),
+        CheckResult("command_execution", CheckStatus.UNSUPPORTED, "e"),
+        CheckResult("test_freshness", CheckStatus.UNSUPPORTED, "e"),
+    ]
+    assert engine.verdict_of(results) == Verdict.INDETERMINATE
+
+
+def test_a_new_check_cannot_mint_a_green_by_default():
+    """The allowlist's whole point: an unrecognized check name is not evidence. Whoever adds a
+    check that genuinely proves a claim must add it to `_SUBSTANTIVE_CHECKS` deliberately."""
+    results = [
+        CheckResult("some_future_check", CheckStatus.PASS, "e"),
         CheckResult("command_execution", CheckStatus.UNSUPPORTED, "e"),
     ]
     assert engine.verdict_of(results) == Verdict.INDETERMINATE
