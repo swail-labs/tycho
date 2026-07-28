@@ -22,8 +22,12 @@ def _git(repo: Path, *args: str) -> tuple[int, str]:
             text=True,
             encoding="utf-8",
             errors="replace",
+            # A concurrent agent's `index.lock`, a network filesystem or a slow fsmonitor can
+            # block git indefinitely, and a Stop hook killed by the harness mid-append costs
+            # records. Time out and read it as "git said no".
+            timeout=10,
         )
-    except (OSError, ValueError):
+    except (OSError, ValueError, subprocess.TimeoutExpired):
         return 1, ""
     return proc.returncode, proc.stdout
 
@@ -83,8 +87,8 @@ class Hunk:
     """One contiguous run of changed lines, addressed on the side that still exists.
 
     `start`/`end` are 1-based, inclusive, and cover the *changed* lines only; both are 0 for
-    a hunk with no line range (`binary`, `renamed` with no edit, `unparsed`). `status`:
-    modified | added | deleted | renamed | binary | unparsed | untracked.
+    a hunk with no line range (`binary`, `renamed` with no edit, `mode`, `unparsed`).
+    `status`: modified | added | deleted | renamed | binary | mode | unparsed | untracked.
     """
 
     path: str
@@ -130,14 +134,20 @@ def parse_hunks(text: str, limit: int = MAX_HUNKS) -> tuple[Hunk, ...]:
     path: str | None = None
     status = "modified"
     produced = False
+    mode = False
 
     def flush() -> None:
         # A pure rename or mode change has no `@@` yet the file did change — emit it with
-        # no range rather than dropping it.
-        nonlocal produced
-        if path and not produced and status in ("renamed", "deleted", "added"):
-            hunks.append(Hunk(path, 0, 0, 0, 0, status))
+        # no range rather than dropping it. `chmod +x` is a real change to review: it is how
+        # a data file becomes something that runs.
+        nonlocal produced, mode
+        if path and not produced:
+            if status in ("renamed", "deleted", "added"):
+                hunks.append(Hunk(path, 0, 0, 0, 0, status))
+            elif mode:
+                hunks.append(Hunk(path, 0, 0, 0, 0, "mode"))
         produced = False
+        mode = False
 
     lines = text.splitlines()
     i = 0
@@ -148,6 +158,9 @@ def parse_hunks(text: str, limit: int = MAX_HUNKS) -> tuple[Hunk, ...]:
             flush()
             path = _header_paths(line)
             status = "modified"
+            continue
+        if line.startswith(("old mode ", "new mode ")):
+            mode = True
             continue
         if line.startswith("new file mode"):
             status = "added"

@@ -21,15 +21,21 @@ _EDIT_TOOLS = frozenset({"Edit", "Write", "MultiEdit"})
 
 
 def _entries(transcript: Path):
-    """Yield parsed JSONL entries, skipping blank/malformed lines — this is external data."""
-    for line in Path(transcript).read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            yield json.loads(line)
-        except json.JSONDecodeError:
-            continue
+    """Yield parsed JSONL entries, skipping blank/malformed lines — this is external data.
+
+    Streamed, and `errors="replace"`: a transcript is other people's bytes. Reading it whole
+    held the file and a list of every line at once (~4.7x its size in RSS, and `gather` reads
+    it four times), and one invalid byte raised out of every reader — which the hook swallows,
+    so Tycho would go quiet for that session forever while the bad byte sat there."""
+    with Path(transcript).open(encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                yield json.loads(line)
+            except json.JSONDecodeError:
+                continue
 
 
 def parse(transcript: Path) -> tuple[Event, ...]:
@@ -283,7 +289,7 @@ def _codex_relay_boundary(entry: dict) -> float:
 
 def _opencode_data(transcript: Path) -> dict:
     """Load an OpenCode session JSON (``{info, messages:[{info, parts:[…]}]}``)."""
-    text = Path(transcript).read_text(encoding="utf-8")
+    text = Path(transcript).read_text(encoding="utf-8", errors="replace")
     return json.loads(text[text.index("{"):])
 
 
@@ -432,8 +438,11 @@ def _blocks(entry: dict) -> list:
     return content if isinstance(content, list) else []
 
 
-def _epoch(stamp: str | None) -> float:
-    if not stamp:
+def _epoch(stamp: object) -> float:
+    # A harness may emit an epoch number rather than an ISO string; anything else is unknown.
+    if isinstance(stamp, (int, float)) and not isinstance(stamp, bool):
+        return float(stamp)
+    if not isinstance(stamp, str) or not stamp:
         return 0.0
     try:
         return datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp()

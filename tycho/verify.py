@@ -14,7 +14,7 @@ from . import checks as checks_mod
 from . import command as command_mod
 from . import config as config_mod
 from . import events as events_mod
-from . import fsstate, gitstate
+from . import fsstate, gitstate, state
 from .config import Config
 from .model import (
     Attribution,
@@ -81,7 +81,10 @@ def _evidence_floor(events, edits, turn_start: float) -> float:
     return min(stamps) if stamps else 0.0
 
 
-_IGNORED_TEST_DIRS = {".git", ".venv", "venv", "node_modules", "vendor", "target", "dist", "build"}
+_IGNORED_TEST_DIRS = {
+    ".git", ".venv", "venv", "node_modules", "vendor", "target", "dist", "build",
+    "bazel-out", "out", "bin", "obj", "Pods", "coverage",
+}
 _TEST_DIRS = {"test", "tests", "spec", "specs", "__tests__"}
 _SUFFIX_TEST_EXTENSIONS = {
     ".c", ".cc", ".cpp", ".cs", ".dart", ".go", ".java", ".js", ".jsx",
@@ -90,7 +93,34 @@ _SUFFIX_TEST_EXTENSIONS = {
 
 
 def _has_tests(repo: Path) -> bool:
-    """Recognize conventional test files without walking dependencies or build output."""
+    """Recognize conventional test files without walking dependencies or build output.
+
+    A *yes* is remembered in `.tycho/`, because this runs on the Stop-hook hot path every turn
+    and the answer changes about once in a repo's life (a 4,000-file Rust tree re-read 76 MB
+    each time, looking for `#[test]`). Only the yes is cached: a stale "this repo has no
+    tests" would disable the whole test-check family the moment the first test lands, and no
+    cheap key detects a file appearing anywhere in a tree.
+    """
+    marker = state.dir_for(repo) / _HAS_TESTS_MARKER
+    try:
+        if marker.exists():
+            return True
+    except OSError:
+        pass
+    if _walk_for_tests(repo):
+        try:
+            if marker.parent.is_dir():  # only where Tycho is installed; never create a dir here
+                marker.touch()
+        except OSError:
+            pass
+        return True
+    return False
+
+
+_HAS_TESTS_MARKER = "has-tests"
+
+
+def _walk_for_tests(repo: Path) -> bool:
     for root, dirs, files in os.walk(repo):
         dirs[:] = [d for d in dirs if d not in _IGNORED_TEST_DIRS and not d.startswith(".")]
         try:

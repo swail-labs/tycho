@@ -3,6 +3,8 @@
 import hashlib
 from pathlib import Path
 
+import pytest
+
 from conftest import git
 
 from tycho import events, fsstate, gitstate
@@ -176,4 +178,87 @@ def test_test_discovery_covers_supported_ecosystem_conventions(tmp_path: Path):
         case.unlink()
 
     (tmp_path / "lib.rs").write_text("#[rstest]\nfn property_case() {}\n")
+    assert engine._has_tests(tmp_path)
+
+
+# --- readers degrade instead of raising -------------------------------------
+
+def _row(**kw) -> bytes:
+    import json
+    base = {
+        "timestamp": "2026-07-14T18:00:00.000Z",
+        "type": "assistant",
+        "message": {"content": [{"type": "text", "text": "done"}]},
+    }
+    base.update(kw)
+    return json.dumps(base).encode()
+
+
+def test_invalid_utf8_in_the_transcript_does_not_raise(tmp_path: Path):
+    # One bad byte used to raise UnicodeDecodeError out of every reader. The hook swallows it,
+    # so Tycho went silent for that session forever — the byte is still there next turn.
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_bytes(b'{"bad": "\xff\xfe"}\n' + _row() + b"\n")
+    assert len(events.assistant_messages(transcript)) == 1
+    assert events.parse(transcript) == ()
+    assert events.turn_start(transcript) >= 0.0
+    assert events.attribution(transcript) is not None
+
+
+def test_a_numeric_timestamp_is_read_not_raised(tmp_path: Path):
+    # A newer harness emitting epoch numbers hit AttributeError inside the ValueError/TypeError
+    # guard.
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_bytes(_row(timestamp=1752516000).replace(b'"timestamp": ', b'"timestamp": '))
+    assert events.assistant_messages(transcript)[0].ts == 1752516000.0
+    transcript.write_bytes(_row(timestamp={"nope": 1}))
+    assert events.assistant_messages(transcript)[0].ts == 0.0
+
+
+def test_the_transcript_is_streamed_not_held_whole(tmp_path: Path):
+    # read_text().splitlines() held the file *and* a list of every line: ~4.7x the transcript
+    # in peak RSS, four times per gather, and a swallowed MemoryError on a big one.
+    import tracemalloc
+    transcript = tmp_path / "big.jsonl"
+    with transcript.open("wb") as fh:
+        for _ in range(4000):
+            fh.write(_row() + b"\n")
+    size = transcript.stat().st_size
+    tracemalloc.start()
+    events.attribution(transcript)
+    peak = tracemalloc.get_traced_memory()[1]
+    tracemalloc.stop()
+    assert peak < size / 2, (peak, size)
+
+
+def test_git_calls_carry_a_timeout(monkeypatch, tmp_path: Path):
+    # An index.lock held by a concurrent agent, or a slow fsmonitor, would block the Stop hook
+    # until the harness killed it mid-append.
+    import subprocess
+    seen = {}
+
+    def fake_run(*args, **kwargs):
+        seen.update(kwargs)
+        raise subprocess.TimeoutExpired(cmd="git", timeout=10)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert gitstate.is_repo(tmp_path) is False
+    assert seen.get("timeout")
+
+
+def test_has_tests_remembers_a_yes_without_rewalking(tmp_path: Path, monkeypatch):
+    # The walk ran every turn on the Stop-hook hot path (262 ms on a 30k-file tree; 76 MB of
+    # .rs re-read looking for #[test]). Only the *yes* is cached — a stale "no" would disable
+    # the whole test-check family.
+    (tmp_path / ".tycho").mkdir()
+    (tmp_path / "test_thing.py").write_text("")
+    assert engine._has_tests(tmp_path)
+    monkeypatch.setattr(engine, "_walk_for_tests", lambda repo: pytest.fail("re-walked"))
+    assert engine._has_tests(tmp_path)
+
+
+def test_has_tests_never_caches_a_no(tmp_path: Path):
+    (tmp_path / ".tycho").mkdir()
+    assert not engine._has_tests(tmp_path)
+    (tmp_path / "test_thing.py").write_text("")
     assert engine._has_tests(tmp_path)
