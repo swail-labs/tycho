@@ -32,8 +32,12 @@ exit 1, and then said tests pass — and it is the only one of those that can sa
 
 - **Instant, free, silent, always-on.** No API key, no second session, no tokens, no context
   burned. It runs on every turn and stays quiet unless something is off.
-- **Nothing leaves the machine.** No account, no network, no LLM anywhere in the trust path.
-  Only code renders a verdict, which is what lets all of the above be true.
+- **Nothing about your code leaves the machine.** No account, no LLM anywhere in the trust
+  path. Verification is local computation over git, the filesystem, exit codes and the event
+  stream — that path never opens a socket. The one thing that does: `tycho init` also installs
+  a SessionStart hook that asks `pypi.org` once a day whether a newer Tycho exists, which
+  discloses your Tycho version and your IP and nothing else. Turn it off with
+  `TYCHO_NO_UPDATE_CHECK=1`.
 - **Stdlib only**, Python ≥ 3.11. Nothing to audit, trivial install.
 - **Claude Code** supported (auto-detected); other harnesses in development.
 - **Linux, macOS, and Windows** — see [Platforms](#platforms).
@@ -369,6 +373,16 @@ Tycho-Attestation: sha256:1c… (2 turns, NEVER VERIFIED: 2 UNSUPPORTED)
 It covers every recorded turn that touched a file in the commit, bounded by the commit's own
 timestamp. A commit no recorded turn touched gets no trailer at all. `git log --grep 'NEVER
 VERIFIED'` is the six-months-later query.
+
+**What the trailer proves — and what it does not.** The digest is an unkeyed SHA-256 over a
+record this machine wrote. There is no signature and no key, so it proves *consistency*, not
+authenticity: this commit's trailer matches this machine's record as that record stands now.
+That catches a trailer copied from one commit to another, a record edited after the fact, an
+amend that changed the file set, and honest drift between what was verified and what was
+committed — i.e. accidents and mistakes, which is what the trailer is for. It is not a defence
+against a motivated agent or user: anyone who can write `.tycho/turns.jsonl` can write a record
+claiming VERIFIED and produce a trailer that verifies clean against it. Read it as
+tamper-evidence, never as proof that the work was verified.
 
 **`--verify` has three answers, not two.** It recomputes the body from the record and compares:
 
@@ -732,9 +746,16 @@ Per-repo settings live in `.tycho.toml` (hand-editable; `scope`, `relay`, `overr
 state lives in `<repo>/.tycho/` — the tally, the heartbeat, `turns.jsonl` (the turn record),
 `commands.jsonl` (`tycho exec` evidence), and `overrides.json`. `tycho init` gitignores it.
 
-Command strings, check evidence and the agent's prose are **redacted before they hit disk** —
-secrets become a visible `[REDACTED]` so a reader knows something was removed — and every field is
-truncated, so one pathological turn can't write a megabyte line.
+Command strings, check evidence and the agent's prose are **filtered for secrets before they hit
+disk** — a match becomes a visible `[REDACTED]` so a reader knows something was removed — and
+every field is truncated, so one pathological turn can't write a megabyte line.
+
+That filter is best-effort, not a guarantee. It is pattern-based: it catches the common shapes
+(cloud keys, tokens, connection strings, `KEY=value` assignments), and a credential in a shape
+it doesn't recognise lands on disk intact. Treat `.tycho/` as containing whatever the agent
+said and ran, and keep it out of git regardless — `tycho init` gitignores it, and `tycho doctor`
+tells you if it isn't ignored, or if it was already committed before the ignore rule existed
+(which `tycho init` cannot undo).
 
 | Variable | Does |
 |---|---|
