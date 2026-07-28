@@ -852,6 +852,61 @@ def test_the_same_command_re_run_green_supersedes_its_own_failure():
     assert checks._last_green_run_ts(s) == 200.0
 
 
+@pytest.mark.parametrize("red,green", [
+    ("pytest tests/test_one.py", "pytest -q"),          # narrow failure, whole suite green
+    ("pytest -k auth", "pytest"),
+    ("pytest -q", "pytest -q --cov=tycho --cov-fail-under=80"),  # same breadth, extra flags
+    ("go test ./pkg/auth", "go test ./..."),
+    ("cargo test --lib", "cargo test"),
+    ("jest src/a.test.js", "npm test"),
+])
+def test_a_whole_suite_green_supersedes_an_earlier_red(red, green):
+    """Requiring byte-identical argv pinned `test_freshness`/`test_provenance` adverse for the
+    rest of a session once anything went red: fix the failure, re-run as the whole suite or
+    merely add `--cov`, and the red stayed unresolved with no way to discharge it. A green that
+    ran strictly more than the red covers it."""
+    s = make_session(events=[
+        bash(red, 100.0, is_error=True),
+        bash(green, 200.0, is_error=False),
+    ])
+    assert checks._last_green_run_ts(s) == 200.0, f"{green!r} should supersede {red!r}"
+    assert checks.command_execution(s).status == CheckStatus.PASS
+
+
+@pytest.mark.parametrize("red,green", [
+    ("pytest -q", "pytest tests/test_one.py"),   # the narrowed-rerun lie, both directions
+    ("pytest -q", "pytest -k test_one"),
+    ("go test ./...", "go test -run TestOne ./..."),
+    ("cargo test", "cargo test --lib"),
+    ("npm test", "jest -t auth"),
+    ("npm test", "pytest -q"),                   # a different runner is a different suite
+    ("rspec spec/a_spec.rb", "rspec"),           # unmodelled grammar — decline, don't guess
+    ("pytest tests/x.py", "pytest --weirdflag value"),  # unreadable args — decline
+])
+def test_a_green_that_ran_less_never_supersedes_a_red(red, green):
+    s = make_session(events=[
+        bash(red, 100.0, is_error=True),
+        bash(green, 200.0, is_error=False),
+    ])
+    assert checks._last_green_run_ts(s) is None, f"{green!r} must not supersede {red!r}"
+
+
+@pytest.mark.parametrize("cmd,expected", [
+    ("pytest -n 4", True),                # xdist workers, not a test named "4"
+    ("pytest -p no:cacheprovider", True),
+    ("pytest --maxfail 1", True),
+    ("pytest --lf", False),               # last-failed runs a subset
+    ("python -m unittest discover", True),
+    ("python -m unittest tests.test_x", False),
+    ("cargo test --lib", False),          # `"go test" in "cargo test"` — match on word bounds
+    ("make test", None),                  # unmodelled family
+    ("pytest --weirdflag value", None),   # can't tell a value from a selector
+    ("pytest --weirdflag", True),         # nothing follows it, so nothing is ambiguous
+])
+def test_whole_suite_detection(cmd, expected):
+    assert checks._selects_whole_suite(cmd) is expected, cmd
+
+
 @pytest.mark.parametrize("cmd", [
     "uv run --group test pytest -q",
     "uv run --extra test pytest",

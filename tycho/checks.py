@@ -514,28 +514,167 @@ def command_execution(session: Session) -> CheckResult:
 
 
 def _unresolved_reds(events, commands) -> list:
-    """Failed runner invocations with no later green re-run of the *same* command.
+    """Failed runner invocations that no later green run covers.
 
     Run the suite, see red, narrow to the one failing file, go green, stop — the standard agent
     loop. Taking the last runner's success at face value reported that as VERIFIED and
-    mentioned the red suite nowhere. A re-run of the same argv legitimately supersedes; a
-    narrower one does not.
+    mentioned the red suite nowhere. So a green supersedes a red only when it ran *at least as
+    much*: the same command again, or the whole suite.
+
+    Identity alone is not enough, and requiring it was its own bug. Fix a failure and re-run
+    with anything but byte-identical argv — `pytest -q` after a red `pytest tests/one.py`, or
+    just adding `--cov` — and the red stayed unresolved, which pinned `test_freshness` and
+    `test_provenance` adverse for the rest of the session with no way to clear them. A false
+    adverse verdict nobody can discharge is how a tool gets uninstalled.
     """
     runs = sorted(_runner_events(events), key=lambda e: e.ts)
     reds = []
     for e in runs:
         if _outcome(e, commands) is not True:
             continue
-        argv = _runner_segment(e.input.get("command") or "")
+        red_cmd = _runner_segment(e.input.get("command") or "")
         if any(
             later.ts > e.ts
             and _outcome(later, commands) is False
-            and _runner_segment(later.input.get("command") or "") == argv
+            and _covers(_runner_segment(later.input.get("command") or ""), red_cmd)
             for later in runs
         ):
             continue
         reds.append(e)
     return reds
+
+
+def _covers(green: str | None, red: str | None) -> bool:
+    """Did `green` run at least everything `red` did? Both are normalized runner segments."""
+    if green is None or red is None:
+        return False
+    if green == red:
+        return True
+    # A whole-suite run of the same runner contains any narrower run of it. Different runners
+    # are different suites: a green `pytest` says nothing about a red `npm test`.
+    return (
+        _runner_family(green) is not None
+        and _runner_family(green) == _runner_family(red)
+        and _selects_whole_suite(green) is True
+    )
+
+
+# Runner families that share an argument grammar. Only families listed here can be read as
+# whole-suite runs; anything else answers "can't tell", which costs nothing but the status quo.
+_FAMILIES = (
+    ("pytest", ("pytest",)),
+    ("unittest", ("unittest",)),
+    ("go", ("go test",)),
+    ("cargo", ("cargo test",)),
+    ("tox", ("tox",)),
+    ("js", ("jest", "vitest", "mocha", "npm test", "npm run test", "yarn test", "pnpm test")),
+)
+
+# Options taking a *separate* value. Needed only to tell an option's value from a positional
+# test selector — `pytest -n 4` runs everything on 4 workers, it doesn't run a test called "4".
+_VALUE_OPTIONS = {
+    "pytest": frozenset({"-k", "-m", "-n", "-p", "-c", "-o", "-W", "--tb", "--maxfail",
+                         "--cov", "--rootdir", "--deselect", "--ignore", "--junitxml",
+                         "--log-level", "--durations", "--dist", "--numprocesses"}),
+    "unittest": frozenset({"-k"}),
+    "go": frozenset({"-run", "-timeout", "-count", "-parallel", "-tags", "-coverprofile"}),
+    "cargo": frozenset({"--test", "--bin", "--package", "-p", "--features", "--target",
+                        "--manifest-path", "--jobs", "-j"}),
+    "tox": frozenset({"-e", "-c", "--workdir"}),
+    "js": frozenset({"-t", "--testNamePattern", "--testPathPattern", "--maxWorkers",
+                     "--reporters", "--config", "-c"}),
+}
+
+# Options that narrow the run to part of the suite. A run carrying one is never whole-suite.
+_NARROWING_OPTIONS = {
+    "pytest": frozenset({"-k", "-m", "--deselect", "--ignore", "--last-failed", "--lf",
+                         "--failed-first", "--ff", "--stepwise", "--sw"}),
+    "unittest": frozenset({"-k"}),
+    "go": frozenset({"-run"}),
+    "cargo": frozenset({"--test", "--bin", "--lib", "--bins", "--doc", "--example"}),
+    "tox": frozenset({"-e"}),
+    "js": frozenset({"-t", "--testNamePattern", "--testPathPattern", "--onlyFailures",
+                     "--onlyChanged", "--changedSince", "--findRelatedTests"}),
+}
+
+# Positional arguments that still mean "everything" — `go test ./...` is the whole module, not
+# a narrowing selector.
+_WHOLE_SUITE_POSITIONALS = {
+    "go": frozenset({"./...", "all"}),
+    "cargo": frozenset(),
+    "pytest": frozenset(),
+    "unittest": frozenset({"discover"}),
+    "tox": frozenset(),
+    "js": frozenset(),
+}
+
+
+def _runner_family(segment: str) -> str | None:
+    """Which argument grammar this normalized runner segment speaks, or None if unmodelled."""
+    prefix = _runner_prefix(segment)
+    if prefix is None:
+        return None
+    for family, markers in _FAMILIES:
+        # On word boundaries, never as a bare substring: `"go test" in "cargo test"` is true,
+        # which read every `cargo` invocation with Go's argument grammar.
+        if any(prefix == m or prefix.endswith(f" {m}") or prefix.startswith(f"{m} ")
+               for m in markers):
+            return family
+    return None
+
+
+def _runner_prefix(segment: str) -> str | None:
+    """The `_TEST_RUNNERS` entry this normalized segment invokes — longest match, so
+    `python -m pytest` isn't read as the shorter `pytest`."""
+    matches = [r for r in _TEST_RUNNERS if segment == r or segment.startswith(f"{r} ")]
+    return max(matches, key=len) if matches else None
+
+
+def _selects_whole_suite(segment: str) -> bool | None:
+    """True when this run covers the entire suite, False when it narrows to part of it, and
+    **None when the arguments can't be read with confidence**.
+
+    None is the honest answer rather than a failure mode: an unrecognized option followed by a
+    bare word could be that option's value or a test selector, and there is no way to tell
+    without knowing the runner. Callers treat None as "does not supersede", which leaves them
+    exactly where they were before asking.
+    """
+    family = _runner_family(segment)
+    prefix = _runner_prefix(segment)
+    if family is None or prefix is None:
+        return None
+    value_opts = _VALUE_OPTIONS[family]
+    narrowing = _NARROWING_OPTIONS[family]
+    whole = _WHOLE_SUITE_POSITIONALS[family]
+
+    tokens = segment.split()[len(prefix.split()):]
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if token == "--":  # `npm test -- <runner args>`; the rest is the runner's own grammar
+            i += 1
+            continue
+        if not token.startswith("-"):
+            if token in whole:
+                i += 1
+                continue
+            return False  # a test path, node id or pattern
+        name = token.split("=", 1)[0]
+        if name in narrowing:
+            return False
+        if "=" in token:  # self-contained, never consumes the next token
+            i += 1
+            continue
+        if name in value_opts:
+            i += 2
+            continue
+        # An option we don't model. If a bare word follows it we cannot tell whether that word
+        # is the option's value or a test selector, and guessing either way would be inventing
+        # evidence — so decline to answer.
+        if i + 1 < len(tokens) and not tokens[i + 1].startswith("-"):
+            return None
+        i += 1
+    return True
 
 
 def test_freshness(session: Session) -> CheckResult:
