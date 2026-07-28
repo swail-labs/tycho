@@ -228,6 +228,44 @@ def test_exec_argv_finds_the_inner_command_through_wrappers():
     assert checks._exec_argv("pytest -q") is None
 
 
+def test_oversized_command_gives_up_in_the_safe_direction_per_function():
+    """Both scanners must bail once a command is absurdly large — but in opposite directions.
+    `_runner_segment`/`_exec_argv` giving up as None just loses evidence of a test run, which
+    degrades a check to UNSUPPORTED. `_status_is_masked` giving up as False would instead trust
+    a status it never actually checked — the fabricated green this program exists to prevent —
+    so it must give up as True (masked) instead."""
+    huge = "pytest -k '" + ("a" * (checks._MAX_CMD_LEN + 1)) + "'"
+    assert len(huge) > checks._MAX_CMD_LEN
+    assert checks._runner_segment(huge) is None
+    assert checks._exec_argv(huge) is None
+    assert checks._status_is_masked(huge) is True
+
+
+def test_deeply_nested_wrappers_give_up_instead_of_hanging():
+    """A wrapper nested past `_MAX_UNWRAP_DEPTH` — `bash -c "bash -c \\"...\\""`, or a long
+    chain of non-quoting wrappers like `env -- env -- ...` — must not blow the recursion limit
+    or take more than a beat. Same direction split as the size bound above."""
+    nested = "pytest"
+    for _ in range(checks._MAX_UNWRAP_DEPTH + 5):
+        nested = "bash -c " + repr(nested)
+    assert checks._runner_segment(nested) is None
+    assert checks._status_is_masked(nested) is True
+
+    chained = "pytest -q"
+    for _ in range(5000):
+        chained = "env -- " + chained
+    assert len(chained) <= checks._MAX_CMD_LEN * 20  # sanity: this shape stays linear-size
+    assert checks._runner_segment(chained) is None
+    assert checks._status_is_masked(chained) is True
+
+
+def test_a_wrapper_within_bounds_still_unwraps_normally():
+    """The bound must not clip real invocations — a couple of wrapper layers is routine."""
+    assert checks._runner_segment("bash -c 'timeout 30 pytest -q'") is not None
+    assert checks._status_is_masked("pytest -q | tail -1") is True
+    assert checks._status_is_masked("pytest -q && echo ok") is False
+
+
 def test_exec_evidence_beats_a_masked_transcript_status():
     """The headline case. The shell reported the pipeline's 0; Tycho watched pytest exit 1."""
     session = _session(

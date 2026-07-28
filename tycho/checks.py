@@ -207,6 +207,17 @@ def _is_runner(segment: str) -> bool:
     return False
 
 
+# These command strings come straight off the transcript — attacker/agent controlled, not
+# validated anywhere upstream. A real invocation is a few hundred chars and one or two wrappers
+# deep; both bounds sit far above that and far below where parsing gets expensive. Measured:
+# a 1M-char single token costs ~14s in shlex; 20 levels of `bash -c "..."` nesting already
+# produces a ~1MB command (quoting a quoted string roughly doubles it per level); 1000 levels of
+# a non-quoting wrapper (`env -- env -- ...`) blow the recursion limit, and the quadratic cost
+# of re-parsing the shrinking remainder at each level makes 500 levels alone take ~1s.
+_MAX_CMD_LEN = 4096
+_MAX_UNWRAP_DEPTH = 10
+
+
 def _unwrap(segment: str) -> str | None:
     """The inner command a wrapper carries in an argument, else None. Peels one layer; callers
     recurse. Takes the RAW segment so a quoted `-c '<cmd>'` stays a single token."""
@@ -252,24 +263,37 @@ def _unwrap(segment: str) -> str | None:
     return None
 
 
-def _runner_segment(cmd: str) -> str | None:
+def _runner_segment(cmd: str, _depth: int = 0) -> str | None:
     """The command segment that is a test/build runner, or None. Splitting on shell separators
-    keeps a runner name quoted inside an echo/grep from counting."""
+    keeps a runner name quoted inside an echo/grep from counting.
+
+    Over `_MAX_CMD_LEN` or `_MAX_UNWRAP_DEPTH` deep, giving up and returning None is the safe
+    direction: it just means "no evidence of a test run", which is what an unparseable or
+    absurdly wrapped command should read as anyway.
+    """
+    if len(cmd) > _MAX_CMD_LEN or _depth > _MAX_UNWRAP_DEPTH:
+        return None
     for segment in _SEGMENT_SEP.split(cmd):
         norm = _normalize_segment(segment)
         if _is_runner(norm):
             return norm
         inner = _unwrap(segment)
         if inner is not None:
-            found = _runner_segment(inner)
+            found = _runner_segment(inner, _depth + 1)
             if found is not None:
                 return found
     return None
 
 
-def _exec_argv(cmd: str) -> list[str] | None:
+def _exec_argv(cmd: str, _depth: int = 0) -> list[str] | None:
     """The argv `tycho exec` was given inside `cmd`, or None. This argv is the join between the
-    two evidence streams — the only thing the transcript and the exec log both know."""
+    two evidence streams — the only thing the transcript and the exec log both know.
+
+    Same size/depth bound as `_runner_segment`, same safe direction: None just means no `tycho
+    exec` evidence was found, and `_exec_run_for` already treats that as "no evidence".
+    """
+    if len(cmd) > _MAX_CMD_LEN or _depth > _MAX_UNWRAP_DEPTH:
+        return None
     for segment in _SEGMENT_SEP.split(cmd):
         try:
             parts = shlex.split(segment)
@@ -286,7 +310,7 @@ def _exec_argv(cmd: str) -> list[str] | None:
                 return rest
         inner = _unwrap(segment)
         if inner is not None:
-            found = _exec_argv(inner)
+            found = _exec_argv(inner, _depth + 1)
             if found is not None:
                 return found
     return None
@@ -340,7 +364,7 @@ def _exec_run_for(event, commands) -> "CommandRun | None":  # noqa: F821 — mod
     return matches[-1] if len(matches) == 1 else None
 
 
-def _status_is_masked(cmd: str) -> bool:
+def _status_is_masked(cmd: str, _depth: int = 0) -> bool:
     """True when the exit status the harness recorded is *not* the runner's own.
 
     The shell reports one status — the last thing it ran — so three shapes overwrite it:
@@ -353,8 +377,13 @@ def _status_is_masked(cmd: str) -> bool:
     the most common honest invocation there is. A wrapper is masked when its inner command is.
 
     Trusting a masked status is how a red suite gets reported VERIFIED — so when in doubt say
-    masked and let `_outcome` fall back to the runner's own output.
+    masked and let `_outcome` fall back to the runner's own output. That includes giving up:
+    over `_MAX_CMD_LEN` or `_MAX_UNWRAP_DEPTH` deep, we can no longer tell whether a masking
+    operator is hiding past the point we stopped looking, so the honest answer is True, not
+    False — the opposite give-up direction from `_runner_segment`.
     """
+    if len(cmd) > _MAX_CMD_LEN or _depth > _MAX_UNWRAP_DEPTH:
+        return True
     parts = _SEGMENT_TOKENS.split(cmd)  # [segment, sep, segment, sep, ..., segment]
     for i in range(0, len(parts), 2):
         seg = parts[i]
@@ -362,7 +391,7 @@ def _status_is_masked(cmd: str) -> bool:
             inner = _unwrap(seg)
             if inner is None or _runner_segment(inner) is None:
                 continue  # not the runner segment, wrapped or otherwise
-            if _status_is_masked(inner):
+            if _status_is_masked(inner, _depth + 1):
                 return True  # a masking operator inside the wrapper hides the status
         # The first separator that redirects, swallows, or supersedes the status masks it.
         for j in range(i + 1, len(parts), 2):
