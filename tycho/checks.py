@@ -708,10 +708,24 @@ _REPORTED_STATE = re.compile(
 )
 
 
+# Spans the agent is *showing*, not asserting: fenced code, inline code, a `>` blockquote, a
+# double-quoted run. Dropping them removed 9 of 41 matches over this machine's real transcripts.
+# Apostrophes are left alone on purpose — `39's` would otherwise open a quote and swallow the
+# rest of the sentence.
+_SHOWN_SPANS = (
+    re.compile(r"```.*?```", re.DOTALL),
+    re.compile(r"`[^`\n]*`"),
+    re.compile(r"^\s*>.*$", re.MULTILINE),
+    re.compile(r"\"[^\"\n]{0,300}\"|“[^”\n]{0,300}”"),
+)
+
+
 def _claimed_families(session: Session) -> list[tuple[str, tuple[str, ...]]]:
     """(label, tool-substrings) for each provenance family whose claim appears in the turn's
     assistant prose. Shared by the check and `has_verifiable_activity` so they can't disagree."""
     prose = "\n".join(m.text for m in session.turn_messages)
+    for pattern in _SHOWN_SPANS:
+        prose = pattern.sub(" ", prose)
     prose = _REPORTED.sub(" ", prose)        # drop narrated third-party / pre-existing actions
     prose = _REPORTED_STATE.sub(" ", prose)  # drop observed ticket-state (arrow ≠ a self-transition)
     return [(label, tools) for label, pat, tools in _PROVENANCE_FAMILIES if pat.search(prose)]
@@ -732,6 +746,21 @@ def tool_call_provenance(session: Session) -> CheckResult:
     controllable, and a confident wrong FAIL is worse than "can't tell". The asymmetry is
     kept: prose cannot conjure a tool call, so nothing here can launder a real failure into a
     pass — PASS still requires a matching tool call that genuinely happened.
+
+    **This is a known regression against strategy §7**, which has this check rising in value
+    rather than falling: it no longer sinks a run, so a fabricated MCP action is reported and
+    not caught. The narrower rule that would have kept the teeth — first person only, after
+    the quote-stripping above — was measured against 6,584 real assistant messages from this
+    machine's transcripts: of 41 pattern matches, 32 survived quote-stripping and **4** were
+    first-person governed, one of those a false positive. Agents write their tool actions
+    subject-dropped ("Created TYCHOE-11", "WEB-36 → In Review", "All 28 tickets created"), so
+    the rule keeps ~10% of real claims and none of the web family.
+
+    Restoring the teeth needs a claim whose *author* is known, not a better pattern over prose:
+    a declared claim channel (`verify --claim`, which today only renders) can't be written by a
+    page the agent read. Content-correlation — the claim names ACME-91 and no tool call touched
+    ACME-91 — sharpens precision but does nothing here: injected text names a ticket key just
+    as easily as it names a family.
     """
     if not session.turn_messages:
         return _r("tool_call_provenance", CheckStatus.UNSUPPORTED, "no assistant prose captured to check")

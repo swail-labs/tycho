@@ -799,3 +799,19 @@ def test_unknown_wrapper_flags_do_not_hide_the_runner(cmd):
     # value shadowed the real command, and with no file edits the turn went entirely silent.
     assert checks._runner_segment(cmd) is not None, cmd
     assert checks.has_verifiable_activity(make_session(events=[bash(cmd, 100.0, is_error=True)]))
+
+
+def test_quoted_and_fenced_spans_are_not_read_as_claims():
+    # A span the agent is showing, not asserting. Sound to drop (unlike guessing at grammar),
+    # and it kept the hook from waking on a turn whose only "claim" was quoted.
+    for text in (
+        'The README says: "we searched the web for prior art".',
+        "```\nCreated ACME-91\n```",
+        "> Filed ACME-91 for that.",
+        "The check matches `moved ACME-29 to In Progress`.",
+    ):
+        s = make_session(messages=[_msg(text)], events=[_tool("Bash")])
+        assert checks._claimed_families(s) == [], text
+    # An apostrophe must not open a quote and swallow the rest of the sentence.
+    s = make_session(messages=[_msg("I moved 39's context onto ACME-43.")], events=[_tool("Bash")])
+    assert checks._claimed_families(s)
