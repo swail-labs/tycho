@@ -1,4 +1,4 @@
-"""TYCHO-8 — the hook compatibility contract: does Tycho notice when it isn't running?
+""" — the hook compatibility contract: does Tycho notice when it isn't running?
 
 The failure guarded against here is the quiet one: hooks that look installed, a verdict
 that never comes, and a developer who reads silence as "verified". So these tests care
@@ -93,7 +93,7 @@ def test_the_hook_records_a_heartbeat_when_it_runs(tmp_path: Path):
 
 
 def test_prompt_submit_records_a_pending_beat(tmp_path: Path, monkeypatch):
-    # TYCHO-94: the UserPromptSubmit hook marks a run in flight (pending), so the badge shows
+    # the UserPromptSubmit hook marks a run in flight (pending), so the badge shows
     # frost-blue "verifying" for the whole turn — the Stop hook later clears it to the verdict.
     import io
 
@@ -315,7 +315,7 @@ def test_cli_doctor_exits_unhealthy_when_broken(tmp_path: Path, monkeypatch, cap
 
 
 def test_cli_doctor_survives_a_legacy_codepage_console(tmp_path: Path, monkeypatch):
-    # TYCHO-40: doctor prints ✓/✗/•/→; a cp1252 (legacy Windows) console can't encode
+    # doctor prints ✓/✗/•/→; a cp1252 (legacy Windows) console can't encode
     # them, and an unguarded print() raises UnicodeEncodeError — a traceback where the
     # whole point is a fail-open verdict. cli._force_utf8 must keep that from happening.
     monkeypatch.chdir(tmp_path)

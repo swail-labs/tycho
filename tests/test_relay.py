@@ -1,4 +1,4 @@
-"""TYCHO-35 — the opt-in verdict relay: the agent gets to see its own verdict.
+""" — the opt-in verdict relay: the agent gets to see its own verdict.
 
 Three things are load-bearing here, and the tests are grouped by them:
 
@@ -266,7 +266,7 @@ def test_final_attempt_announces_it_is_the_last(tmp_path: Path, monkeypatch):
 
 
 def test_guard_uses_TYCHO_prefix_and_points_at_the_relay_command(tmp_path: Path):
-    # TYCHO-114: match the [TYCHO] status-line casing, and tell the user how to turn the relay off.
+    # match the [TYCHO] status-line casing, and tell the user how to turn the relay off.
     state.set_relay_enabled(tmp_path, True)
     out = hook.run(_claude_payload(tmp_path))
     ctx = out["hookSpecificOutput"]["additionalContext"]

@@ -1,4 +1,4 @@
-"""TYCHO-17: the Stop reports the turn under review, not the whole session.
+""": the Stop reports the turn under review, not the whole session.
 
 The fixture is a two-turn session: turn 1 writes app.py, turn 2 only reads it. Every
 test here turns on that asymmetry — turn 2 must not be credited with turn 1's work.
@@ -136,7 +136,7 @@ def test_opencode_turn_scoping_narrows_edits_but_not_the_session(tmp_path: Path)
 
 
 def test_opencode_stop_says_nothing_on_a_turn_that_edited_nothing():
-    """TYCHO-21 acceptance, through the wired harness: turn C is credited with nothing.
+    """ acceptance, through the wired harness: turn C is credited with nothing.
 
     This is the exact bug — before the fix the boundary was 0.0, so turn C's Stop
     reported turn A's edit as its own work.

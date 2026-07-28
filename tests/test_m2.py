@@ -52,7 +52,7 @@ def test_file_edits_projection():
 
 
 def test_file_edits_drops_denied_edits_and_keeps_the_retry():
-    """TYCHO-33: a denied Edit never touched disk — only the successful retry is an edit."""
+    """: a denied Edit never touched disk — only the successful retry is an edit."""
     # Arrange: a PreToolUse-denied Edit (no toolUseResult), then the same edit succeeding.
     denied = Event(ts=1.0, tool="Edit", input={"file_path": "src/auth.py"}, is_error=True, result={})
     retry = Event(
@@ -107,7 +107,7 @@ def test_git_reader_on_non_repo(tmp_path: Path):
 
 
 def test_with_baseline_recovers_null_original_fromgit(tmp_path: Path):
-    # TYCHO-32: Claude Code sends originalFile: null on repeat edits. gather() must recover
+    # Claude Code sends originalFile: null on repeat edits. gather() must recover
     # the pre-session baseline from git so the AST tamper checks keep a real "before".
     git(tmp_path, "init")
     (tmp_path / "test_x.py").write_text("def test():\n    assert x == 1\n")

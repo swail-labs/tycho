@@ -39,7 +39,7 @@ def test_stale_and_indeterminate_count_too(tmp_path: Path):
 
 
 def test_clean_verdicts_count_as_runs_but_are_not_catches(tmp_path: Path):
-    # TYCHO-58: VERIFIED/UNSUPPORTED are still not catches (no adverse count, no evidence) —
+    # VERIFIED/UNSUPPORTED are still not catches (no adverse count, no evidence) —
     # but they ARE runs, and UNSUPPORTED is blind (Tycho had nothing to say).
     for verdict in ("VERIFIED", "UNSUPPORTED"):
         state.record_catch(tmp_path, "claude", verdict, _results(("x", "PASS", "ok")))
@@ -49,7 +49,7 @@ def test_clean_verdicts_count_as_runs_but_are_not_catches(tmp_path: Path):
 
 
 def test_totals_track_the_denominator_and_blind_spot(tmp_path: Path):
-    # TYCHO-58: runs is every verdict recorded; blind is INDETERMINATE + UNSUPPORTED.
+    # runs is every verdict recorded; blind is INDETERMINATE + UNSUPPORTED.
     for v in ("VERIFIED", "VERIFIED", "FAILED", "STALE", "INDETERMINATE", "UNSUPPORTED"):
         state.record_catch(tmp_path, "claude", v, _results(("x", "PASS", "ok")))
     assert state.totals(tmp_path) == {"runs": 6, "blind": 2}
@@ -57,7 +57,7 @@ def test_totals_track_the_denominator_and_blind_spot(tmp_path: Path):
 
 
 def test_every_adverse_run_is_recorded_no_dedup(tmp_path: Path):
-    # TYCHO-62: hold ALL — a standing failure across three turns is three entries, not one.
+    # hold ALL — a standing failure across three turns is three entries, not one.
     for _ in range(3):
         state.record_catch(tmp_path, "claude", "FAILED", _results(*FAIL_RUN))
     assert state.counts(tmp_path)["FAILED"] == 3
@@ -178,8 +178,8 @@ def test_count_command_reports_both_scopes(tmp_path, monkeypatch, capsys):
 
     assert cli.main(["count"]) == cli.ExitCode.OK
     out = capsys.readouterr().out
-    # TYCHO-58: catches read against a denominator; INDETERMINATE now folds into "blind".
-    # TYCHO-131: runs + blind rate lead — blind is the metric that doesn't decay (§7).
+    # catches read against a denominator; INDETERMINATE now folds into "blind".
+    # runs + blind rate lead — blind is the metric that doesn't decay (§7).
     assert "this repo: 3 runs, 1 blind (33%), 2 caught (1 FAILED, 1 STALE)" in out
     assert "all-time: 4 runs, 1 blind (25%), 3 caught (2 FAILED, 1 STALE)" in out
 

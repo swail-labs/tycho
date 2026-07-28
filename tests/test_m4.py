@@ -97,7 +97,7 @@ def test_cursor_write_projects_a_file_edit():
 
 
 def test_codex_reader_returns_every_turn_and_extracts_commands_and_edits():
-    """TYCHO-20: the reader no longer discards earlier turns — turn-old's edit is back."""
+    """: the reader no longer discards earlier turns — turn-old's edit is back."""
     evs = events.parse_codex(CODEX_FIXTURE)
     edits = events.file_edits(evs)
     assert [e.input["command"] for e in evs if e.tool == "Bash"] == ["pytest -q"]
@@ -186,7 +186,7 @@ def test_codex_turn_scoping_narrows_edits_but_not_the_session():
 
 
 def test_codex_session_scope_catches_a_source_uncovered_since_an_earlier_green_run():
-    """TYCHO-20 acceptance: green run in turn 1, source edited in turn 2, never retested.
+    """ acceptance: green run in turn 1, source edited in turn 2, never retested.
 
     parse_codex used to discard turn 1, so test_freshness saw no green run and stayed
     UNSUPPORTED. With every turn returned, the earlier green run is visible and the
@@ -307,7 +307,7 @@ def test_opencode_session_json_rebuilds_export_shape(tmp_path: Path):
 
 
 def test_opencode_session_json_keeps_user_messages_and_groups_parts(tmp_path: Path):
-    """TYCHO-21: the materializer no longer flattens the session into one fake message.
+    """: the materializer no longer flattens the session into one fake message.
 
     It used to read only the `part` table and synthesize a single `{"role": "assistant"}`
     message, which threw the user rows away — and with them the only turn boundary
@@ -521,7 +521,7 @@ def test_relpath_normalizes_absolute_in_repo_paths(tmp_path: Path):
     assert engine._relpath(str(tmp_path / "docs/x.md"), tmp_path) == "docs/x.md"
     assert engine._relpath("src/a.py", tmp_path) == "src/a.py"  # already relative
     assert engine._relpath("/etc/passwd", tmp_path) == "/etc/passwd"  # outside repo, unchanged
-    # TYCHO-25: always forward slashes, so paths reconcile with git / scope globs. On
+    # always forward slashes, so paths reconcile with git / scope globs. On
     # Windows str(relative_to()) yields backslashes; a backslash relative input must
     # normalize too. Both hold on any host OS (string form is OS-independent here).
     assert engine._relpath("src\\a.py", tmp_path) == "src/a.py"
@@ -618,7 +618,7 @@ def test_discover_none_when_nothing_found(tmp_path, monkeypatch):
 
 
 def test_encode_maps_windows_separators_and_spaces():
-    # TYCHO-24: real ~/.claude/projects ground truth — drive colon, backslashes, and
+    # real ~/.claude/projects ground truth — drive colon, backslashes, and
     # spaces all collapse to '-'. Pure*Path fixes the string form regardless of host OS,
     # so this pins the encoding on Linux/macOS CI as well as Windows.
     from pathlib import PurePosixPath, PureWindowsPath

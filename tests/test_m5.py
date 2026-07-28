@@ -55,7 +55,7 @@ def test_usage_error_exits_two():
     assert exc.value.code == ExitCode.USAGE
 
 
-def test_run_forwards_child_exit_code():  # TYCHO-90
+def test_run_forwards_child_exit_code():
     # `tycho run` must forward the child's real exit code unchanged — that is the whole
     # point: an un-maskable status for command_execution to trust.
     import sys
@@ -64,7 +64,7 @@ def test_run_forwards_child_exit_code():  # TYCHO-90
     assert cli.main(["run", "--", sys.executable, "-c", "import sys; sys.exit(0)"]) == 0
 
 
-def test_run_without_command_is_usage_error(capsys):  # TYCHO-90
+def test_run_without_command_is_usage_error(capsys):
     assert cli.main(["run"]) == ExitCode.USAGE
 
 

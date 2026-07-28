@@ -197,7 +197,7 @@ def test_empty_denominator_never_renders_as_zero_percent():
 # --- backwards compatibility: deployed installs ------------------------------
 
 def test_legacy_catches_file_with_no_attribution_still_counts(tmp_path, monkeypatch, capsys):
-    # A pre-TYCHO-131 install: a tally, an evidence trail, no attribution, no turns.jsonl.
+    # A older install: a tally, an evidence trail, no attribution, no turns.jsonl.
     monkeypatch.chdir(tmp_path)
     state.dir_for(tmp_path).mkdir()
     (state.dir_for(tmp_path) / "catches.json").write_text(json.dumps({
@@ -212,7 +212,7 @@ def test_legacy_catches_file_with_no_attribution_still_counts(tmp_path, monkeypa
 
 
 def test_legacy_tally_with_no_run_count_keeps_the_bare_form(tmp_path, monkeypatch, capsys):
-    # Older still (pre-TYCHO-58): no denominator at all. It must not become "0 runs, 0 blind".
+    # Older still (older): no denominator at all. It must not become "0 runs, 0 blind".
     monkeypatch.chdir(tmp_path)
     state.dir_for(tmp_path).mkdir()
     (state.dir_for(tmp_path) / "counts.json").write_text('{"FAILED": 3, "STALE": 1}')
@@ -276,7 +276,7 @@ def test_ledger_view_never_raises_on_a_garbage_record(tmp_path, monkeypatch, cap
 
 
 def test_ledger_reads_state_from_the_repo_root_not_a_subdirectory(tmp_path, monkeypatch, capsys):
-    # Same TYCHO-79 walk as every other reader: run from src/, still see the repo's record.
+    # Same root walk as every other reader: run from src/, still see the repo's record.
     (tmp_path / ".git").mkdir()
     write(tmp_path, turn())
     sub = tmp_path / "src"

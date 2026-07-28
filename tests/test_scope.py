@@ -158,7 +158,7 @@ def test_exclude_wins_over_include_in_scope_drift(tmp_path: Path):
 
 
 def test_empty_exclude_is_a_pure_allowlist(tmp_path: Path):
-    config_mod.set_scope(tmp_path, ["src/**"])  # no exclude → identical to pre-TYCHO-78
+    config_mod.set_scope(tmp_path, ["src/**"])  # no exclude → identical to older
     s = _session(tmp_path, [FileEdit("src/app.py", 1.0, None, "edit")])
     assert checks.scope_drift(s).status.name == "PASS"
 

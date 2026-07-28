@@ -129,10 +129,10 @@ def test_command_execution_masked_by_pipe_is_unsupported():
     assert r.status == CheckStatus.UNSUPPORTED and "masked by the shell" in r.evidence
 
 
-def test_command_execution_masked_by_semicolon_is_not_a_green(  # TYCHO-61
+def test_command_execution_masked_by_semicolon_is_not_a_green(
 ):
     # `pytest; echo done` exits with echo's status. Trusting it reported VERIFIED on a red
-    # suite — the TYCHO-31 bug on a shape TYCHO-31 didn't cover.
+    # suite — the ACME-31 bug on a shape ACME-31 didn't cover.
     s = make_session(events=[bash("pytest -q; echo done", 100.0, is_error=False)])
     assert checks.command_execution(s).status != CheckStatus.PASS
 
@@ -195,14 +195,14 @@ def test_provenance_web_claim_with_no_search_fails():
 
 def test_provenance_issue_claim_backed_by_jira_tool_passes():
     s = make_session(
-        messages=[_msg("I created TYCHO-91 and moved TYCHO-29 to In Progress.")],
+        messages=[_msg("I created ACME-91 and moved ACME-29 to In Progress.")],
         events=[_tool("mcp__atlassian__createJiraIssue")],
     )
     assert checks.tool_call_provenance(s).status == CheckStatus.PASS
 
 
 def test_provenance_issue_claim_with_no_tool_fails():
-    s = make_session(messages=[_msg("I filed TYCHO-91 for that.")], events=[_tool("Bash")])
+    s = make_session(messages=[_msg("I filed ACME-91 for that.")], events=[_tool("Bash")])
     assert checks.tool_call_provenance(s).status == CheckStatus.FAIL
 
 
@@ -219,12 +219,12 @@ def test_provenance_unsupported_when_no_claim_recognized():
 
 def test_provenance_does_not_false_fail_on_ambiguous_prose():
     # ticket-shaped verbs without a ticket key, code-sense "resolved", codebase "searched" —
-    # none is a tool-action claim, so none may FAIL (never-false-FAIL invariant, TYCHO-91)
+    # none is a tool-action claim, so none may FAIL (never-false-FAIL invariant,)
     for text in (
         "I moved the helper into utils.py.",
         "I resolved the merge conflict.",
         "I searched the codebase with grep.",
-        "This change fixes TYCHO-45.",
+        "This change fixes ACME-45.",
         "I'll create a ticket for that later.",
     ):
         s = make_session(messages=[_msg(text)], events=[_tool("Bash")])
@@ -234,12 +234,12 @@ def test_provenance_does_not_false_fail_on_ambiguous_prose():
 def test_provenance_does_not_false_fail_on_reported_third_party_action():
     # The live false FAIL: the agent *narrates* an action taken by someone else, or reports a
     # ticket's pre-existing state — not a claim it acted this turn. None may FAIL, even with no
-    # matching tool call (follow-up to TYCHO-91/95).
+    # matching tool call (follow-up to/95).
     for text in (
-        "Dan already closed TYCHO-97, so nothing to do.",
-        "Dan Mano moved TYCHO-29 to Done last week.",
-        "TYCHO-30 was already closed before we started.",
-        "The operator filed TYCHO-50 for that.",
+        "Dan already closed ACME-97, so nothing to do.",
+        "Dan Mano moved ACME-29 to Done last week.",
+        "ACME-30 was already closed before we started.",
+        "The operator filed ACME-50 for that.",
         "Dan searched the web for the changelog earlier.",
     ):
         s = make_session(messages=[_msg(text)], events=[_tool("Bash")])
@@ -250,19 +250,19 @@ def test_provenance_agent_claim_still_fails_beside_a_name():
     # The guard must not swallow a real first-person claim just because a name is nearby: the
     # agent's own subject-dropped/first-person claim still FAILs without a tool call.
     for text in (
-        "I closed TYCHO-30 for Dan.",
-        "Filed TYCHO-91; TYCHO-30 closed.",
+        "I closed ACME-30 for Dan.",
+        "Filed ACME-91; ACME-30 closed.",
     ):
         s = make_session(messages=[_msg(text)], events=[_tool("Bash")])
         assert checks.tool_call_provenance(s).status == CheckStatus.FAIL, text
 
 
 def test_provenance_issue_status_arrow_and_key_first_order_pass():
-    # TYCHO-95: the exact live miss — a status-arrow report with the KEY earlier, and the
+    # the exact live miss — a status-arrow report with the KEY earlier, and the
     # reversed "KEY <verb>" word order — both were invisible before the recall widening.
     for text in (
-        "Round-trip complete on TYCHO-92: Hold → In Review, then In Review → Hold.",
-        "TYCHO-29 moved to In Progress; TYCHO-30 closed.",
+        "Round-trip complete on ACME-92: Hold → In Review, then In Review → Hold.",
+        "ACME-29 moved to In Progress; ACME-30 closed.",
     ):
         s = make_session(messages=[_msg(text)], events=[_tool("mcp__atlassian__transitionJiraIssue")])
         assert checks.tool_call_provenance(s).status == CheckStatus.PASS, text
@@ -271,7 +271,7 @@ def test_provenance_issue_status_arrow_and_key_first_order_pass():
 def test_provenance_issue_status_arrow_no_tool_fails():
     # a claimed transition ("Hold → In Review" next to a KEY) with no Jira call is fabricated
     s = make_session(
-        messages=[_msg("Moved it: TYCHO-92 Hold → In Review.")], events=[_tool("Bash")],
+        messages=[_msg("Moved it: ACME-92 Hold → In Review.")], events=[_tool("Bash")],
     )
     assert checks.tool_call_provenance(s).status == CheckStatus.FAIL
 
@@ -279,11 +279,11 @@ def test_provenance_issue_status_arrow_no_tool_fails():
 def test_provenance_observed_status_arrow_does_not_false_fail():
     # The live false FAIL: the agent *observes* where a ticket already sits (a status arrow read
     # off the board), makes no Jira call, and is FAILed for a transition it never performed. An
-    # observed arrow is not a self-made one — none may FAIL (follow-up to TYCHO-95).
+    # observed arrow is not a self-made one — none may FAIL (follow-up to).
     for text in (
-        "I looked and TYCHO-30 already sits at In Review → Done; I didn't touch it.",
-        "TYCHO-30 is now at Hold → Done on the board.",
-        "The board shows TYCHO-41 In Review → Done.",
+        "I looked and ACME-30 already sits at In Review → Done; I didn't touch it.",
+        "ACME-30 is now at Hold → Done on the board.",
+        "The board shows ACME-41 In Review → Done.",
         "It's still at In Progress → Done.",
     ):
         s = make_session(messages=[_msg(text)], events=[_tool("Bash")])
@@ -291,11 +291,11 @@ def test_provenance_observed_status_arrow_does_not_false_fail():
 
 
 def test_provenance_future_status_change_does_not_false_fail():
-    # TYCHO-95: widening must not catch future/hypothetical — "I'll move" is base-tense and
+    # ACME-95: widening must not catch future/hypothetical — "I'll move" is base-tense and
     # "to Done" is not a two-status arrow, so no claim is recognized (never a false FAIL).
     for text in (
-        "I'll move TYCHO-40 to Done tomorrow.",
-        "We should transition TYCHO-41 to In Review at some point.",
+        "I'll move ACME-40 to Done tomorrow.",
+        "We should transition ACME-41 to In Review at some point.",
     ):
         s = make_session(messages=[_msg(text)], events=[_tool("Bash")])
         assert checks.tool_call_provenance(s).status != CheckStatus.FAIL, text
@@ -303,13 +303,13 @@ def test_provenance_future_status_change_does_not_false_fail():
 
 def test_provenance_claim_flips_has_verifiable_activity():
     # an MCP-only turn (a claim, no edits/runners) must make the hook speak
-    claim = make_session(messages=[_msg("I created TYCHO-91.")], events=[_tool("Bash")])
+    claim = make_session(messages=[_msg("I created ACME-91.")], events=[_tool("Bash")])
     assert checks.has_verifiable_activity(claim)
     quiet = make_session(messages=[_msg("Looks good to me.")], events=[_tool("Bash")])
     assert not checks.has_verifiable_activity(quiet)
 
 
-def test_command_execution_matches_variable_interpreter(  # TYCHO-88
+def test_command_execution_matches_variable_interpreter(
 ):
     # `"$PY" -m pytest` — the interpreter is a shell variable we can't resolve, but the
     # `-m pytest` module names the runner. Was invisible ("no test ran") before.
@@ -317,37 +317,37 @@ def test_command_execution_matches_variable_interpreter(  # TYCHO-88
     assert checks.command_execution(s).status == CheckStatus.PASS
 
 
-def test_command_execution_variable_interpreter_piped_is_not_a_green():  # TYCHO-88
+def test_command_execution_variable_interpreter_piped_is_not_a_green():
     # detected as a runner now, but the pipe still masks the status — must not go green
     s = make_session(events=[bash('( cd x && "$PY" -m pytest -q | tail -8 )', 100.0, is_error=False)])
     assert checks.command_execution(s).status != CheckStatus.PASS
 
 
-def test_command_execution_ignores_module_flag_inside_echo():  # TYCHO-88 guard
+def test_command_execution_ignores_module_flag_inside_echo():  # guard
     # `-m pytest` behind a non-interpreter (echo) must NOT count as the tests running
     s = make_session(events=[bash('echo "-m pytest"', 100.0)])
     assert checks.command_execution(s).status == CheckStatus.UNSUPPORTED
 
 
-def test_command_execution_matches_wsl_wrapped_runner():  # TYCHO-89
+def test_command_execution_matches_wsl_wrapped_runner():
     # a Windows-hosted agent reaches Linux only via `wsl.exe ... -- bash -c '<cmd>'`; the
     # runner is nested in the wrapper's arg and was invisible before.
     s = make_session(events=[bash("wsl.exe -d Ubuntu -- bash -lc 'python3 -m pytest -q'", 100.0, is_error=False)])
     assert checks.command_execution(s).status == CheckStatus.PASS
 
 
-def test_command_execution_matches_bash_dash_c_runner():  # TYCHO-89
+def test_command_execution_matches_bash_dash_c_runner():
     s = make_session(events=[bash("bash -c 'pytest -q'", 100.0, is_error=False)])
     assert checks.command_execution(s).status == CheckStatus.PASS
 
 
-def test_command_execution_wrapped_runner_piped_is_not_a_green():  # TYCHO-89
+def test_command_execution_wrapped_runner_piped_is_not_a_green():
     # the wrapper faithfully forwards pytest's status, but the outer pipe then masks it
     s = make_session(events=[bash("bash -c 'pytest -q' | tail -5", 100.0, is_error=False)])
     assert checks.command_execution(s).status != CheckStatus.PASS
 
 
-def test_command_execution_matches_tycho_run_wrapper():  # TYCHO-90
+def test_command_execution_matches_tycho_run_wrapper():
     # `tycho run -- <cmd>` execs the child and forwards its real exit code; detection peels
     # the wrapper so the runner inside is seen and trusted.
     s = make_session(events=[bash("tycho run -- pytest -q", 100.0, is_error=False)])
@@ -366,7 +366,7 @@ def test_masked_pipe_run_does_not_anchor_freshness():
 
 
 def test_command_execution_sees_a_powershell_runner():
-    # TYCHO-27: a test suite run through a non-Bash shell tool (PowerShell) must be seen,
+    # a test suite run through a non-Bash shell tool (PowerShell) must be seen,
     # not dropped by a Bash-only filter.
     ev = Event(ts=100.0, tool="PowerShell", input={"command": "uv run pytest -q"}, is_error=False, result={})
     assert checks.command_execution(make_session(events=[ev])).status == CheckStatus.PASS
@@ -482,7 +482,7 @@ def test_ast_checks_unsupported_without_test_edits():
 
 
 def test_ast_check_distinguishes_missing_baseline_from_no_test_edits():
-    # TYCHO-32: a test file WAS edited but carries no baseline (harness sent originalFile:
+    # a test file WAS edited but carries no baseline (harness sent originalFile:
     # null and git couldn't supply it). Must not read as "tests untouched" — distinct evidence.
     s = make_session(edits=[FileEdit("tests/test_a.py", 1.0, original=None, kind="create")])
     r = checks.assertion_weakening(s)
@@ -535,7 +535,7 @@ def test_git_state_fail_on_phantom():
 
 
 def test_git_state_unsupported_when_only_out_of_repo_edits():
-    # TYCHO-45: an out-of-repo edit (kept absolute by _relpath) exists on disk but git
+    # an out-of-repo edit (kept absolute by _relpath) exists on disk but git
     # never heard of it. Must NOT report "reconciled with git" on file_state's evidence.
     s = make_session(
         edits=[FileEdit("/home/u/.claude/memory/note.md", 1.0, None, "create")],
@@ -547,7 +547,7 @@ def test_git_state_unsupported_when_only_out_of_repo_edits():
 
 
 def test_git_state_counts_only_in_repo_paths_on_a_mixed_turn():
-    # TYCHO-45: with both in-repo and out-of-repo edits, judge only the in-repo one and
+    # with both in-repo and out-of-repo edits, judge only the in-repo one and
     # surface the outside count rather than folding it into "reconciled".
     s = make_session(
         edits=[

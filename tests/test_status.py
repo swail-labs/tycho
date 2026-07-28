@@ -1,4 +1,4 @@
-"""TYCHO-39 — the passive indicator: can the user see Tycho is on without asking?
+""" — the passive indicator: can the user see Tycho is on without asking?
 
 Two things are worth guarding here, and neither is the pretty output.
 
@@ -58,7 +58,7 @@ def test_a_repo_without_tycho_shows_nothing(tmp_path: Path):
 
 
 def test_the_line_is_just_bracket_tycho(tmp_path: Path):
-    # TYCHO-47: text is always `[TYCHO]`; the *colour* carries the status, not the text.
+    # text is always `[TYCHO]`; the *colour* carries the status, not the text.
     # (NO_COLOR from the fixture strips the codes, so the text shows bare here.)
     _install(tmp_path)
     assert status.line(tmp_path) == "[TYCHO]"                 # never fired → still [TYCHO]
@@ -183,7 +183,7 @@ def test_cli_status_survives_unreadable_state(tmp_path: Path, monkeypatch, capsy
 
 
 def test_cli_status_survives_a_console_that_cannot_encode_it(tmp_path: Path, monkeypatch):
-    # TYCHO-40's crash, in the one place it would be worst: a status bar that raises on
+    # that crash, in the one place it would be worst: a status bar that raises on
     # every render. A non-zero exit also makes the harness discard stdout entirely.
     _install(tmp_path)
     state.record_run(tmp_path, "claude", verdict="VERIFIED")
@@ -433,7 +433,7 @@ def test_config_resolves_from_a_subdirectory(tmp_path: Path):
 
 
 def test_doctor_from_a_subdirectory_does_not_cry_wolf(tmp_path: Path):
-    # TYCHO-79: state resolution and *harness config* resolution must agree. If only the
+    # state resolution and *harness config* resolution must agree. If only the
     # former walks, doctor finds the root's install record, looks for `.claude/settings.json`
     # beside itself one directory down, finds none, and reports the hook as ripped out —
     # a false alarm about wiring that is fine, which is its own kind of lie.

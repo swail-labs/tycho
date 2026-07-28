@@ -168,7 +168,7 @@ def test_update_prints_the_upgrade_command_then_runs_it(_online, monkeypatch, ca
 
 def test_update_on_windows_defers_the_upgrade_past_process_exit(_online, monkeypatch, capsys):
     # A running .exe can't have its own shim replaced on Windows, so the upgrade must be deferred
-    # to a detached child that waits for us to exit — never run synchronously (TYCHO-108 follow-up).
+    # to a detached child that waits for us to exit — never run synchronously ( follow-up).
     import subprocess
 
     monkeypatch.setattr(cli.sys, "platform", "win32")
@@ -286,7 +286,7 @@ def test_session_start_uses_opencode_message_field(_online, monkeypatch, capsys)
 
 def test_session_start_is_silent_on_cursor_no_human_channel(_online, monkeypatch, capsys):
     # Cursor has no human-only sink (notice_output is None) — a notice there would be
-    # model-facing, which the TYCHO-35 rule forbids, so it emits nothing.
+    # model-facing, which the rule forbids, so it emits nothing.
     from tycho import hook
 
     _fetches(monkeypatch, "9.9.9")
@@ -339,7 +339,7 @@ def test_stop_hook_appends_update_line_to_human_output(_online, tmp_path):
 
 def test_stop_hook_update_line_is_never_model_facing(_online, tmp_path):
     # With the relay on there IS an additionalContext (model-facing) copy — the update line must
-    # ride only the human systemMessage, never that (TYCHO-35: don't tell the model to self-update).
+    # ride only the human systemMessage, never that (: don't tell the model to self-update).
     from tycho import hook
     state.set_relay_enabled(tmp_path, True)
     state.write_update_cache(latest="9.9.9", checked_at=time.time())

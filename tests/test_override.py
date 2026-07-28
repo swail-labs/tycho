@@ -1,4 +1,4 @@
-"""TYCHO-118 — the agent verdict override (OVERRIDDEN): a per-check, logged, opt-in escape
+""" — the agent verdict override (OVERRIDDEN): a per-check, logged, opt-in escape
 hatch that breaks an unclearable relay loop without ever masquerading as VERIFIED."""
 
 from __future__ import annotations
@@ -304,7 +304,7 @@ def test_cli_unveto(tmp_path, monkeypatch, capsys):
 
 
 def test_apply_overrides_never_downgrades_a_real_verified(tmp_path: Path):
-    # TYCHO-119: overriding a non-adverse check on an already-VERIFIED turn must leave VERIFIED —
+    # overriding a non-adverse check on an already-VERIFIED turn must leave VERIFIED —
     # OVERRIDDEN is a downgrade (proven → not-proven) and must never replace a real green verdict.
     state.set_relay_enabled(tmp_path, True)
     state.set_override_enabled(tmp_path, True)
@@ -385,7 +385,7 @@ _CLAUDE_FIXTURE = Path(__file__).parent / "fixtures" / "transcript_sample.jsonl"
 
 
 def test_run_end_to_end_surfaces_override_notice_in_systemMessage(tmp_path: Path):
-    # TYCHO-122 seam: `_override_notice` is unit-tested above but never driven through
+    # seam: `_override_notice` is unit-tested above but never driven through
     # `hook.run()` itself, so a dropped `+ override_notice` at the format_output call site
     # would go unnoticed. Reuse test_relay's real-transcript pattern (sample fixture verifies
     # to FAILED on `file_state`) so this exercises the actual run() integration end to end.
