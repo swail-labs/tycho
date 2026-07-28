@@ -336,9 +336,12 @@ def _model(record: dict) -> str:
 
 
 def _files(record: dict) -> str:
+    """One row per *write*, so a file edited twice is two rows — count paths, like the receipt
+    does (`views/digest.py:_files`). Left un-deduped here, `tycho log` said "3 files" about the
+    same turn `tycho show` called "2 files: slug.js, slug.test.js"."""
     files = record.get("files")
-    count = len(files) if isinstance(files, list) else 0
-    return _count(count, "file") if count else "no files"
+    paths = {r.get("path") for r in files if isinstance(r, dict) and r.get("path")} if isinstance(files, list) else set()
+    return _count(len(paths), "file") if paths else "no files"
 
 
 def _count(n: int, noun: str) -> str:

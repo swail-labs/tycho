@@ -5,7 +5,9 @@ from __future__ import annotations
 from ...model import CheckResult, CheckStatus, Session
 from .cmdread import _runner_segment
 from .common import _r, _scope, _short
-from .outcome import _exec_run_for, _outcome, _runner_events, _status_is_masked, _unresolved_reds
+from .outcome import (
+    _exec_run_for, _outcome, _runner_events, _status_is_masked, _unresolved_reds, _was_refused,
+)
 
 
 def command_execution(session: Session) -> CheckResult:
@@ -23,6 +25,15 @@ def command_execution(session: Session) -> CheckResult:
     run = _exec_run_for(last, session.commands)
     outcome = _outcome(last, session.commands)
     if outcome is None:
+        # A refused command never reached the shell, so "ran but…" would be the receipt's own
+        # small lie — and the remedy is approval, not `tycho exec`.
+        if _was_refused(last):
+            return _r(
+                "command_execution",
+                CheckStatus.UNSUPPORTED,
+                f"`{cmd}` was never run — the harness refused it (permission not granted),"
+                " so there is no result to check",
+            )
         why = (
             "its exit status was masked by the shell" if masked
             else "no exit status was recorded"

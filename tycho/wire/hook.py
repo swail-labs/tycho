@@ -16,6 +16,7 @@ from pathlib import Path
 from ..views import digest as digest_mod
 from ..read import harness as harness_mod
 from ..store import record
+from ..store import shadow
 from ..store import state
 from ..read import session as engine
 from ..model import Verdict
@@ -63,6 +64,11 @@ def run(stdin_text: str) -> dict | None:
         history = record.read(repo, limit=digest_mod.HISTORY)
         turn = record.build(session, results, verdict.name, harness.name, time.time())
         record.append(repo, turn)
+        # Last, and only after the record: in a project with no git of its own, this is the
+        # baseline the *next* turn diffs against, so it must capture the tree as this turn
+        # left it. A project with real git gets nothing here. Never fatal — a failed commit
+        # costs the next turn its baseline, which is where Tycho already was without it.
+        shadow.commit(repo, f"tycho turn {turn.get('id', '?')} [{verdict.name}]")
     except Exception:
         # Fail open: never break the agent's Stop over an unreadable transcript or git hiccup.
         state.record_run(repo, harness.name)
@@ -269,6 +275,12 @@ def prompt_submit() -> int:
             harness = harness_mod.detect(payload)
             repo = harness.repo_root(payload)
             state.record_run(repo, harness.name, pending=True)
+            # The turn boundary is the honest place to snapshot a project with no git of its
+            # own: it captures anything a human changed between turns, so those edits are not
+            # attributed to the agent, and it gives this turn a "before" even if the last Stop
+            # never fired. No-op where the project has real git.
+            if shadow.ensure(repo):
+                shadow.commit(repo, "tycho: pre-turn")
             # The bound counts auto-continuations *within* one user turn, and those don't
             # re-fire UserPromptSubmit.
             state.reset_relay_streak(repo)

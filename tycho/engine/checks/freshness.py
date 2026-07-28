@@ -6,7 +6,7 @@ Both reason across turns, which is why they read the whole session rather than t
 from __future__ import annotations
 
 from ...model import CheckResult, CheckStatus, Session
-from .common import _is_source_path, _is_test_path, _r
+from .common import _is_source_path, _is_test_edit, _r
 from .outcome import _last_green_run_ts
 
 
@@ -61,7 +61,7 @@ def _clock_horizon(session: Session) -> float:
 
 
 def test_provenance(session: Session) -> CheckResult:
-    test_edits = [fe for fe in session.edits if _is_test_path(fe.path)]
+    test_edits = [fe for fe in session.edits if _is_test_edit(fe, session)]
     if not test_edits:
         return _r("test_provenance", CheckStatus.UNSUPPORTED, "no test files touched this session")
     green_ts = _last_green_run_ts(session)

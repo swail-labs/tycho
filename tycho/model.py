@@ -56,6 +56,11 @@ class CheckResult:
     name: str
     status: CheckStatus
     evidence: str
+    # An UNSUPPORTED that another check's PASS must not paper over. The ordinary UNSUPPORTED
+    # means "nothing here to examine" and is harmless. This one means "there was something to
+    # examine and I could not read it" — evidence exists, unread. A green minted over it claims
+    # a corroboration that never happened, so it caps the verdict at INDETERMINATE.
+    blocking: bool = False
 
 
 @dataclass(frozen=True)
@@ -64,13 +69,22 @@ class Event:
 
     `ts` is the completion time (result timestamp, falling back to invocation). `is_error`
     is the harness's failure signal; None means no result was captured. `result` holds the
-    structured toolUseResult, or {} when absent or non-structured."""
+    structured toolUseResult, or a single `UNSTRUCTURED_RESULT` entry when the harness
+    returned prose instead — see that constant."""
 
     ts: float
     tool: str
     input: dict = field(default_factory=dict)
     is_error: bool | None = None
     result: dict = field(default_factory=dict)
+
+
+# `Event.result` key holding the harness's raw prose when it returned no structured result.
+# Its presence is the signal that a command never reached the shell: a command that ran comes
+# back with stdout/stderr, while a refused one ("Error: This command requires approval") comes
+# back as a bare string with `is_error` set. Without the distinction, an unapproved tool call
+# reads exactly like a failing test suite.
+UNSTRUCTURED_RESULT = "_unstructured"
 
 
 @dataclass(frozen=True)

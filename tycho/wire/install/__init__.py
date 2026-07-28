@@ -161,12 +161,28 @@ def _git_lines(repo: Path) -> list[str]:
     hook we won't touch is a reported outcome, not an aborted install — and the two are
     independent, so a refused hook still leaves the gitignore."""
     lines = []
-    for step in (_install_git_hook, _install_gitignore):
+    for step in (_install_git_hook, _install_gitignore, _install_shadow):
         try:
             lines.append(step(repo))
         except ConfigRefused as exc:
             lines.append(f"git{REFUSED}{exc}")
     return [line for line in lines if line]
+
+
+def _install_shadow(repo: Path) -> str:
+    """Give a project with no git of its own a private one, so the checks that need a baseline
+    have one from the first turn rather than the second."""
+    from ...store import shadow
+
+    if not shadow.ensure(repo):
+        return ""
+    # Not a `git:` line — those mean "Tycho touched your repo", and the whole point here is
+    # that there is no repo to touch and none is being created in the project.
+    return (
+        f"tycho: no git repository here — Tycho will keep its own history in "
+        f"{shadow.git_dir(repo)} (local only, never a remote, no `.git` added to your project) "
+        "so edits still have a baseline to diff against"
+    )
 
 
 def _ask_relay() -> bool:

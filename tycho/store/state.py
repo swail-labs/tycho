@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import random
+import stat
 import threading
 import time
 from contextlib import contextmanager
@@ -41,11 +42,28 @@ def root_for(repo: Path) -> Path:
         # `$HOME` bounds the walk but is still honoured when it *is* `repo`.
         if d == home and d != repo:
             break
+        # So is a shared scratch root. Outside a git repo and outside `$HOME` the walk had no
+        # upper bound at all, so one stale `/tmp/.tycho` made every unrelated project under
+        # `/tmp` resolve to `/tmp` — sharing a single ledger, and `tycho init` writing hooks
+        # into `/tmp/.claude/settings.json`, which then apply to everything below it. Sticky
+        # and world-writable is what a shared scratch root *is* (`/tmp`, `/var/tmp`); a real
+        # project directory is neither, so this bound costs nothing anywhere else.
+        if d != repo and _is_shared_scratch(d):
+            break
         if (d / _DIR).is_dir() or (d / _CONFIG_MARKER).is_file():
             return d
         if (d / _GIT).exists():  # repo root reached (a dir, or a worktree/submodule's file)
             break
     return repo
+
+
+def _is_shared_scratch(d: Path) -> bool:
+    """A directory the whole machine writes into — never a project root."""
+    try:
+        mode = d.stat().st_mode
+    except OSError:
+        return False
+    return bool(mode & stat.S_ISVTX and mode & stat.S_IWOTH)
 
 
 def dir_for(repo: Path) -> Path:

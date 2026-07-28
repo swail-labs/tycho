@@ -10,6 +10,8 @@ from __future__ import annotations
 import re
 import shlex
 
+from .common import _is_test_path
+
 
 _TEST_RUNNERS = (
     "python -m pytest",
@@ -206,7 +208,33 @@ def _is_runner(segment: str) -> bool:
         return False
     if segment.startswith("java ") and ("junit" in segment.lower() or "testng" in segment.lower()):
         return True
+    if _runs_a_test_file(segment):
+        return True
     return _runner_span(segment) is not None
+
+
+# Interpreters a suite is routinely handed to directly, with no runner binary in between.
+_DIRECT_INTERPRETERS = frozenset({"ruby", "java", "python", "python3", "node", "perl", "php"})
+
+
+def _runs_a_test_file(segment: str) -> bool:
+    """`ruby test_slug.rb`, `java SlugTest.java` — an interpreter pointed straight at a test
+    file.
+
+    Minitest's documented idiom has no runner binary at all, and neither does single-file
+    Java. Without this an entirely honest Ruby turn came back INDETERMINATE and took
+    `test_freshness` and `test_provenance` down with it ("no passing test run to check
+    against") — three checks disarmed because the vocabulary knew `rake test` and `rspec` but
+    not the plainest way to run the suite.
+
+    Gated on `_is_test_path`, not on the interpreter alone: `ruby build.rb` is a build script,
+    and reading it as a green test run is exactly the fabricated pass this codebase never
+    issues.
+    """
+    tokens = segment.split()
+    if len(tokens) < 2 or tokens[0] not in _DIRECT_INTERPRETERS:
+        return False
+    return any(_is_test_path(t) for t in tokens[1:] if not t.startswith("-"))
 
 
 def _runner_span(segment: str) -> tuple[int, int] | None:

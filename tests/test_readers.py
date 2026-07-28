@@ -8,6 +8,7 @@ import pytest
 from conftest import git
 
 from tycho.read import events, fsstate, gitstate
+from tycho.model import UNSTRUCTURED_RESULT
 from tycho.read import session as engine
 from tycho.model import Event, FileEdit
 
@@ -32,8 +33,11 @@ def test_bash_error_signal_and_structured_result():
     evs = events.parse(FIXTURE)
     lint, pytest_ev = evs[0], evs[1]
     assert lint.input["command"] == "ruff check"
-    assert lint.is_error is True          # denied Bash → is_error, string toolUseResult → {}
-    assert lint.result == {}
+    assert lint.is_error is True
+    # Denied Bash → is_error plus a *string* toolUseResult. That string is kept rather than
+    # flattened to {}: it is the only thing distinguishing "refused" from "ran and failed",
+    # and `_outcome` needs it to avoid reporting a red suite for a command that never ran.
+    assert lint.result == {UNSTRUCTURED_RESULT: "Error: blocked by hook"}
     assert pytest_ev.is_error is False
     assert "1 passed" in pytest_ev.result["stdout"]
 
@@ -262,3 +266,60 @@ def test_has_tests_never_caches_a_no(tmp_path: Path):
     assert not engine._has_tests(tmp_path)
     (tmp_path / "test_thing.py").write_text("")
     assert engine._has_tests(tmp_path)
+
+
+def test_repo_root_survives_a_cd_into_a_subdirectory(tmp_path: Path):
+    """A `cd` in a Bash call persists for the session, so the Stop payload's `cwd` can be a
+    subdirectory. Anchoring the checks there recorded `slug.py` for an edit to
+    `packages/slug/slug.py`, and `git_state` then read "0 uncommitted" on a dirty tree."""
+    from tycho.read import harness
+
+    git(tmp_path, "init")
+    (tmp_path / ".tycho.toml").write_text("")
+    sub = tmp_path / "packages" / "slug"
+    sub.mkdir(parents=True)
+
+    assert harness._cwd_root({"cwd": str(sub)}) == tmp_path
+    assert harness._cwd_root({"cwd": str(tmp_path)}) == tmp_path
+
+
+def test_shadow_repo_gives_a_gitless_project_a_baseline(tmp_path: Path):
+    """A project with no git of its own still needs a "before" for the tamper checks. The
+    shadow repo is it — created bare then un-bared, because `git init` refuses `--work-tree`
+    and every later call needs one."""
+    from tycho.store import shadow
+    from tycho.read import gitstate
+
+    (tmp_path / ".tycho.toml").write_text("")
+    (tmp_path / "slug.py").write_text("def slugify(s):\n    return s\n")
+
+    assert shadow.real_repo_root(tmp_path) is None
+    assert shadow.ensure(tmp_path) is True
+    assert shadow.exists(tmp_path)
+    assert not (tmp_path / ".git").exists()  # never a second .git in the project
+
+    # The readers route to it without knowing: a baseline is now recoverable.
+    assert gitstate.is_repo(tmp_path)
+    assert gitstate.blob_at(tmp_path, "HEAD", "slug.py") == "def slugify(s):\n    return s\n"
+
+    # A later turn diffs against the previous commit.
+    (tmp_path / "slug.py").write_text("def slugify(s):\n    return s.lower()\n")
+    assert gitstate.diff_names(tmp_path, "HEAD") == ("slug.py",)
+    assert shadow.commit(tmp_path, "tycho turn 2") is not None
+    assert gitstate.diff_names(tmp_path, "HEAD") == ()
+
+    # Tycho's own bookkeeping is never part of the project's history.
+    from tycho.store import state
+    state.dir_for(tmp_path).mkdir(parents=True, exist_ok=True)
+    (state.dir_for(tmp_path) / "turns.jsonl").write_text("{}\n")
+    shadow.commit(tmp_path, "tycho turn 3")
+    code, out = shadow._run(tmp_path, "ls-files")
+    assert ".tycho" not in out
+
+
+def test_shadow_repo_is_not_created_where_git_already_exists(tmp_path: Path):
+    from tycho.store import shadow
+
+    git(tmp_path, "init")
+    assert shadow.ensure(tmp_path) is False
+    assert not shadow.exists(tmp_path)

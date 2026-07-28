@@ -21,6 +21,7 @@ from ..store import config as config_mod
 from . import events as events_mod
 from . import fsstate, gitstate
 from ..store import state
+from ..store.shadow import IGNORED_DIRS as _IGNORED_TEST_DIRS
 from ..store.config import Config
 from ..model import (
     Attribution,
@@ -83,15 +84,8 @@ def _evidence_floor(events, edits, turn_start: float) -> float:
     return min(stamps) if stamps else 0.0
 
 
-_IGNORED_TEST_DIRS = {
-    ".git", ".venv", "venv", "node_modules", "vendor", "target", "dist", "build",
-    "bazel-out", "out", "bin", "obj", "Pods", "coverage",
-}
-_TEST_DIRS = {"test", "tests", "spec", "specs", "__tests__"}
-_SUFFIX_TEST_EXTENSIONS = {
-    ".c", ".cc", ".cpp", ".cs", ".dart", ".go", ".java", ".js", ".jsx",
-    ".kt", ".kts", ".m", ".mm", ".php", ".py", ".rb", ".swift", ".ts", ".tsx",
-}
+# Test *naming* lives in `engine/checks/common.py`, and the directories not worth descending
+# are the ones the shadow repo also refuses to record — both shared rather than restated here.
 
 
 def _has_tests(repo: Path) -> bool:
@@ -124,18 +118,15 @@ def _walk_for_tests(repo: Path) -> bool:
     for root, dirs, files in os.walk(repo):
         dirs[:] = [d for d in dirs if d not in _IGNORED_TEST_DIRS and not d.startswith(".")]
         try:
-            in_test_dir = any(part.lower() in _TEST_DIRS for part in Path(root).relative_to(repo).parts)
+            rel = Path(root).relative_to(repo).as_posix()
         except ValueError:
-            in_test_dir = False
+            rel = ""
         for name in files:
-            stem, suffix = Path(name).stem, Path(name).suffix
-            if in_test_dir or name == "conftest.py" or stem.startswith("test_"):
+            if checks_mod._is_test_path(f"{rel}/{name}" if rel and rel != "." else name):
                 return True
-            if stem.endswith(("_test", "_spec")) or ".test." in name or ".spec." in name:
-                return True
-            if suffix.lower() in _SUFFIX_TEST_EXTENSIONS and stem.endswith(("Test", "Tests", "Spec")):
-                return True
-            if suffix == ".rs" and name != "build.rs":
+            # Rust names tests by attribute, not by path — the only convention that needs the
+            # file's contents, so it cannot live in the path predicate.
+            if Path(name).suffix == ".rs" and name != "build.rs":
                 try:
                     text = (Path(root) / name).read_text(encoding="utf-8", errors="ignore")
                     if any(marker in text for marker in ("#[test]", "#[rstest]", "proptest!")):

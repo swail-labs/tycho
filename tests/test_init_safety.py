@@ -133,7 +133,10 @@ def test_harness_flag_installs_even_when_not_detected(tmp_path: Path):
     assert (tmp_path / ".codex" / "hooks.json").exists()
     assert not (tmp_path / CLAUDE).exists()
     # The codex install line, plus the seeded .tycho.toml line.
-    assert len(lines) == 2 and lines[0].startswith("codex")
+    # 3 lines, not 2: a directory with no git of its own also gets Tycho's shadow history,
+    # so the tamper checks have a baseline from the first turn.
+    assert len(lines) == 3 and lines[0].startswith("codex")
+    assert any(ln.startswith("tycho: no git repository here") for ln in lines)
     assert (tmp_path / ".tycho.toml").exists()
 
 

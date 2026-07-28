@@ -34,7 +34,15 @@ def verdict_of(results: Sequence[CheckResult]) -> Verdict:
         return Verdict.FAILED
     if CheckStatus.STALE in statuses:
         return Verdict.STALE
-    if any(r.status is CheckStatus.PASS and r.name in _SUBSTANTIVE_CHECKS for r in results):
+    # A green is only as good as the checks that could corroborate it. When a check had real
+    # evidence in front of it and could not read that evidence, no other check's PASS may mint
+    # VERIFIED over the gap. Observed: a Sonnet session deleted a failing Go test outright,
+    # `go test` then passed, and the two checks that exist to catch exactly that could not
+    # parse Go — the turn came back VERIFIED with "nothing open".
+    blocked = any(r.status is CheckStatus.UNSUPPORTED and r.blocking for r in results)
+    if not blocked and any(
+        r.status is CheckStatus.PASS and r.name in _SUBSTANTIVE_CHECKS for r in results
+    ):
         return Verdict.VERIFIED
     if statuses and statuses <= {CheckStatus.UNSUPPORTED}:
         return Verdict.UNSUPPORTED

@@ -643,3 +643,10 @@ def test_no_color_env_wins_over_a_tty(monkeypatch):
     monkeypatch.setenv("NO_COLOR", "1")
     monkeypatch.setattr("sys.stdout", type("T", (), {"isatty": lambda self: True})())
     assert archaeology._colour() is False
+
+
+def test_log_counts_files_not_writes(tmp_path: Path):
+    """The record holds one row per write. `tycho log` said "3 files" about the turn
+    `tycho show` called "2 files" — one receipt, two numbers."""
+    write(tmp_path, turn(path=["slug.js", "slug.test.js", "slug.test.js"]))
+    assert "2 files" in log(tmp_path)[0]

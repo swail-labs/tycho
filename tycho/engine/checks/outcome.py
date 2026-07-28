@@ -11,7 +11,7 @@ from __future__ import annotations
 import shlex
 
 from .. import runlog
-from ...model import Session
+from ...model import UNSTRUCTURED_RESULT, Session
 from .cmdread import (
     _MAX_CMD_LEN,
     _covers,
@@ -115,6 +115,20 @@ def _captured_output(event) -> str:
     return "\n".join(text.splitlines()[-_SUMMARY_TAIL_LINES:]) if text else ""
 
 
+def _was_refused(event) -> bool:
+    """True when the harness never let this command reach the shell.
+
+    A command that ran comes back structured, with stdout/stderr, whatever its exit code. A
+    refusal — unapproved permission rule, denied tool — comes back as prose with `is_error`
+    set and nothing captured. Read as a failure it is a false red: a real Sonnet session that
+    could not get `python3 -m unittest` approved retried six times and Tycho reported
+    "`python3 -m unittest discover -s tests -v` ran but reported an error", FAILED, about a
+    suite that never executed. Crying wolf costs more trust than staying quiet, so an
+    unapproved command is "can't tell", never "failed".
+    """
+    return bool(event.is_error) and UNSTRUCTURED_RESULT in (event.result or {})
+
+
 def _outcome(event, commands=()) -> bool | None:
     """Did this runner invocation fail? True = failed, False = passed, None = can't tell.
 
@@ -124,6 +138,8 @@ def _outcome(event, commands=()) -> bool | None:
     line. When the first two disagree, failure wins — `tycho exec -- pytest && ./deploy.sh` can
     fail for a reason the capture can't see.
     """
+    if _was_refused(event):
+        return None
     run = _exec_run_for(event, commands)
     if run is not None:
         masked = _status_is_masked(event.input.get("command") or "")

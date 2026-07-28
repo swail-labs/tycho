@@ -8,15 +8,31 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+def _location(repo: Path) -> list[str]:
+    """Where a git command should run: the project's own repo, else Tycho's shadow.
+
+    Routing here rather than at each call site means every reader — baselines, `diff_names`,
+    `untracked`, `review`'s hunks — works in a project with no git of its own without knowing
+    that is what happened.
+    """
+    from ..store import shadow
+
+    if shadow.real_repo_root(repo) is not None:
+        return ["-C", str(repo)]
+    if shadow.exists(repo):
+        return ["--git-dir", str(shadow.git_dir(repo)), "--work-tree", str(repo)]
+    return ["-C", str(repo)]
+
+
 def _git(repo: Path, *args: str) -> tuple[int, str]:
-    """Run a git command in `repo`; return (returncode, stdout). Never raises — git missing
-    from PATH must read as "git said no" on the review and commit-hook paths."""
+    """Run a git command against `repo`; return (returncode, stdout). Never raises — git
+    missing from PATH must read as "git said no" on the review and commit-hook paths."""
     try:
         proc = subprocess.run(
             # On every call: by default git octal-escapes a non-ASCII path into something
             # equal to nothing we store, which cost `attest` its trailer on any commit
             # touching such a file and dropped those files out of `review` entirely.
-            ["git", "-C", str(repo), "-c", "core.quotePath=false", *args],
+            ["git", *_location(repo), "-c", "core.quotePath=false", *args],
             capture_output=True,
             text=True,
             encoding="utf-8",

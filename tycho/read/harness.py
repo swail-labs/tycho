@@ -15,6 +15,7 @@ from pathlib import Path
 
 from . import events
 from . import opencode as opencode_mod
+from ..store import state
 from ..model import Attribution
 
 
@@ -49,13 +50,27 @@ def _payload_transcript(payload: dict) -> Path | None:
     return Path(path) if path else None
 
 
+def _anchor(start: Path) -> Path:
+    """The repo root the checks run against: the nearest ancestor Tycho is installed in.
+
+    Not the harness's raw `cwd`. A `cd` inside a Bash call persists for the rest of the
+    session, so an agent that ran `cd packages/slug && pytest` reports that subdirectory as
+    its cwd at Stop. Anchoring there quietly re-bases everything: edits recorded as `slug.py`
+    instead of `packages/slug/slug.py`, `[scope]` globs matched against the wrong root, and
+    `git_state` comparing subdirectory-relative paths against git's repo-relative output —
+    which reported "0 uncommitted" for a tree with two modified files. `state.root_for` is
+    what `.tycho/` itself already resolves with, so this makes the two agree.
+    """
+    return state.root_for(start)
+
+
 def _cwd_root(payload: dict) -> Path:
-    return Path(payload.get("cwd") or os.getcwd())
+    return _anchor(Path(payload.get("cwd") or os.getcwd()))
 
 
 def _cursor_root(payload: dict) -> Path:
     roots = payload.get("workspace_roots") or []
-    return Path(roots[0]) if roots else Path(os.getcwd())
+    return _anchor(Path(roots[0]) if roots else Path(os.getcwd()))
 
 
 # Override order for a harness's data root: Tycho's env var, the harness's own, `~/.<name>`.

@@ -43,6 +43,17 @@ def skip_or_mock_added(before: str | None, after: str | None) -> list[str]:
     return findings
 
 
+def parseable(src: str | None) -> bool:
+    """Whether these differs can actually read this file — Python only.
+
+    Callers must ask *before* reading an empty finding list as an all-clear. `[]` means "found
+    nothing", and for a `.test.js` file it means "found nothing because I cannot read
+    JavaScript" — reporting that as PASS is a fabricated green, the one verdict this codebase
+    never issues.
+    """
+    return _parse(src) is not None
+
+
 def _parse(src: str | None) -> ast.AST | None:
     if not src:
         return None

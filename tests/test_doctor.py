@@ -68,7 +68,13 @@ def test_uninstall_forgets_the_harness_so_doctor_stops_diagnosing_a_ghost(tmp_pa
     _install(tmp_path)
     init_mod.uninstall(tmp_path, only="claude")
     assert state.read_install(tmp_path) == {}
-    assert not state.dir_for(tmp_path).exists()  # nothing left to remember
+    # `.tycho/` survives here only because this directory has no git of its own, so the
+    # shadow history inside it is the project's ONLY record of what changed. `rmdir` refuses a
+    # non-empty directory by design — an uninstall must not silently delete a history. In a
+    # real git repo there is no shadow and the directory goes; `--purge` removes it either way.
+    from tycho.store import shadow
+    assert shadow.exists(tmp_path)
+    assert not (state.dir_for(tmp_path) / "install.json").exists()  # nothing left to remember
     assert doctor.healthy(doctor.diagnose(tmp_path))  # gone is not broken
 
 

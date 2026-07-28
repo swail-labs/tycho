@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 
 from ..engine import runlog
-from ..model import Attribution, Event, FileEdit, Message
+from ..model import UNSTRUCTURED_RESULT, Attribution, Event, FileEdit, Message
 
 _EDIT_TOOLS = frozenset({"Edit", "Write", "MultiEdit"})
 
@@ -51,10 +51,16 @@ def parse(transcript: Path) -> tuple[Event, ...]:
                 uses[block["id"]] = (ts, block.get("name", ""), block.get("input") or {})
             elif kind == "tool_result" and block.get("tool_use_id"):
                 tur = entry.get("toolUseResult")
+                # A command that reached the shell comes back structured (stdout/stderr). One
+                # the harness *refused* — unapproved permission, denied tool — comes back as a
+                # bare string ("Error: This command requires approval") with `is_error` set.
+                # Both used to flatten to `{}`, so a refusal was indistinguishable from a red
+                # suite and `command_execution` reported FAIL for a command that never ran.
+                # `UNSTRUCTURED_RESULT` keeps that difference readable downstream.
                 results[block["tool_use_id"]] = (
                     ts,
                     bool(block.get("is_error")),
-                    tur if isinstance(tur, dict) else {},
+                    tur if isinstance(tur, dict) else {UNSTRUCTURED_RESULT: str(tur or "")},
                 )
 
     events = []
