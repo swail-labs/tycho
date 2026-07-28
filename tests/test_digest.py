@@ -506,3 +506,67 @@ def test_an_unproven_turn_always_reaches_the_human_when_the_relay_is_on(tmp_path
     ]
     assert all(o is not None for o in outs)          # never silent while the relay is on
     assert not all("hookSpecificOutput" in o for o in outs)  # and the leash really did run out
+
+
+# --- the receipt counts paths and stays readable ------------------------------
+
+
+def _multi_edit(path: str, times: int) -> list[dict]:
+    return [{"path": path, "kind": "edit", "ts": float(i)} for i in range(times)]
+
+
+def test_a_file_edited_repeatedly_is_one_changed_file():
+    """The record holds one row per write, so four edits to two files rendered `4 files:` and
+    listed the same path three times — an inflated number on the artifact whose whole pitch is
+    that it can't be faked by narrating."""
+    r = rec(files=0)
+    r["files"] = _multi_edit("tycho/store/state.py", 3) + [
+        {"path": "tests/test_state.py", "kind": "edit", "ts": 4.0}]
+    out = digest.render(r)
+    assert "2 files: tycho/store/state.py, tests/test_state.py" in out
+    assert out.count("tycho/store/state.py") == 1
+
+
+def test_re_editing_one_file_is_not_a_wide_turn():
+    """`_unusual_breadth` compared an edit count against a file count, so nine edits to one
+    file read as a nine-file turn and the digest spoke up about it. Speaking on a routine turn
+    is the failure mode the selectivity exists to prevent (§11.1)."""
+    r = rec(files=0)
+    r["files"] = _multi_edit("src/f0.py", 9)
+    assert digest.speaks(r, [rec(files=1) for _ in range(6)]) is None
+
+
+def test_a_create_survives_a_later_edit_to_the_same_path():
+    r = rec(files=0)
+    r["files"] = [{"path": "src/new.py", "kind": "create", "ts": 1.0},
+                  {"path": "src/new.py", "kind": "edit", "ts": 2.0}]
+    assert "1 file: src/new.py*" in digest.render(r)
+
+
+def test_a_command_is_one_line_however_it_was_written():
+    """A heredoc went into the receipt verbatim, putting a whole test function in the digest —
+    one command, twelve lines, the layout gone. Collapsed to a line and cut to the gutter
+    width; a short command still renders in full."""
+    body = "\n".join(f"    assert thing_{i} == {i}" for i in range(20))
+    heredoc = f"cat >> tests/test_x.py <<'EOF'\ndef test_a():\n{body}\nEOF"
+    out = digest.render(rec(commands=[{"cmd": heredoc, "runner": False, "outcome": "passed"}]))
+    shown = [ln for ln in out.splitlines() if "cat >>" in ln]
+    assert len(shown) == 1, "a command must not span lines"
+    assert shown[0].endswith("→ passed") and "…" in shown[0]
+    assert "assert thing_19" not in out
+
+    short = "ruff check tycho"
+    assert f"{short} → passed" in digest.render(
+        rec(commands=[{"cmd": short, "runner": False, "outcome": "passed"}]))
+
+
+def test_the_command_list_is_capped_but_never_drops_a_run():
+    """"Did the suite run, and did it pass" is the line the receipt exists for, so the runner
+    survives the cap wherever it ran — dropping it to fit an earlier `grep` would cut the
+    evidence and keep the noise."""
+    noise = [{"cmd": f"grep -n x{i} src", "runner": False, "outcome": "passed"} for i in range(30)]
+    run = {"cmd": "pytest -q tests/", "runner": True, "outcome": "passed"}
+    out = digest.render(rec(commands=[run, *noise]))
+    assert "pytest -q tests/ → passed" in out
+    assert "(+19 more)" in out
+    assert len([ln for ln in out.splitlines() if "grep -n" in ln]) == 11

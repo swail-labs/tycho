@@ -223,8 +223,11 @@ def render(record: dict, now: float | None = None) -> str:
         shown = ", ".join(f"{f['path']}{'*' if f['kind'] == 'create' else ''}" for f in files[:12])
         extra = f" (+{len(files) - 12} more)" if len(files) > 12 else ""
         lines.append(_wrap("changed", f"{_count(len(files), 'file')}: {shown}{extra}"))
-    for i, cmd in enumerate(_commands(record)):
-        lines.append(_wrap("ran" if i == 0 else "", f"{cmd['cmd']} → {cmd['outcome']}"))
+    shown_cmds, dropped = _shown_commands(_commands(record))
+    for i, cmd in enumerate(shown_cmds):
+        lines.append(_wrap("ran" if i == 0 else "", f"{_trunc(cmd['cmd'], 96)} → {cmd['outcome']}"))
+    if dropped:
+        lines.append(_wrap("", f"(+{dropped} more)"))
     for i, claim in enumerate(_claims(record)[:4]):
         lines.append(_wrap("claimed" if i == 0 else "", f'"{_trunc(claim, 100)}"'))
     unproven = _unproven_checks(record)
@@ -282,12 +285,48 @@ def _text(value: object) -> str:
     return value if isinstance(value, str) else ""
 
 
+# A receipt nobody finishes reading is a receipt nobody reads. One turn here rendered 38
+# commands, one of them a heredoc that put a whole test function in the digest.
+_MAX_COMMANDS = 12
+
+
+def _shown_commands(commands: list[dict]) -> tuple[list[dict], int]:
+    """The commands worth printing, in order, and how many were left out.
+
+    Every runner survives the cap no matter where it ran: "did the suite run, and did it
+    pass" is the line the receipt exists for, and dropping it to fit a `grep` from earlier in
+    the turn would cut the evidence and keep the noise. The rest is filled from the most
+    recent, which is the part someone reading a receipt is asking about.
+    """
+    runners = {i for i, c in enumerate(commands) if c["runner"]}
+    room = max(0, _MAX_COMMANDS - len(runners))
+    rest = [i for i in range(len(commands)) if i not in runners]
+    keep = runners | set(rest[-room:] if room else [])
+    return [commands[i] for i in sorted(keep)], len(commands) - len(keep)
+
+
 def _files(record: dict) -> list[dict]:
-    return [
-        {"path": _text(r.get("path")), "kind": _text(r.get("kind")) or "edit"}
-        for r in _rows(record, "files")
-        if _text(r.get("path"))
-    ]
+    """One entry per *path*, not per edit — the record holds one row per write, so a file
+    edited four times is four rows.
+
+    Deduping here rather than at each caller because all four read this: the receipt said
+    "4 files" and listed the same path three times, the ladder and summary counted the same
+    way, and `_unusual_breadth` compared an edit count against a file count — so re-editing
+    one file looked like a wide turn and spoke up about it. A create that was later edited
+    is still a create.
+    """
+    seen: dict[str, dict] = {}
+    for row in _rows(record, "files"):
+        path = _text(row.get("path"))
+        if not path:
+            continue
+        kind = _text(row.get("kind")) or "edit"
+        if path in seen:
+            if kind == "create":
+                seen[path]["kind"] = "create"
+        else:
+            seen[path] = {"path": path, "kind": kind}
+    return list(seen.values())
 
 
 def _commands(record: dict) -> list[dict]:
