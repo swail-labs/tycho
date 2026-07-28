@@ -249,7 +249,7 @@ def _judge(hunk, facts: _Facts, changed_tests, now: float,
     verb = "edited"
     if mtime is not None and mtime > edited + _MTIME_SLACK:
         edited, verb = mtime, "changed on disk (not by a recorded edit)"
-    age = _ago(now - edited)
+    age = _elapsed(now - edited)
     if checks_mod._is_test_path(path):
         if facts.last_test is not None and edited > facts.last_test:
             return TEST, note + f"{verb} {age}, after the last recorded passing run"
@@ -296,7 +296,7 @@ def _has_sibling_test(path: str, changed_tests) -> bool:
     return bool(stem) and any(stem in t.rsplit("/", 1)[-1].lower() for t in changed_tests)
 
 
-def _ago(seconds: float) -> str:
+def _elapsed(seconds: float) -> str:
     for size, unit in ((86400, "d"), (3600, "h"), (60, "m")):
         if seconds >= size:
             return f"{int(seconds // size)}{unit} ago"

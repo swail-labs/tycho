@@ -25,7 +25,7 @@ from ..read import harness as harness_mod
 from ..wire import install as init_mod
 from ..store import state
 from ..wire import version as version_mod
-from .review import _ago
+from .review import _elapsed
 
 # Severities. BROKEN and OUTDATED mean "Tycho is not doing its job"; the rest is context.
 OK = "OK"
@@ -245,7 +245,7 @@ def _heartbeat_finding(repo: Path, wired: list[str]) -> Finding:
             f"finish a turn in {'/'.join(wired)}, then re-run `tycho doctor`",
         )
     age = max(0.0, time.time() - at)
-    return Finding(OK, f"hook last fired {_ago(age)} (via {beat.get('harness', '?')})")
+    return Finding(OK, f"hook last fired {_elapsed(age)} (via {beat.get('harness', '?')})")
 
 
 def _transcript_finding(repo: Path) -> Finding:
