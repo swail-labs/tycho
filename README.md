@@ -58,14 +58,14 @@ entry in `.gitignore`, and a `prepare-commit-msg` hook that stamps a `Tycho-Atte
 onto commits an agent worked on. It merges with hooks you already have, backs up what it changes,
 and refuses to touch a config it can't parse. Undo with `tycho uninstall`.
 
-That's it. The next time an agent finishes a turn, Tycho verifies it — and usually says nothing.
+That's it. The next time an agent finishes a turn, Tycho verifies it.
 
 ## After a turn
 
-Output is **rare by design**: routine turns print nothing. Tycho speaks when a check says the turn
-isn't proven, when the prose claims done but the evidence doesn't reach it, when a run of proven
-turns breaks, or when a turn touches far more files than this repo's turns usually do. A condition
-that fired the last two turns goes quiet — the same standing failure isn't shouted at you forever.
+Most turns print nothing. Tycho speaks when a check says the turn isn't proven, when the prose
+claims done but the evidence doesn't reach it, when a run of proven turns breaks, or when a turn
+touches far more files than this repo's turns usually do. A condition that fired the last two
+turns goes quiet, so a standing failure doesn't repeat at you forever.
 
 ```
 🔍 Tycho: FAILED — file_state: docs/product-direction.md — missing
@@ -106,7 +106,8 @@ and never blocks your agent.
 
 ## What Tycho won't claim
 
-Degrading honestly instead of guessing is the point, so the limits are part of the product:
+Tycho answers *can't tell* rather than guessing, so there are places it deliberately says less
+than you might expect:
 
 - **`blame PATH:LINE` is file-level.** The record stores which turns touched a file, never which
   lines. Joining through `git blame` would put a confident wrong name on a line.
@@ -119,11 +120,11 @@ Degrading honestly instead of guessing is the point, so the limits are part of t
   family presence only. Tuned to never emit a false FAIL, at the cost of recall.
 - **A piped runner's exit status is gone before Tycho can read it.** `pytest | tail -20` hands the
   harness tail's status, so the verdict falls back to reading pytest's summary line — inference,
-  and only as good as the vocabulary in `engine/runlog.py`. `tycho exec -- pytest | tail -20` fixes
-  it at the source, and `tycho rewrite --on` does that for you. It's off by default because Claude
-  Code matches your `Bash(...)` permission rules against the *rewritten* command: a `Bash(pytest:*)`
-  allow rule stops covering it, so a command that ran silently starts asking. Under
-  `--permission-mode bypassPermissions` there are no rules to void and it always applies.
+  and only as good as the vocabulary in `engine/runlog.py`. `tycho exec -- pytest | tail -20`
+  fixes it at the source, and `tycho rewrite --on` does that for you. Rewriting is opt-in because
+  Claude Code matches your `Bash(...)` rules against the rewritten command, so an allow rule you
+  already granted can stop covering it; under `--permission-mode bypassPermissions` there are no
+  rules to void and it always applies.
 - **Nothing polls in the background.** A hook that died goes undiagnosed until someone runs
   `doctor`.
 
