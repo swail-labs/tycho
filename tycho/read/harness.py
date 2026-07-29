@@ -201,6 +201,7 @@ CODEX = Harness(
     messages=events.assistant_messages_codex,
     # Anchors on the latest turn's task_started; Codex is the only harness with a turn_id.
     turn_start=events.turn_start_codex,
+    attribution=events.attribution_codex,
 )
 
 OPENCODE = Harness(

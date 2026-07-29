@@ -257,6 +257,33 @@ def assistant_messages_codex(transcript: Path) -> tuple[Message, ...]:
     return tuple(messages)
 
 
+def attribution_codex(transcript: Path) -> Attribution:
+    """Who produced this Codex session: model id, CLI version, session id.
+
+    Verified against real rollouts under ``~/.codex/sessions`` (2026-07): ``session_meta``
+    opens every file with ``session_id`` and ``cli_version``, and each ``turn_context`` names
+    the ``model`` (e.g. ``gpt-5.6-sol``). The *last* of each wins, as in the Claude reader — a
+    resumed session can continue under a newer build or a different model, and the turn being
+    verified ran under the latest. Never guesses: a field this build doesn't write yields
+    None, since the decay ledger is only worth anything if attribution was observed.
+    """
+    model = version = session_id = None
+    try:
+        for entry in _entries(transcript):
+            payload = entry.get("payload") or {}
+            if entry.get("type") == "session_meta":
+                if isinstance(sid := payload.get("session_id"), str) and sid:
+                    session_id = sid
+                if isinstance(ver := payload.get("cli_version"), str) and ver:
+                    version = ver
+            elif entry.get("type") == "turn_context":
+                if isinstance(name := payload.get("model"), str) and name:
+                    model = name
+    except OSError:
+        return Attribution()
+    return Attribution(model=model, agent_version=version, session_id=session_id)
+
+
 def turn_start_codex(transcript: Path) -> float:
     """Epoch of the latest Codex turn's ``task_started`` — the boundary its Stop reviews.
 

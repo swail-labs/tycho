@@ -330,6 +330,59 @@ def test_codex_command_ignores_a_non_exec_tool_whose_payload_mentions_cmd():
     assert events._codex_command_of(patch) is None
 
 
+def test_codex_attribution_reads_model_version_and_session(tmp_path: Path):
+    """Codex records all three, in two places: `session_meta` carries the session id and the
+    CLI version, `turn_context` carries the model. Storing nulls made every Codex turn
+    "unknown (codex)" in the decay ledger, which slices catch rate by model."""
+    rows = [
+        {
+            "timestamp": "2026-07-23T22:09:57.512Z",
+            "type": "session_meta",
+            "payload": {
+                "session_id": "019f9107-2220-75c2-9089-1fc7b6755746",
+                "cwd": "/repo",
+                "cli_version": "0.145.0",
+            },
+        },
+        {
+            "timestamp": "2026-07-23T22:10:00.000Z",
+            "type": "turn_context",
+            "payload": {"turn_id": "turn-1", "cwd": "/repo", "model": "gpt-5.6-sol"},
+        },
+    ]
+    got = events.attribution_codex(_write_rows(tmp_path / "rollout.jsonl", rows))
+    assert got.session_id == "019f9107-2220-75c2-9089-1fc7b6755746"
+    assert got.agent_version == "0.145.0"
+    assert got.model == "gpt-5.6-sol"
+
+
+def test_codex_attribution_takes_the_last_model_of_a_resumed_session(tmp_path: Path):
+    # A session can be resumed under a different model; the turn being verified ran under the
+    # latest one. Same rule as the Claude reader.
+    rows = [
+        {"timestamp": "2026-07-23T22:09:57.512Z", "type": "session_meta",
+         "payload": {"session_id": "s-1", "cli_version": "0.145.0"}},
+        {"timestamp": "2026-07-23T22:10:00.000Z", "type": "turn_context",
+         "payload": {"model": "gpt-5.6-sol"}},
+        {"timestamp": "2026-07-23T22:20:00.000Z", "type": "turn_context",
+         "payload": {"model": "gpt-5.6-sol-high"}},
+    ]
+    assert events.attribution_codex(_write_rows(tmp_path / "r.jsonl", rows)).model == "gpt-5.6-sol-high"
+
+
+def test_codex_attribution_never_guesses_a_missing_field(tmp_path: Path):
+    # A build that writes no model must yield None, not a plausible default — the ledger is
+    # only worth anything if attribution was genuinely observed.
+    rows = [{"timestamp": "2026-07-23T22:09:57.512Z", "type": "session_meta",
+             "payload": {"session_id": "s-1"}}]
+    got = events.attribution_codex(_write_rows(tmp_path / "r.jsonl", rows))
+    assert (got.model, got.agent_version, got.session_id) == (None, None, "s-1")
+
+
+def test_codex_harness_is_wired_to_its_attribution_reader():
+    assert harness.CODEX.attribution is events.attribution_codex
+
+
 def test_codex_reader_distinguishes_current_pytest_completion_output():
     assert events._codex_is_error("Script completed\n77 passed in 0.79s") is False
     assert events._codex_is_error("Script completed\n1 failed, 76 passed in 1.07s") is True
