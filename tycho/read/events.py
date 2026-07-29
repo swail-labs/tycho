@@ -382,6 +382,12 @@ def _codex_command_of(payload: dict) -> str | None:
     shell, and counting them would invent runs that never happened.
     """
     if payload.get("type") == "custom_tool_call":
+        # Whitelist, not blacklist: `input` is free text on every other tool — `apply_patch`
+        # carries patch bodies — and a substring hit there would fabricate a run that never
+        # happened. Going blind to a renamed tool is the safer failure, and the version pin
+        # is what catches it.
+        if payload.get("name") != "exec":
+            return None
         return _codex_command(payload.get("input"))
     try:
         arguments = json.loads(payload.get("arguments") or "{}")
@@ -391,20 +397,32 @@ def _codex_command_of(payload: dict) -> str | None:
     return command if isinstance(command, str) and command.strip() else None
 
 
+# `cmd` in either spelling Codex emits — `{cmd:"…"}` and `{"cmd":"…"}` both appear in the
+# same release — with the value matched escape-aware so an embedded `\"` can't end it early.
+_CODEX_CMD = re.compile(r'"?cmd"?\s*:\s*"((?:[^"\\]|\\.)*)"')
+
+
 def _codex_command(value: object) -> str | None:
+    """The command out of an `exec` call's JS snippet.
+
+    Scanning for the one literal `{cmd:"` and then guessing which of four delimiters closed
+    the value dropped every call using the quoted spelling — 49 of the exec calls in a single
+    real session — and truncated any command containing an escaped quote at that quote, so a
+    `python3 -c "…"` run reached the checks as a fragment of itself. One escape-aware match
+    covers both spellings and stops guessing.
+    """
     if not isinstance(value, str):
         return None
-    start = value.find('{cmd:"')
-    if start < 0:
+    match = _CODEX_CMD.search(value)
+    if not match:
         return None
-    start += 6
-    for delim in ('","workdir"', '",', '"}', '")'):
-        end = value.find(delim, start)
-        if end >= 0:
-            return value[start:end]
-    if value.endswith('"') and start < len(value) - 1:
-        return value[start:-1]
-    return None
+    raw = match.group(1)
+    try:
+        command = json.loads(f'"{raw}"')
+    except ValueError:
+        # A JS-only escape JSON won't take (`\'`). Keep the text rather than drop the run.
+        command = raw.replace('\\"', '"')
+    return command if command.strip() else None
 
 
 def _codex_output_text(value: object) -> str:

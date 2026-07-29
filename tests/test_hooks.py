@@ -300,6 +300,36 @@ def test_codex_turn_start_anchors_on_a_structured_shell_turn(tmp_path: Path):
     assert events.turn_start_codex(transcript) == events._epoch("2026-07-23T21:22:31.000Z")
 
 
+def _exec_call(input_text: str, name: str = "exec") -> dict:
+    return {"type": "custom_tool_call", "call_id": "c", "name": name, "input": input_text}
+
+
+def test_codex_command_reads_both_spellings_of_the_cmd_key():
+    # Codex emits the JS object literal either way; scanning for one of them dropped 49 of
+    # the exec calls in a single real session.
+    unquoted = _exec_call('const r = await tools.exec_command({cmd:"pytest -q",workdir:"/repo"})')
+    quoted = _exec_call('const r = await tools.exec_command({"cmd":"pytest -q","workdir":"/repo"})')
+    assert events._codex_command_of(unquoted) == "pytest -q"
+    assert events._codex_command_of(quoted) == "pytest -q"
+
+
+def test_codex_command_survives_an_escaped_quote_inside_the_command():
+    # Guessing the closing delimiter truncated the command at the first inner quote, so a
+    # `python3 -c "..."` run reached the checks as a fragment of itself.
+    call = _exec_call(
+        r'const r = await tools.exec_command({"cmd":"python3 -c \"import sys; print(1)\" && pytest -q","workdir":"/repo"})'
+    )
+    assert events._codex_command_of(call) == 'python3 -c "import sys; print(1)" && pytest -q'
+
+
+def test_codex_command_ignores_a_non_exec_tool_whose_payload_mentions_cmd():
+    # `apply_patch` carries patch text, which can contain anything — including the literal
+    # this scanner keys on. A patch is not a command, and inventing one fabricates evidence
+    # that a run happened.
+    patch = _exec_call('*** Begin Patch\n+run({cmd:"pytest -q"})\n*** End Patch', name="apply_patch")
+    assert events._codex_command_of(patch) is None
+
+
 def test_codex_reader_distinguishes_current_pytest_completion_output():
     assert events._codex_is_error("Script completed\n77 passed in 0.79s") is False
     assert events._codex_is_error("Script completed\n1 failed, 76 passed in 1.07s") is True
