@@ -54,6 +54,31 @@ def test_written_file_round_trips_through_tomllib(tmp_path: Path):
     assert config_mod.load(tmp_path).scope_include == ('weird "quote"/**', "a\\b/**")
 
 
+def test_standing_filters_load_from_a_hand_written_file(tmp_path: Path):
+    """Hand-editing is the documented way in, so the key has to parse from a file nothing in
+    Tycho wrote."""
+    config_mod.path(tmp_path).write_text(
+        '[tests]\nstanding = ["-m \\"not e2e\\"", "--ignore docs"]\n', encoding="utf-8"
+    )
+    assert config_mod.load(tmp_path).standing_filters == ('-m "not e2e"', "--ignore docs")
+
+
+def test_standing_filters_survive_a_scope_edit(tmp_path: Path):
+    """Every setter re-renders the whole file, so a key missing from the template is silently
+    dropped by an unrelated edit."""
+    config_mod.path(tmp_path).write_text(
+        '[tests]\nstanding = ["-m \\"not e2e\\""]\n', encoding="utf-8"
+    )
+    config_mod.add_scope(tmp_path, ["src/**"])
+    assert config_mod.load(tmp_path).standing_filters == ('-m "not e2e"',)
+
+
+def test_zero_config_declares_no_standing_filters(tmp_path: Path):
+    assert config_mod.load(tmp_path).standing_filters == ()
+    config_mod.ensure(tmp_path)
+    assert config_mod.load(tmp_path).standing_filters == ()
+
+
 # --- ensure: create on init, never clobber ----------------------------------
 
 def test_ensure_creates_then_is_a_noop(tmp_path: Path):

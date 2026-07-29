@@ -24,6 +24,7 @@ from .cmdread import (
     _is_runner,
     _normalize_segment,
     _runner_segment,
+    standing_filters,
     _selects_whole_suite,
     _unwrap,
 )
@@ -255,7 +256,7 @@ def _runner_events(events) -> list:
     ]
 
 
-def _unresolved_reds(events, commands) -> list:
+def _unresolved_reds(events, commands, standing: frozenset[str] = frozenset()) -> list:
     """Failed runner invocations that no later green run covers.
 
     Run the suite, see red, narrow to the failing file, go green, stop — the standard agent
@@ -274,7 +275,7 @@ def _unresolved_reds(events, commands) -> list:
         if any(
             later.ts > e.ts
             and _outcome(later, commands) is False
-            and _covers(_runner_segment(later.input.get("command") or ""), red_cmd)
+            and _covers(_runner_segment(later.input.get("command") or ""), red_cmd, standing)
             and not _ran_less_than_claimed(later)
             for later in runs
         ):
@@ -286,7 +287,9 @@ def _unresolved_reds(events, commands) -> list:
 def _last_green_run_ts(session: Session) -> float | None:
     # Session-scoped: a run three turns back still covers a source unchanged since. A green
     # following an unresolved red is the narrowed re-run, not the suite.
-    reds = _unresolved_reds(session.events, session.commands)
+    reds = _unresolved_reds(
+        session.events, session.commands, standing_filters(session.config.standing_filters)
+    )
     greens = [
         e.ts
         for e in _runner_events(session.events)

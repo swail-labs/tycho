@@ -1070,6 +1070,60 @@ def test_identical_filters_cancel_so_a_full_rerun_discharges_a_red():
     assert checks._last_green_run_ts(s) == 200.0
 
 
+def test_a_standing_exclusion_declared_in_config_drops_out_of_both_sides():
+    """A project can mandate a marker exclusion on every run, so it narrows nothing *relative to
+    that project* — but only once it is declared. Undeclared it is an ordinary narrowing and has
+    to reject, or any run carrying a marker would launder itself into a whole-suite green."""
+    events = [
+        bash("pytest tests/x.py -k foo", 100.0, is_error=True),
+        bash('pytest -q -m "not e2e"', 200.0, is_error=False),
+    ]
+    assert checks._last_green_run_ts(make_session(events=events)) is None
+    declared = make_session(events=events, config=Config(standing_filters=('-m "not e2e"',)))
+    assert checks._last_green_run_ts(declared) == 200.0
+
+
+@pytest.mark.parametrize("declared", ['-m "not e2e"', "-m not e2e", '-m="not e2e"'])
+def test_a_standing_filter_is_matched_however_it_is_spelled(declared):
+    """The declaration is shell text and so is the command; `-m "not e2e"` and `-m=not e2e` are
+    the same filter, and a config that only matched one spelling would silently not apply."""
+    s = make_session(
+        events=[
+            bash("pytest tests/x.py -k foo", 100.0, is_error=True),
+            bash('pytest -q -m "not e2e"', 200.0, is_error=False),
+        ],
+        config=Config(standing_filters=(declared,)),
+    )
+    assert checks._last_green_run_ts(s) == 200.0
+
+
+def test_the_anchor_moves_as_later_greens_land():
+    """The reported bug in one assertion. The anchor pinned to the session's first green, so the
+    staleness delta the checks reported was a constant and re-running the suite could never
+    clear the verdict. It has to track the newest green that still covers the tree."""
+    config = Config(standing_filters=('-m "not e2e"',))
+    events = [
+        bash("pytest tests/x.py -k foo", 100.0, is_error=True),
+        bash('pytest -q -m "not e2e"', 200.0, is_error=False),
+    ]
+    assert checks._last_green_run_ts(make_session(events=events, config=config)) == 200.0
+    events.append(bash('pytest -q -m "not e2e"', 300.0, is_error=False))
+    assert checks._last_green_run_ts(make_session(events=events, config=config)) == 300.0
+
+
+def test_a_standing_declaration_never_launders_a_stateful_selector():
+    """Declaring `--lf` standing does not make it mean a fixed set. The green side stays strict
+    no matter what the config says, because config cannot make last run's failures knowable."""
+    s = make_session(
+        events=[
+            bash("pytest tests/x.py", 100.0, is_error=True),
+            bash("pytest -q --lf", 200.0, is_error=False),
+        ],
+        config=Config(standing_filters=("--lf",)),
+    )
+    assert checks._last_green_run_ts(s) is None
+
+
 @pytest.mark.parametrize("red,green", [
     ("pytest --lf tests/x.py", "pytest -q --lf"),    # same spelling, different set each run
     ("pytest tests/x.py", "pytest -q --lf"),

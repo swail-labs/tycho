@@ -562,7 +562,7 @@ def _exec_argv(cmd: str, _depth: int = 0) -> list[str] | None:
     return None
 
 
-def _covers(green: str | None, red: str | None) -> bool:
+def _covers(green: str | None, red: str | None, standing: frozenset[str] = frozenset()) -> bool:
     """Did `green` run at least everything `red` did? Both are normalized runner segments.
 
     The relation is containment of what each run *selected*, and "the whole suite" is just the
@@ -597,7 +597,10 @@ def _covers(green: str | None, red: str | None) -> bool:
     # whatever subset it ran, a less filtered green still ran at least it.
     if any(_is_stateful(f) for f in picked.filters):
         return False
-    if not picked.filters <= covered.filters:
+    # Dropped from both sides, never one: a standing filter restricts the red and the green
+    # alike, so it is not evidence either way. Statefulness is judged above on the *undropped*
+    # filters, so declaring `--lf` standing cannot launder it into a whole-suite green.
+    if not picked.filters - standing <= covered.filters - standing:
         return False
     if not picked.paths:
         return True  # green restricted to no path in particular, which is the whole tree
@@ -740,6 +743,31 @@ class Selection(NamedTuple):
 
 def _is_stateful(filt: str) -> bool:
     return filt.split(" ", 1)[0] in _STATEFUL_OPTIONS
+
+
+def standing_filters(declared) -> frozenset[str]:
+    """Config's declared standing filters, in the spelling `_selection` produces.
+
+    The declaration is shell text and so is the command it has to match, so both go through the
+    same normalization: `-m "not e2e"`, `-m not e2e` and `-m="not e2e"` are one filter, and a
+    config matching only the spelling its author happened to use would silently do nothing.
+    """
+    out: set[str] = set()
+    for entry in declared or ():
+        try:
+            parts = shlex.split(entry)
+        except ValueError:
+            continue  # unbalanced quotes: declares nothing, cancels nothing
+        if not parts:
+            continue
+        name = parts[0].split("=", 1)[0]
+        if "=" in parts[0]:
+            out.add(f"{name} {parts[0].split('=', 1)[1]}")
+        elif len(parts) > 1:
+            out.add(f"{name} {' '.join(parts[1:])}")
+        else:
+            out.add(name)
+    return frozenset(out)
 
 
 def _selection(segment: str) -> Selection | None:
