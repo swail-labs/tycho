@@ -1,0 +1,333 @@
+"""The invariants Tycho defends, made mechanical rather than kept by discipline (§8).
+
+These are not feature tests. They are the properties that make the product what it claims to
+be, and each one is here because *discipline alone loses to gravity*: open-core drifts toward
+connectors, verifiers drift toward asking a model, and both would be a one-line change that no
+other test in this suite would notice.
+
+1. **Free never leaves the machine.** The whole trust path — gather, check, verdict, record,
+   digest, hook — must not open a socket. Today this is true by construction (the only network
+   call in the tree is the PyPI update check in `version.py`, off the hot path and cache-only
+   on the Stop path). This test is what makes it stay true.
+2. **No LLM in the trust path, permanently.** Not a policy line in a README: nothing in the
+   verifying modules may import an SDK or reach a model endpoint.
+
+Both are headline claims in the README and both are load-bearing for the paid tiers — an
+auditor that can cause an effect, or that a poisoned ticket can talk out of a verdict, is an
+auditor whose attestations are worth nothing.
+"""
+
+from __future__ import annotations
+
+import json
+import socket
+from pathlib import Path
+
+import pytest
+
+from tycho.engine import checks as checks_mod
+from tycho.views import digest, review
+from tycho.store import record
+from tycho.read import session as engine
+from tycho.model import Verdict
+
+FIXTURE = Path(__file__).parent / "fixtures" / "transcript_sample.jsonl"
+
+# Every module that can influence a verdict. `version` and `install` are deliberately absent:
+# the update check is a real (opt-out, off-hot-path) network call, and neither can move a
+# verdict. If a module is added to the trust path, add it here.
+#
+# Modules, not layer packages. Naming `tycho.engine` instead of its members would turn this
+# allowlist into a directory scan — every module added under it afterwards would be admitted
+# without anyone deciding it should be, which is the opposite of what the list is for.
+# `tycho.engine.checks` is the one package entry, and it is deliberate: every check is in the
+# trust path by construction, so a new one must be covered the day it lands.
+TRUST_PATH = (
+    "tycho.read.session", "tycho.engine.checks", "tycho.engine.verdict",
+    "tycho.engine.astdiff", "tycho.engine.runlog", "tycho.read.events", "tycho.model",
+    "tycho.store.record", "tycho.views.report", "tycho.views.digest", "tycho.store.state",
+    "tycho.read.gitstate", "tycho.read.fsstate", "tycho.store.config", "tycho.read.harness",
+    "tycho.wire.hook", "tycho.views.review", "tycho.views.archaeology", "tycho.wire.attest",
+    "tycho.store.command", "tycho.read.opencode",
+)
+
+# Import names that would mean a model is being consulted. Substring match, so
+# `anthropic`, `openai`, `google.generativeai`, `litellm` etc. are all caught.
+_LLM_MARKERS = (
+    "anthropic", "openai", "litellm", "langchain", "transformers", "torch",
+    "generativeai", "ollama", "cohere", "mistralai", "huggingface",
+)
+
+
+@pytest.fixture()
+def no_network(monkeypatch):
+    """Make any attempt to reach the network an immediate, loud failure.
+
+    Patches `connect`/`getaddrinfo`, **not** the `socket` class itself: `ssl.SSLSocket`
+    subclasses `socket.socket`, so replacing the class breaks the stdlib on import rather
+    than catching anything. Constructing a socket is harmless anyway — *connecting* is the
+    act this invariant is about, and `getaddrinfo` catches the resolve that precedes it.
+    """
+    def _forbidden(*a, **k):
+        raise AssertionError(
+            "the trust path reached the network — Tycho Free must never leave the machine (§8)"
+        )
+
+    monkeypatch.setattr(socket.socket, "connect", _forbidden)
+    monkeypatch.setattr(socket.socket, "connect_ex", _forbidden)
+    monkeypatch.setattr(socket, "create_connection", _forbidden)
+    monkeypatch.setattr(socket, "getaddrinfo", _forbidden)
+    import urllib.request
+
+    monkeypatch.setattr(urllib.request, "urlopen", _forbidden)
+    return _forbidden
+
+
+def test_nothing_a_user_can_invoke_opens_a_socket(tmp_path, no_network):
+    """gather -> checks -> verdict -> build -> append, then every surface that reads it back:
+    digest / review / blame / log / attest / the decay ledger."""
+    from tycho.views import archaeology
+    from tycho.wire import attest
+    from tycho import cli
+    from tycho.store import state
+
+    session = engine.gather(FIXTURE, tmp_path)
+    results = engine.run_checks(session)
+    verdict = engine.verdict_of(results)
+    assert isinstance(verdict, Verdict)
+    assert results  # it really did run, rather than short-circuiting to nothing
+
+    rec = record.build(session, results, verdict, "claude", 1.0)
+    assert record.digest(rec).startswith("sha256:")
+    record.append(tmp_path, rec)
+    assert record.read(tmp_path)
+
+    assert digest.render(rec)
+    digest.speaks(rec, record.read(tmp_path))
+    review.review(tmp_path)
+    archaeology.log(tmp_path)
+    archaeology.blame(tmp_path, "src/app.py")
+    attest.trailer(tmp_path)
+    assert state.ledger(tmp_path)["turns"] == 1
+    assert cli._ledger_lines(state.ledger(tmp_path))
+
+
+def test_the_stop_hook_opens_no_socket(tmp_path, no_network):
+    """The hook is the hot path: it runs after every single turn."""
+    from tycho.wire import hook
+
+    payload = json.dumps({
+        "transcript_path": str(FIXTURE),
+        "cwd": str(tmp_path),
+        "hook_event_name": "Stop",
+    })
+    hook.run(payload)  # never raises by contract, and must not reach the network
+
+
+def test_no_trust_path_module_imports_an_llm_sdk():
+    """The claim is architectural, so it is checked against the modules, not the docs."""
+    import importlib
+    import sys
+
+    for name in TRUST_PATH:
+        importlib.import_module(name)
+    loaded = {m.lower() for m in sys.modules}
+    for marker in _LLM_MARKERS:
+        offenders = sorted(m for m in loaded if marker in m)
+        assert not offenders, f"an LLM SDK reached the trust path: {offenders}"
+
+
+def test_no_trust_path_source_mentions_a_model_endpoint():
+    """A raw HTTP call to a model API would dodge the import check above.
+
+    Resolved through each module's own `__file__`, and every `.py` under it when it is a
+    package — deriving a path from the module name instead would silently stop reading a
+    module the day it grows submodules, and read nothing while still passing.
+    """
+    import importlib
+
+    endpoints = ("api.anthropic.com", "api.openai.com", "generativelanguage.googleapis")
+    scanned = 0
+    for name in TRUST_PATH:
+        module = importlib.import_module(name)
+        origin = Path(module.__file__)
+        sources = sorted(origin.parent.rglob("*.py")) if origin.name == "__init__.py" else [origin]
+        for source in sources:
+            scanned += 1
+            src = source.read_text(encoding="utf-8").lower()
+            for endpoint in endpoints:
+                assert endpoint not in src, f"{source} references a model endpoint: {endpoint}"
+    assert scanned >= len(TRUST_PATH)
+
+
+def test_the_engine_imports_nothing_that_can_do_io():
+    """The purity claim, enforced by the import graph rather than by discipline.
+
+    `engine/` may import `model` and its own submodules. It may not import `read/`, `store/`,
+    `wire/` or `views/` — so a check cannot reach git, the filesystem or the network, because
+    the package holding it cannot import the packages that can. Without this the layer names
+    are a suggestion, and the first `from ..store import state` added under a deadline would
+    pass every other test in this suite.
+    """
+    import ast
+
+    import tycho
+
+    engine = Path(tycho.__file__).parent / "engine"
+    forbidden = {"read", "store", "wire", "views"}
+    offenders = []
+    for source in sorted(engine.rglob("*.py")):
+        depth = len(source.relative_to(engine).parts)  # 1 = engine/x.py, 2 = engine/pkg/x.py
+        for node in ast.walk(ast.parse(source.read_text(encoding="utf-8"))):
+            if not isinstance(node, ast.ImportFrom):
+                continue
+            # `level` dots: engine/x.py needs 2 to reach `tycho`, engine/pkg/x.py needs 3.
+            reaches_tycho = node.level >= depth + 1
+            head = (node.module or "").split(".")[0]
+            if reaches_tycho and head in forbidden:
+                offenders.append(f"{source.name}:{node.lineno} -> {'.' * node.level}{node.module}")
+            if node.level == 0 and node.module and node.module.startswith("tycho."):
+                if node.module.split(".")[1] in forbidden:
+                    offenders.append(f"{source.name}:{node.lineno} -> {node.module}")
+    assert not offenders, f"engine/ reached a package that does I/O: {offenders}"
+
+
+def test_the_layers_only_import_downward():
+    """`tycho/` is layered, and the layering is only real while it stays a DAG.
+
+    The engine test above protects the bottom of the stack. This protects the rest of it: a
+    cycle between two packages is how a layout quietly becomes a filing system, and it costs
+    one convenient import to create. Cheaper to fail here than to argue about it later.
+
+    `cli/` is exempt from being a target — nothing imports it, so it can't be part of a cycle.
+    """
+    import ast
+    from collections import defaultdict
+
+    import tycho
+
+    order = ["model", "engine", "store", "read", "views", "wire", "cli"]
+    rank = {name: i for i, name in enumerate(order)}
+    root = Path(tycho.__file__).parent
+    edges = defaultdict(set)
+    for source in sorted(root.rglob("*.py")):
+        parts = source.relative_to(root).parts
+        here = parts[0] if len(parts) > 1 else parts[0].removesuffix(".py")
+        depth = len(parts) - 1
+        for node in ast.walk(ast.parse(source.read_text(encoding="utf-8"))):
+            if not isinstance(node, ast.ImportFrom) or not node.module:
+                continue
+            head = node.module.split(".")[0]
+            # `level` dots reaching `tycho` means the head names a sibling layer.
+            if node.level >= depth + 1 and head in rank and head != here:
+                edges[here].add((head, f"{source.name}:{node.lineno}"))
+            elif node.level == 0 and node.module.startswith("tycho."):
+                head = node.module.split(".")[1]
+                if head in rank and head != here:
+                    edges[here].add((head, f"{source.name}:{node.lineno}"))
+
+    upward = [
+        f"{src} -> {dst} ({where})"
+        for src, targets in edges.items()
+        for dst, where in targets
+        if rank.get(dst, -1) >= rank.get(src, 99)
+    ]
+    assert not upward, f"a layer imported sideways or upward: {sorted(upward)}"
+
+
+def test_checks_are_pure_functions_of_the_session(tmp_path, no_network):
+    """The seam that lets Pro/Enterprise swap the evidence source without touching a check.
+
+    Same frozen Session in, same results out, twice — a check that reached out to git or the
+    filesystem on its own would be free to disagree with itself between calls.
+    """
+    session = engine.gather(FIXTURE, tmp_path)
+    first = [(r.name, r.status, r.evidence) for r in checks_mod.run_checks(session)]
+    second = [(r.name, r.status, r.evidence) for r in checks_mod.run_checks(session)]
+    assert first == second
+
+
+def test_the_suite_never_reads_the_developers_real_claude_home():
+    """`init.global_installed()` reads the user-level Claude config.
+
+    Without the conftest override, this suite's result would depend on whether the developer
+    running it happens to have done `tycho init --global` — tests that pass on CI and fail on
+    one laptop, for a reason nothing points at. Pinned here because the override lives in
+    conftest, where it is easy to delete without noticing what it was for.
+    """
+    from tycho.wire import install as init_mod
+
+    global_dir = init_mod.claude_dir(Path.cwd(), init_mod.GLOBAL).resolve()
+    real = (Path.home() / ".claude").resolve()
+    assert global_dir != real
+    assert real not in global_dir.parents
+
+
+def test_the_advisory_marker_stays_deleted():
+    """It declared an unbuilt LLM lane and contradicted the headline claim from inside the
+    packaging metadata (§8). Deleting it was the decision; this keeps it decided."""
+    pyproject = (Path(__file__).parent.parent / "pyproject.toml").read_text(encoding="utf-8")
+    assert '"advisory:' not in pyproject
+
+
+def test_every_stream_is_pinned_to_utf8_including_stdin():
+    """The harness writes UTF-8 JSON; a Windows reader defaults to the ANSI codepage.
+
+    Left unpinned, a Latin-1 path decodes into mojibake (so the hook creates a bogus
+    directory and verifies a repo that doesn't exist, while still beating a healthy
+    heartbeat) and a CJK path raises — out of the Stop hook, which breaks the agent's turn.
+    stdin is the one that matters and was the one missing.
+    """
+    import io
+    from tycho import cli
+
+    class _Stream(io.StringIO):
+        def __init__(self):
+            super().__init__()
+            self.enc = None
+
+        def reconfigure(self, encoding=None, errors=None):
+            self.enc = (encoding, errors)
+
+    streams = {name: _Stream() for name in ("stdin", "stdout", "stderr")}
+    import sys as _sys
+
+    saved = {n: getattr(_sys, n) for n in streams}
+    try:
+        for name, s in streams.items():
+            setattr(_sys, name, s)
+        cli._force_utf8()
+    finally:
+        for name, s in saved.items():
+            setattr(_sys, name, s)
+    for name, s in streams.items():
+        assert s.enc == ("utf-8", "replace"), f"{name} was left on the platform default"
+
+
+def test_every_git_call_disables_path_quoting():
+    """git escapes a non-ASCII path to `"src/caf\\303\\251.py"` by default, which equals
+    nothing Tycho stores — so `attest` silently lost its trailer on any commit touching one
+    and `review` dropped the file. The flag belongs in the shared wrapper, not per-call."""
+    import subprocess as sp
+    from tycho.read import gitstate
+
+    seen = []
+
+    class _Done:
+        returncode, stdout = 0, ""
+
+    def _spy(argv, **kw):
+        seen.append(argv)
+        return _Done()
+
+    real, sp.run = sp.run, _spy
+    try:
+        gitstate.is_repo(Path("."))
+        gitstate.diff_names(Path("."), "HEAD")
+        gitstate.diff_hunks(Path("."), "HEAD")
+        gitstate.untracked(Path("."))
+    finally:
+        sp.run = real
+    assert seen, "no git call was made"
+    for argv in seen:
+        assert "core.quotePath=false" in argv, argv

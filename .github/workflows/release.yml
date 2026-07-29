@@ -1,19 +1,18 @@
-# Release for Tycho (TYCHO-10). Tag `vX.Y.Z` → build sdist+wheel, smoke-test the artifact,
-# publish to PyPI. Scaffold: it does nothing until you (a) push a version tag and (b) set up
-# publishing on PyPI (see the `publish` job). Nothing here is triggered automatically.
+# Release for Tycho. Tag `vX.Y.Z` → run the full CI gate, build sdist+wheel, smoke-test the
+# artifact, publish to PyPI, npm and the Homebrew tap.
 #
 # The tag must match tycho/__init__.py:__version__ (Hatchling reads it). The build job asserts
 # that, so a mistagged release fails loudly instead of shipping the wrong number.
 #
-# Not piped, deliberately — a piped runner discards its exit code (TYCHO-31). Keep it that way.
+# Not piped, deliberately — a piped runner discards its exit code. Keep it that way.
 #
-# The `binaries` job (TYCHO-69) freezes a standalone one-file binary per target and asserts
-# `tycho --version`. It then SIGNS each binary when the signing secrets exist (TYCHO-103) —
-# the signing steps are guarded (`if: env.<secret> != ''`) so they no-op cleanly until you
-# load the certs; nothing here fails when they're absent. The `release` job (TYCHO-104) tars
-# each binary, writes SHA256SUMS, and attaches them to the GitHub Release. Binaries ship
-# checksummed-but-unsigned until the certs land, then signed automatically. See the signing
-# secrets documented on the `binaries` job env block. Ref: docs/bundler-spike.md.
+# The `binaries` job freezes a standalone one-file binary per target and asserts
+# `tycho --version`. It then SIGNS each binary when the signing secrets exist — the signing
+# steps are guarded (`if: env.<secret> != ''`) so they no-op cleanly until you load the certs;
+# nothing here fails when they're absent. The `release` job tars each binary, writes
+# SHA256SUMS, and attaches them to the GitHub Release. Binaries ship checksummed-but-unsigned
+# until the certs land, then signed automatically. See the signing secrets documented on the
+# `binaries` job env block.
 name: Release
 
 on:
@@ -21,8 +20,16 @@ on:
     tags: ["v*"]
 
 jobs:
+  # A tag is not a proof that the tree is green: `ci.yml` fires on push-to-main and on PRs,
+  # neither of which a tag push is. Without this, a red `main` plus a `v*` tag publishes to
+  # PyPI — the exact false-green Tycho exists to catch, in Tycho's own pipeline.
+  ci:
+    name: CI gate
+    uses: ./.github/workflows/ci.yml
+
   build:
     name: build + smoke-test the artifact
+    needs: [ci]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -56,7 +63,7 @@ jobs:
 
   binaries:
     name: standalone binary — ${{ matrix.target }}
-    # Freeze a one-file binary per target with PyInstaller and assert `tycho --version` (TYCHO-69).
+    # Freeze a one-file binary per target with PyInstaller and assert `tycho --version`.
     # Build-only: no signing/notarization, no release upload — those need operator secrets.
     #
     # PyInstaller can't cross-compile — it freezes for the arch of the Python running it — so each
@@ -65,7 +72,7 @@ jobs:
     # and the job queues until it times out. Instead we build it on the plentiful `macos-14` Apple
     # Silicon runner under **Rosetta** — `setup-python` fetches an x86_64 CPython, which runs
     # translated, and PyInstaller inside it freezes an x86_64 Mach-O. Same Intel artifact, available
-    # runner (TYCHO-104 follow-up).
+    # runner.
     strategy:
       fail-fast: false
       matrix:
@@ -74,9 +81,10 @@ jobs:
           - { target: macos-x86_64, runs-on: macos-14, py-arch: x64 }   # Rosetta cross-build
           - { target: linux-x86_64, runs-on: ubuntu-latest, py-arch: x64 }
           - { target: windows-x86_64, runs-on: windows-latest, py-arch: x64 }
+    needs: [ci]  # four freezes are the expensive half of a release — don't spend them on a red tree
     runs-on: ${{ matrix.runs-on }}
     timeout-minutes: 20  # a freeze + smoke is a few minutes; fail fast instead of hanging
-    # Signing secrets (TYCHO-103). All optional: a missing secret skips its signing step, so the
+    # Signing secrets. All optional: a missing secret skips its signing step, so the
     # job still produces a working (unsigned) binary. Load them under Settings → Secrets → Actions.
     #   macOS  — MACOS_CERT_P12: base64 of the "Developer ID Application" .p12 cert
     #            MACOS_CERT_PASSWORD: the .p12 export password
@@ -153,10 +161,10 @@ jobs:
 
   release:
     name: attach binaries to the GitHub Release
-    # TYCHO-104: tar each frozen binary, write SHA256SUMS, attach to the Release for this tag.
+    # Tar each frozen binary, write SHA256SUMS, attach to the Release for this tag.
     # Runs after build+binaries so a failed wheel or a failed freeze blocks the asset upload.
     #
-    # Public releases only: the `0.0.x` line is pre-public alphas (see TYCHO-107) — they publish to
+    # Public releases only: the `0.0.x` line is pre-public alphas — they publish to
     # PyPI but must NOT create a GitHub Release with downloadable binaries. Assets attach from the
     # first public tag (`v0.1.0`) onward. Bump the guard if the alpha series ever leaves `0.0.`.
     if: ${{ !startsWith(github.ref_name, 'v0.0.') }}
@@ -197,7 +205,7 @@ jobs:
 
   npm-publish:
     name: publish the npm wrapper (@swail-labs/tycho)
-    # TYCHO-106: stamp the wrapper's version from the tag (so it matches PyPI + the binaries it
+    # Stamp the wrapper's version from the tag (so it matches PyPI + the binaries it
     # fetches) and publish @swail-labs/tycho. `needs: release` — the wrapper resolves binaries from the
     # GitHub Release at npx-runtime, so publish only after those assets are attached. Public
     # releases only, same gate as `release`. Guarded on NPM_TOKEN: the publish step no-ops when the
@@ -218,15 +226,18 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
-            echo "NPM_TOKEN not set — skipping npm publish (scaffold inert)."; exit 0
+            # Fail, don't skip. A green release whose npm channel silently served the previous
+            # version is a false green: `npx @swail-labs/tycho` hands out stale bits and every
+            # installed copy nags `tycho update` at a release that never reached it. If npm is
+            # deliberately not a channel for this project, delete this job — don't mute it.
+            echo "NPM_TOKEN is not set — cannot publish @swail-labs/tycho for $GITHUB_REF_NAME." >&2
+            echo "Set the secret, or delete the npm-publish job if npm is not a release channel." >&2
+            exit 1
           fi
           node test.js  # verification self-check gates the publish
           # Match the wrapper version to the release tag (no git commit/tag); the version is what
           # bin/tycho.js uses to build the binary download URL, so it MUST equal the release.
           npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version --allow-same-version
-          # npm renders whatever README.md sits in the package root, and it does not read GitHub.
-          # Copy the repo README in at publish time rather than checking a duplicate in, which drifts.
-          cp ../../README.md README.md
           # Prerelease versions (tag contains '-') publish under the `next` dist-tag so a plain
           # `npm i @swail-labs/tycho` (which resolves `latest`) never picks up an RC; finals go to
           # `latest`. `--access public` is required for a scoped package's first publish.
@@ -240,9 +251,6 @@ jobs:
     # assets, so the tap must never reference a release whose upload failed. Public releases only,
     # same gate as `release`. Guarded on HOMEBREW_TAP_TOKEN: without the secret the step no-ops,
     # so this stays inert until the operator creates the tap repo + token.
-    #
-    # The work itself lives in packaging/homebrew/publish.sh, shared with the manual
-    # `Homebrew tap` workflow so an automatic publish and a repair publish can't diverge.
     if: ${{ !startsWith(github.ref_name, 'v0.0.') }}
     needs: [release]
     runs-on: ubuntu-latest
@@ -254,6 +262,8 @@ jobs:
           # GITHUB_TOKEN can't push to another repo, so this can't reuse it.
           TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           GH_TOKEN: ${{ github.token }}  # reading THIS repo's release assets
+        # One implementation, shared with `homebrew-tap.yml` (the manual repair path for a tag
+        # that already shipped). An inlined copy here would drift from what repairs actually push.
         run: packaging/homebrew/publish.sh "$GITHUB_REF_NAME"
 
   publish:

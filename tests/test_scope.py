@@ -1,12 +1,13 @@
-"""Scope management (TYCHO-55): `.tycho.toml` create-on-init, `tycho scope` edits, and the
+"""Scope management: `.tycho.toml` create-on-init, `tycho scope` edits, and the
 `/tycho-scope-*` slash commands. Zero-config stays intact: an empty include leaves
 scope_drift UNSUPPORTED, exactly as with no file at all."""
 
 from pathlib import Path
 
-from tycho import checks, cli
-from tycho import config as config_mod
-from tycho import init as init_mod
+from tycho.engine import checks
+from tycho import cli
+from tycho.store import config as config_mod
+from tycho.wire import install as init_mod
 from tycho.model import FileEdit, GitSnapshot, Session
 
 CLAUDE = Path(".claude/settings.json")
@@ -135,7 +136,7 @@ def test_cli_scope_list_when_empty_explains_zero_config(tmp_path: Path, monkeypa
     assert "none set" in capsys.readouterr().out
 
 
-# --- exclude / denylist (TYCHO-78) ------------------------------------------
+# --- exclude / denylist ------------------------------------------
 
 def test_exclude_edits_round_trip_and_preserve_include(tmp_path: Path):
     config_mod.set_scope(tmp_path, ["**"])
@@ -158,7 +159,7 @@ def test_exclude_wins_over_include_in_scope_drift(tmp_path: Path):
 
 
 def test_empty_exclude_is_a_pure_allowlist(tmp_path: Path):
-    config_mod.set_scope(tmp_path, ["src/**"])  # no exclude → identical to pre-TYCHO-78
+    config_mod.set_scope(tmp_path, ["src/**"])  # no exclude → identical to older
     s = _session(tmp_path, [FileEdit("src/app.py", 1.0, None, "edit")])
     assert checks.scope_drift(s).status.name == "PASS"
 

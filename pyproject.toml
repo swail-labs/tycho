@@ -1,6 +1,6 @@
 [project]
 # Distribution name: `tycho` is taken on PyPI by an unrelated project, so we publish as
-# `tycho-cli` (TYCHO-73). The import package and the console script stay `tycho`.
+# `tycho-cli`. The import package and the console script stay `tycho`.
 name = "tycho-cli"
 dynamic = ["version"]  # single source of truth: tycho/__init__.py:__version__
 description = "Tycho — a free, offline, open-source local verifier that proves an AI agent actually did what it claims, from git, the filesystem, process exit codes, and the harness event stream. No account, no LLM in the trust path."
@@ -26,7 +26,7 @@ Repository = "https://github.com/swail-labs/tycho"
 Issues = "https://github.com/swail-labs/tycho/issues"
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-cov>=5", "ruff>=0.6", "build>=1"]  # build: sdist E2E (TYCHO-37)
+dev = ["pytest>=8", "pytest-cov>=5", "ruff>=0.6", "build>=1"]  # build: sdist E2E
 
 [project.scripts]
 tycho = "tycho.cli:main"
@@ -44,7 +44,11 @@ packages = ["tycho"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
-    "advisory: exercises the optional LLM advisory checks; needs a user model key or Ollama (skipped otherwise)",
+    # No `advisory` marker. It declared "optional LLM advisory checks" that were never
+    # built, and it contradicted the headline claim — no LLM in the trust path — from inside
+    # the packaging metadata, which is the worst place for a contradiction to sit (§8). If an
+    # advisory lane is ever wanted it has to be visibly separate and unable to move a verdict;
+    # `tests/test_invariants.py` is what would have to keep being true.
     "e2e: builds the wheel + sdist and installs each into a clean venv; slow, and needs an index to build (`-m 'not e2e'` to skip)",
 ]
 

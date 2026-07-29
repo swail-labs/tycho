@@ -1,0 +1,647 @@
+"""The turn digest and its selectivity (strategy §9.1/§11.1).
+
+Two things are load-bearing and the tests are grouped by them:
+
+1. **The ladder is the spine.** It must show all four rungs and must never tick one the record
+   can't support — `record.stage_of` returns the highest *matching* rung, not a chain, so
+   `artifact_changed` does not imply anything ran.
+2. **Silence is the product.** Every signal has to fire when it should *and stay quiet when it
+   shouldn't*, decay when it stops being news, and — the subtle one — none of that may touch
+   the verdict relay, which is a different channel answering a different question.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import time
+from pathlib import Path
+
+import pytest
+from conftest import turn_record
+
+from tycho.views import digest
+from tycho.wire import hook
+from tycho.store import record, state
+from tycho.model import Stage, Verdict
+
+# --- record builders ---------------------------------------------------------
+
+
+def rec(
+    verdict: str = Verdict.VERIFIED.name,
+    stage: str = Stage.CLAIM_SUPPORTED.value,
+    files: int = 1,
+    checks=(),
+    claims=(),
+    commands=None,
+    turn_id: str = "abc123",
+    ended_at: float = 2.0,
+) -> dict:
+    """A record dict shaped exactly like `record.build` writes one."""
+    return turn_record(
+        id=turn_id,
+        ended_at=ended_at,
+        model=None,
+        agent_version=None,
+        verdict=verdict,
+        stage=stage,
+        checks=list(checks),
+        files=[{"path": f"src/f{i}.py", "kind": "edit", "ts": 1.0} for i in range(files)],
+        commands=[{"cmd": "pytest -q", "runner": True, "outcome": "passed"}]
+        if commands is None
+        else list(commands),
+        claims=list(claims),
+    )
+
+
+def check(name: str, status: str, evidence: str = "because") -> dict:
+    return {"name": name, "status": status, "evidence": evidence}
+
+
+# --- the acceptance ladder ---------------------------------------------------
+
+
+@pytest.mark.parametrize("stage", [s.value for s in Stage])
+def test_ladder_shows_all_four_rungs_at_every_stage(stage):
+    """The unreached rungs are the point — a truncated ladder can't say what's missing."""
+    line = digest.render(rec(stage=stage))
+    for rung in Stage:
+        assert rung.value in line
+
+
+def test_ladder_ticks_up_to_the_reached_rung_and_dots_the_rest():
+    line = digest._ladder(rec(stage=Stage.ARTIFACT_CHANGED.value))
+    assert line == "✓ attempted  ✓ executed  ✓ artifact_changed  · claim_supported"
+
+
+def test_ladder_ticks_every_rung_at_the_top():
+    assert digest._ladder(rec()).count("✓") == 4
+
+
+def test_ladder_never_claims_a_run_that_did_not_happen():
+    """`stage_of` picks the highest matching rung, not a chain: a turn that wrote a file but
+    ran nothing is `artifact_changed`. Ticking `executed` under it would have Tycho assert a
+    test run that never happened — the exact class of claim it exists to disprove."""
+    line = digest._ladder(rec(stage=Stage.ARTIFACT_CHANGED.value, commands=[]))
+    assert line == "✓ attempted  · executed  ✓ artifact_changed  · claim_supported"
+
+
+def test_ladder_never_claims_a_file_landed_when_none_is_recorded():
+    line = digest._ladder(rec(stage=Stage.CLAIM_SUPPORTED.value, files=0))
+    assert "· artifact_changed" in line and "✓ claim_supported" in line
+
+
+def test_ladder_never_ticks_a_claim_with_no_rung_under_it():
+    """An MCP-only turn matches `claim_supported` with nothing executed and nothing changed —
+    a top rung ticked over two dots reads as a chain that isn't there."""
+    line = digest._ladder(rec(stage=Stage.CLAIM_SUPPORTED.value, files=0, commands=[]))
+    assert line == "✓ attempted  · executed  · artifact_changed  · claim_supported"
+
+
+def test_ladder_ticks_nothing_for_an_unknown_stage():
+    """A record from an older schema renders the ladder empty, never a traceback."""
+    line = digest._ladder(rec(stage="teleported"))
+    assert "✓" not in line and line.count("·") == 4
+
+
+# --- signals: each one fires ... ---------------------------------------------
+
+
+def test_adverse_verdict_speaks_and_names_the_failing_check():
+    signal = digest.speaks(rec(verdict="FAILED", checks=[check("test_freshness", "STALE", "old")]))
+    assert signal is not None and signal.key.startswith("adverse")
+    assert "test_freshness" in signal.headline and "old" in signal.headline
+
+
+@pytest.mark.parametrize("verdict", ["FAILED", "STALE", "OVERRIDDEN"])
+def test_every_adverse_verdict_speaks(verdict):
+    assert digest.speaks(rec(verdict=verdict)) is not None
+
+
+def test_unbacked_claim_speaks_when_prose_says_done_but_the_ladder_stopped_short():
+    """§4's 'code written, tests never ran' — and it fires on a turn the verdict is happy with,
+    which is exactly the gap the verdict-shaped output left open."""
+    signal = digest.speaks(
+        rec(stage=Stage.ARTIFACT_CHANGED.value, claims=["Fixed the retry logic, all tests pass."])
+    )
+    assert signal is not None and signal.key.startswith("unbacked_claim")
+    assert "artifact_changed" in signal.headline
+
+
+def test_regression_speaks_on_the_first_unproven_turn_after_a_green_run():
+    history = [rec() for _ in range(4)]
+    signal = digest.speaks(rec(verdict="INDETERMINATE"), history)
+    assert signal is not None and signal.key == "regression"
+    assert "4" in signal.headline
+
+
+def test_blast_radius_speaks_when_a_turn_dwarfs_this_repos_recent_turns():
+    history = [rec(files=1) for _ in range(6)]
+    signal = digest.speaks(rec(files=9), history)
+    assert signal is not None and signal.key == "blast_radius"
+    assert "9 files" in signal.headline
+
+
+# --- ... and each one stays quiet ---------------------------------------------
+
+
+def test_a_routine_proven_turn_says_nothing():
+    """The whole product: 'VERIFIED again, all nine checks pass' is not news (§11.1)."""
+    assert digest.speaks(rec(), [rec() for _ in range(6)]) is None
+
+
+def test_unbacked_claim_stays_quiet_when_the_ladder_actually_got_there():
+    assert digest.speaks(rec(claims=["Fixed it — all tests pass."])) is None
+
+
+def test_unbacked_claim_stays_quiet_on_work_in_progress_that_claims_nothing():
+    """Stopping at `artifact_changed` mid-task is normal; interrupting for it is the wallpaper."""
+    wip = rec(stage=Stage.ARTIFACT_CHANGED.value, claims=["Looking at the parser."])
+    assert digest.speaks(wip) is None
+
+
+def test_regression_stays_quiet_without_a_real_green_streak():
+    """Two greens is a coincidence, not a streak."""
+    assert digest.speaks(rec(verdict="INDETERMINATE"), [rec(), rec()]) is None
+
+
+def test_regression_stays_quiet_when_the_repo_was_already_unproven():
+    history = [rec(verdict="INDETERMINATE") for _ in range(5)]
+    assert digest.speaks(rec(verdict="INDETERMINATE"), history) is None
+
+
+def test_blast_radius_stays_quiet_on_a_repo_where_wide_turns_are_normal():
+    """The point of reading this repo's own record: 9 files is unremarkable here."""
+    history = [rec(files=8) for _ in range(6)]
+    assert digest.speaks(rec(files=9), history) is None
+
+
+def test_blast_radius_stays_quiet_below_the_floor():
+    """3 files against a median of 1 is a multiple, not a blast radius."""
+    assert digest.speaks(rec(files=3), [rec(files=1) for _ in range(6)]) is None
+
+
+def test_blast_radius_stays_quiet_without_enough_history_to_have_a_norm():
+    """A fresh repo has no norm to deviate from; inventing one is loudest when we know least."""
+    assert digest.speaks(rec(files=30), [rec(files=1)]) is None
+
+
+# --- novelty decay ------------------------------------------------------------
+
+
+def test_the_same_signal_three_turns_running_stops_being_news():
+    failing = [check("test_freshness", "STALE", "old")]
+    prior = rec(verdict="FAILED", checks=failing)
+    assert digest.speaks(prior, []) is not None                 # 1st: news
+    assert digest.speaks(prior, [prior]) is not None             # 2nd: still news
+    assert digest.speaks(prior, [prior, prior]) is None          # 3rd: not news any more
+
+
+def test_decay_is_keyed_on_the_specific_condition_not_the_signal_kind():
+    """Two FAILED turns on the same check are the same news; a FAILED turn on a check that was
+    fine yesterday is new news, even though both are the `adverse` signal."""
+    old = rec(verdict="FAILED", checks=[check("test_freshness", "STALE")])
+    new = rec(verdict="FAILED", checks=[check("scope_drift", "FAIL")])
+    assert digest.speaks(new, [old, old]) is not None
+
+
+def test_a_signal_that_fired_once_two_turns_ago_is_still_news():
+    """Intersection, not union — an intermittent condition never decays into silence."""
+    bad = rec(verdict="FAILED", checks=[check("test_freshness", "STALE")])
+    assert digest.speaks(bad, [rec(), bad]) is not None
+
+
+def test_a_turn_that_gets_worse_is_news_again():
+    """The worst false silence: two turns fail one check, the third fails three, and keying the
+    decay on the first bad check alone made *that* the turn Tycho stopped mentioning."""
+    standing = [check("command_execution", "FAIL", "pytest exited 1")]
+    prior = rec(verdict="FAILED", checks=standing)
+    worse = rec(verdict="FAILED", checks=[
+        *standing,
+        check("assertion_weakening", "FAIL", "assert removed"),
+        check("scope_drift", "FAIL", "touched vendor/"),
+    ])
+    assert digest.speaks(worse, [prior, prior]) is not None
+
+
+def test_a_genuine_failure_after_two_overrides_is_still_news():
+    """An agent that overrides the same check twice must not silence the real failure after."""
+    over = rec(verdict="OVERRIDDEN", checks=[check("test_freshness", "STALE", "not run")])
+    genuine = rec(verdict="FAILED", checks=[check("test_freshness", "STALE", "not run")])
+    assert digest.speaks(genuine, [over, over]) is not None
+
+
+def test_decay_can_be_switched_off_for_a_caller_who_asked_for_everything():
+    bad = rec(verdict="FAILED", checks=[check("test_freshness", "STALE")])
+    assert digest.speaks(bad, [bad, bad], decay=False) is not None
+
+
+# --- rendering ----------------------------------------------------------------
+
+
+def test_the_unprompted_digest_fits_the_hook_output_budget():
+    """§6.1 says ~4 lines, and §4 says evidence nobody reads is evidence that doesn't exist."""
+    for signal in (None, digest.Signal("x", "y" * 200)):
+        assert len(digest.brief(rec(files=40, claims=["a" * 500]), signal).splitlines()) <= 4
+
+
+def test_the_brief_leads_with_why_we_spoke_not_with_the_verdict():
+    signal = digest.speaks(rec(verdict="FAILED", checks=[check("scope_drift", "FAIL", "wat")]))
+    first = digest.brief(rec(verdict="FAILED"), signal).splitlines()[0]
+    assert "scope_drift" in first
+
+
+def test_the_headline_names_the_worst_check_not_the_first_one_registered():
+    """`CHECKS` order is registry order, not severity: a standing STALE that happens to sort
+    earlier must not headline over the FAIL that actually failed the turn."""
+    signal = digest.speaks(rec(verdict="FAILED", checks=[
+        check("test_freshness", "STALE", "src/core.py still uncovered"),
+        check("assertion_weakening", "FAIL", "assert removed from test_core.py"),
+    ]))
+    assert signal is not None
+    assert "assertion_weakening" in signal.headline
+    assert "test_freshness" not in signal.headline
+
+
+def test_the_full_digest_dates_the_record_it_is_showing():
+    """`tycho show` on a turn the hook never wrote is stale information with nothing saying so."""
+    old = digest.render(rec(ended_at=time.time() - 400 * 86400)).splitlines()[0]
+    assert "20" in old  # an absolute date, not a bare relative
+    assert "ago" in digest.render(rec(ended_at=time.time() - 7200)).splitlines()[0]
+
+
+def test_the_full_digest_is_a_receipt_of_the_turn():
+    text = digest.render(
+        rec(
+            verdict="FAILED",
+            stage=Stage.EXECUTED.value,
+            files=2,
+            checks=[check("file_state", "FAIL", "src/f0.py missing")],
+            claims=["Added the helper."],
+        )
+    )
+    assert "src/f0.py" in text          # what changed
+    assert "pytest -q → passed" in text  # what ran, and what it returned
+    assert "Added the helper." in text   # what was claimed
+    assert "file_state — src/f0.py missing" in text  # what is still unverified
+    assert "FAILED" in text.splitlines()[0]           # the verdict: one field, not the headline
+
+
+def test_the_full_digest_says_so_when_nothing_is_outstanding():
+    assert "nothing" in digest.render(rec()).splitlines()[-1]
+
+
+# --- the shareable receipt ----------------------------------------------------
+#
+# A catch is the one artefact anyone screenshots, so `--share` has two jobs at once, and
+# they pull against each other: keep the story legible to a stranger, and take the user's
+# repo out of it. Neither may quietly win.
+
+
+def test_a_shared_receipt_keeps_the_story():
+    """Claim beside the evidence that contradicts it — that *is* the screenshot. A share
+    view that redacted its way down to a verdict word would be safe and pointless."""
+    text = digest.render(
+        rec(verdict="FAILED",
+            stage=Stage.EXECUTED.value,
+            checks=[check("file_state", "FAIL", "the file it claimed to add is not on disk")],
+            claims=["Added the helper."]),
+        share=True,
+    )
+    assert "Added the helper." in text
+    assert "file_state — the file it claimed to add is not on disk" in text
+    assert "FAILED" in text
+
+
+def test_a_shared_receipt_drops_the_repo_layout():
+    """`src/billing/internal/pricing.py` names a private tree; `pricing.py` tells the same
+    story about the same turn without publishing where it lives."""
+    record_ = rec(files=0)
+    record_["files"] = [{"path": "src/billing/internal/pricing.py", "kind": "edit", "ts": 1.0}]
+
+    text = digest.render(record_, share=True)
+
+    assert "pricing.py" in text
+    assert "src/billing/internal" not in text
+
+
+def test_a_shared_receipt_drops_the_layout_from_the_evidence_too():
+    """The leak this closes: the `changed` line shortened the path, and the check's own
+    evidence published it in full two lines below — the flag's promise broken inside one
+    screen. Whatever names a path has to be collapsed everywhere it appears."""
+    text = digest.render(
+        rec(verdict="FAILED",
+            checks=[check("test_freshness", "STALE",
+                          "src/billing/internal/pricing.py edited after the last passing run")],
+            claims=["Rewrote src/billing/internal/pricing.py and it passes."],
+            commands=[{"cmd": ".venv/bin/python -m pytest tests/billing/test_pricing.py",
+                       "runner": True, "outcome": "failed"}]),
+        share=True,
+    )
+    assert "src/billing/internal" not in text
+    assert "tests/billing" not in text
+    assert ".venv/bin" not in text
+    # …and the evidence still says what happened.
+    assert "pricing.py edited after the last passing run" in text
+    assert "test_pricing.py → failed" in text
+
+
+def test_the_ordinary_receipt_still_carries_the_full_path():
+    """`tycho show` is for the person who has to go fix it — a basename would make them grep."""
+    record_ = rec(files=0)
+    record_["files"] = [{"path": "src/billing/internal/pricing.py", "kind": "edit", "ts": 1.0}]
+
+    assert "src/billing/internal/pricing.py" in digest.render(record_)
+
+
+def test_a_shared_receipt_drops_the_turn_id():
+    # A turn id means nothing off this machine and is the only per-session handle on the line.
+    assert "abc123" not in digest.render(rec(turn_id="abc123"), share=True)
+    assert "abc123" in digest.render(rec(turn_id="abc123"))
+
+
+def test_a_shared_receipt_says_what_tycho_is():
+    """Self-explanatory is the requirement: it goes on a timeline where nobody has heard of
+    the acceptance ladder, so the receipt has to introduce itself."""
+    assert "tycho" in digest.render(rec(verdict="FAILED"), share=True).lower().splitlines()[-1]
+
+
+# --- malformed records --------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        {},
+        {"verdict": None, "stage": None, "files": None, "commands": None, "claims": None},
+        {"files": "not a list", "checks": 7, "claims": {"a": 1}},
+        {"files": [None, 5, {"path": None}], "commands": [{"cmd": None}], "claims": [None, 3]},
+        {"verdict": ["FAILED"], "stage": 12, "id": 99},
+        {"checks": [{"status": "FAIL"}]},  # a failing check with no name and no evidence
+    ],
+)
+def test_a_malformed_record_renders_rather_than_raises(row):
+    """Records come off disk — older schema, crashed append, hand-edited. Coerce, never raise."""
+    assert isinstance(digest.render(row), str)
+    assert isinstance(digest.brief(row, digest.speaks(row)), str)
+    assert isinstance(digest.signals(row, [row, {}]), tuple)
+
+
+def test_speaks_never_raises_on_junk_history():
+    assert digest.speaks(rec(), [{}, {"verdict": None}, {"files": "x"}]) is None
+
+
+# --- the hook: silence on routine turns, a digest on anomalous ones -----------
+#
+# Real Stop payloads through `hook.run`, because the relay/digest seam only exists there.
+# Transcripts are synthesized, not fixtures: the point is a *sequence* of turns in one repo,
+# and history is what the selectivity reads.
+
+BASE = time.time() - 10_000.0
+
+
+def _transcript(repo: Path, name: str, *, n: int, files, run=None, claim: str) -> Path:
+    """One single-turn Claude transcript, with the edited files really written to disk.
+
+    `os.utime` pins each file's mtime to its event timestamp so `test_freshness` sees the same
+    ordering the transcript describes — otherwise every synthetic turn reads as STALE.
+    """
+    t = BASE + n * 100
+    rows = [{"type": "system", "timestamp": _iso(t), "content": "start"}]
+    for i, (path, content) in enumerate(files):
+        target = repo / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content)
+        os.utime(target, (t, t))
+        rows += [
+            {"type": "assistant", "timestamp": _iso(t), "message": {"role": "assistant",
+             "content": [{"type": "tool_use", "id": f"e{n}{i}", "name": "Write",
+                          "input": {"file_path": path, "content": content}}]}},
+            {"type": "user", "timestamp": _iso(t + 1), "toolUseResult": {
+                "type": "create", "filePath": path, "content": content, "originalFile": None,
+                "structuredPatch": []},
+             "message": {"role": "user", "content": [{"type": "tool_result",
+              "tool_use_id": f"e{n}{i}", "content": "File created", "is_error": False}]}},
+        ]
+        t += 2
+    if run:
+        rows += [
+            {"type": "assistant", "timestamp": _iso(t), "message": {"role": "assistant",
+             "content": [{"type": "tool_use", "id": f"r{n}", "name": "Bash",
+                          "input": {"command": run}}]}},
+            {"type": "user", "timestamp": _iso(t + 1), "toolUseResult": {
+                "stdout": "12 passed in 0.4s", "stderr": "", "interrupted": False,
+                "isImage": False},
+             "message": {"role": "user", "content": [{"type": "tool_result",
+              "tool_use_id": f"r{n}", "content": "12 passed in 0.4s", "is_error": False}]}},
+        ]
+        t += 2
+    rows.append({"type": "assistant", "timestamp": _iso(t), "message": {
+        "role": "assistant", "content": [{"type": "text", "text": claim}]}})
+    path = repo / ".t" / f"{name}.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+    return path
+
+
+def _iso(ts: float) -> str:
+    import datetime
+
+    return datetime.datetime.fromtimestamp(ts, datetime.UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+def _repo(tmp_path: Path) -> Path:
+    """A repo Tycho recognizes as having tests — otherwise the test checks are all disabled."""
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_seed.py").write_text("def test_seed():\n    assert True\n")
+    return tmp_path
+
+
+def _routine(repo: Path, n: int) -> Path:
+    """A proven turn: wrote a file, ran the suite after it, said so. The 90% case."""
+    return _transcript(
+        repo, f"routine{n}", n=n, files=[(f"src/m{n}.py", f"x = {n}\n")],
+        run="pytest -q", claim="Added the helper; tests pass.",
+    )
+
+
+def _stop(repo: Path, transcript: Path) -> str:
+    return json.dumps({"cwd": str(repo), "transcript_path": str(transcript)})
+
+
+def test_hook_says_nothing_at_all_on_a_routine_turn(tmp_path: Path):
+    repo = _repo(tmp_path)
+    assert [hook.run(_stop(repo, _routine(repo, n))) for n in range(4)] == [None] * 4
+
+
+def test_a_silent_turn_is_still_recorded(tmp_path: Path):
+    """Silence is a decision not to interrupt, not a decision not to verify — `tycho show`
+    and `tycho blame` must still have the turn."""
+    repo = _repo(tmp_path)
+    assert hook.run(_stop(repo, _routine(repo, 0))) is None
+    assert len(record.read(repo)) == 1
+
+
+def test_hook_speaks_with_a_tight_digest_on_an_anomalous_turn(tmp_path: Path):
+    repo = _repo(tmp_path)
+    for n in range(3):
+        hook.run(_stop(repo, _routine(repo, n)))
+    anomalous = _transcript(
+        repo, "claimed", n=9, files=[("src/retry.py", "def retry():\n    return 1\n")],
+        run=None, claim="Fixed the retry logic — all tests pass.",
+    )
+    out = hook.run(_stop(repo, anomalous))
+    assert out is not None
+    text = out["systemMessage"]
+    assert "evidence stopped at" in text
+    assert "· executed" in text  # and it does not claim the run that never happened
+    assert len(text.splitlines()) <= 4
+
+
+def test_hook_never_raises_on_a_record_it_cannot_digest(tmp_path: Path, monkeypatch):
+    """The Stop hook's standing contract. A digest that blows up costs at most the digest."""
+    repo = _repo(tmp_path)
+    monkeypatch.setattr(digest, "speaks", lambda *a, **k: 1 / 0)
+    assert hook.run(_stop(repo, _routine(repo, 0))) is None  # routine turn: nothing was lost
+
+
+def test_a_digest_failure_falls_back_to_the_verdict_on_an_unproven_turn(tmp_path: Path,
+                                                                        monkeypatch):
+    """Losing an adverse verdict to a rendering bug is the one outcome worse than noise."""
+    repo = _repo(tmp_path)
+    monkeypatch.setattr(digest, "speaks", lambda *a, **k: 1 / 0)
+    bad = _transcript(repo, "bad", n=1, files=[("src/x.py", "x = 1\n")], run=None,
+                      claim="I searched the web for the docs.")
+    out = hook.run(_stop(repo, bad))
+    assert out is not None and "Tycho:" in out["systemMessage"]
+
+
+# --- the seam: the relay is a different channel answering a different question --
+
+
+def test_the_relay_still_fires_on_a_turn_whose_digest_stays_silent(tmp_path: Path):
+    """The subtle one. "Should the agent fix this?" and "should we interrupt the human?" are
+    different questions: the digest decays a standing failure into silence, the relay must keep
+    pushing the agent at it regardless. A regression here is invisible until someone notices the
+    agent quietly stopped fixing things."""
+    repo = _repo(tmp_path)
+    state.set_relay_enabled(repo, True)
+    unproven = [
+        _transcript(repo, f"u{n}", n=n, files=[(f"src/u{n}.py", "x = 1\n")], run=None,
+                    claim="I searched the web for the docs.")
+        for n in range(4)
+    ]
+    for t in unproven[:3]:
+        hook.run(_stop(repo, t))
+        state.reset_relay_streak(repo)  # a fresh user turn each time, so the leash isn't spent
+    # By now the same condition has fired twice running — the human-facing digest has decayed.
+    history = record.read(repo, limit=digest.HISTORY)
+    turn = record.read(repo, limit=1)[0]
+    assert digest.speaks(turn, history[1:]) is None
+
+    out = hook.run(_stop(repo, unproven[3]))
+    assert out is not None
+    assert "hookSpecificOutput" in out  # ...and the relay fired anyway
+    assert "additionalContext" in out["hookSpecificOutput"]
+
+
+def test_the_digest_never_leaks_into_the_model_channel(tmp_path: Path):
+    """`additionalContext` is the model's copy and must stay the adverse-check report: the
+    digest is written for a human reading a terminal, and shipping it to the model both spends
+    context and re-describes a turn the model just took."""
+    repo = _repo(tmp_path)
+    state.set_relay_enabled(repo, True)
+    bad = _transcript(repo, "bad", n=1, files=[("src/x.py", "x = 1\n")], run=None,
+                      claim="I searched the web for the docs.")
+    context = hook.run(_stop(repo, bad))["hookSpecificOutput"]["additionalContext"]
+    assert "`tycho show`" not in context
+    assert "attempted" not in context  # no ladder — that is the human's view
+
+
+def test_relay_semantics_are_untouched_by_selectivity(tmp_path: Path):
+    """Relay off (the default) is still the only thing that keeps Tycho out of the model's
+    context — silence on the human channel must not have quietly opened one."""
+    repo = _repo(tmp_path)
+    for n in range(4):
+        out = hook.run(_stop(repo, _routine(repo, n)))
+        assert out is None or set(out) == {"systemMessage"}
+
+
+def test_an_unproven_turn_always_reaches_the_human_when_the_relay_is_on(tmp_path: Path):
+    """Turning the relay on is an operator saying "keep going until this is VERIFIED", so the
+    turn where the relay's leash runs out must not end in total silence on a standing failure."""
+    repo = _repo(tmp_path)
+    state.set_relay_enabled(repo, True)
+    outs = [
+        hook.run(_stop(repo, _transcript(
+            repo, f"u{n}", n=n, files=[(f"src/u{n}.py", "x = 1\n")], run=None,
+            claim="I searched the web for the docs.")))
+        for n in range(6)
+    ]
+    assert all(o is not None for o in outs)          # never silent while the relay is on
+    assert not all("hookSpecificOutput" in o for o in outs)  # and the leash really did run out
+
+
+# --- the receipt counts paths and stays readable ------------------------------
+
+
+def _multi_edit(path: str, times: int) -> list[dict]:
+    return [{"path": path, "kind": "edit", "ts": float(i)} for i in range(times)]
+
+
+def test_a_file_edited_repeatedly_is_one_changed_file():
+    """The record holds one row per write, so four edits to two files rendered `4 files:` and
+    listed the same path three times — an inflated number on the artifact whose whole pitch is
+    that it can't be faked by narrating."""
+    r = rec(files=0)
+    r["files"] = _multi_edit("tycho/store/state.py", 3) + [
+        {"path": "tests/test_state.py", "kind": "edit", "ts": 4.0}]
+    out = digest.render(r)
+    assert "2 files: tycho/store/state.py, tests/test_state.py" in out
+    assert out.count("tycho/store/state.py") == 1
+
+
+def test_re_editing_one_file_is_not_a_wide_turn():
+    """`_unusual_breadth` compared an edit count against a file count, so nine edits to one
+    file read as a nine-file turn and the digest spoke up about it. Speaking on a routine turn
+    is the failure mode the selectivity exists to prevent (§11.1)."""
+    r = rec(files=0)
+    r["files"] = _multi_edit("src/f0.py", 9)
+    assert digest.speaks(r, [rec(files=1) for _ in range(6)]) is None
+
+
+def test_a_create_survives_a_later_edit_to_the_same_path():
+    r = rec(files=0)
+    r["files"] = [{"path": "src/new.py", "kind": "create", "ts": 1.0},
+                  {"path": "src/new.py", "kind": "edit", "ts": 2.0}]
+    assert "1 file: src/new.py*" in digest.render(r)
+
+
+def test_a_command_is_one_line_however_it_was_written():
+    """A heredoc went into the receipt verbatim, putting a whole test function in the digest —
+    one command, twelve lines, the layout gone. Collapsed to a line and cut to the gutter
+    width; a short command still renders in full."""
+    body = "\n".join(f"    assert thing_{i} == {i}" for i in range(20))
+    heredoc = f"cat >> tests/test_x.py <<'EOF'\ndef test_a():\n{body}\nEOF"
+    out = digest.render(rec(commands=[{"cmd": heredoc, "runner": False, "outcome": "passed"}]))
+    shown = [ln for ln in out.splitlines() if "cat >>" in ln]
+    assert len(shown) == 1, "a command must not span lines"
+    assert shown[0].endswith("→ passed") and "…" in shown[0]
+    assert "assert thing_19" not in out
+
+    short = "ruff check tycho"
+    assert f"{short} → passed" in digest.render(
+        rec(commands=[{"cmd": short, "runner": False, "outcome": "passed"}]))
+
+
+def test_the_command_list_is_capped_but_never_drops_a_run():
+    """"Did the suite run, and did it pass" is the line the receipt exists for, so the runner
+    survives the cap wherever it ran — dropping it to fit an earlier `grep` would cut the
+    evidence and keep the noise."""
+    noise = [{"cmd": f"grep -n x{i} src", "runner": False, "outcome": "passed"} for i in range(30)]
+    run = {"cmd": "pytest -q tests/", "runner": True, "outcome": "passed"}
+    out = digest.render(rec(commands=[run, *noise]))
+    assert "pytest -q tests/ → passed" in out
+    assert "(+19 more)" in out
+    assert len([ln for ln in out.splitlines() if "grep -n" in ln]) == 11

@@ -1,4 +1,4 @@
-"""TYCHO-8 — the hook compatibility contract: does Tycho notice when it isn't running?
+""" — the hook compatibility contract: does Tycho notice when it isn't running?
 
 The failure guarded against here is the quiet one: hooks that look installed, a verdict
 that never comes, and a developer who reads silence as "verified". So these tests care
@@ -15,9 +15,11 @@ from pathlib import Path
 
 import pytest
 
-from tycho import cli, doctor, hook
-from tycho import init as init_mod
-from tycho import state
+from tycho import cli
+from tycho.wire import doctor
+from tycho.wire import hook
+from tycho.wire import install as init_mod
+from tycho.store import state
 
 CLAUDE = Path(".claude/settings.json")
 
@@ -66,7 +68,13 @@ def test_uninstall_forgets_the_harness_so_doctor_stops_diagnosing_a_ghost(tmp_pa
     _install(tmp_path)
     init_mod.uninstall(tmp_path, only="claude")
     assert state.read_install(tmp_path) == {}
-    assert not state.dir_for(tmp_path).exists()  # nothing left to remember
+    # `.tycho/` survives here only because this directory has no git of its own, so the
+    # shadow history inside it is the project's ONLY record of what changed. `rmdir` refuses a
+    # non-empty directory by design — an uninstall must not silently delete a history. In a
+    # real git repo there is no shadow and the directory goes; `--purge` removes it either way.
+    from tycho.store import shadow
+    assert shadow.exists(tmp_path)
+    assert not (state.dir_for(tmp_path) / "install.json").exists()  # nothing left to remember
     assert doctor.healthy(doctor.diagnose(tmp_path))  # gone is not broken
 
 
@@ -93,7 +101,7 @@ def test_the_hook_records_a_heartbeat_when_it_runs(tmp_path: Path):
 
 
 def test_prompt_submit_records_a_pending_beat(tmp_path: Path, monkeypatch):
-    # TYCHO-94: the UserPromptSubmit hook marks a run in flight (pending), so the badge shows
+    # the UserPromptSubmit hook marks a run in flight (pending), so the badge shows
     # frost-blue "verifying" for the whole turn — the Stop hook later clears it to the verdict.
     import io
 
@@ -138,7 +146,7 @@ def test_doctor_reports_the_heartbeat_age(tmp_path: Path):
 
 def test_a_command_that_does_not_resolve_is_broken(tmp_path: Path, monkeypatch):
     # The silent death: the entry is there, the harness runs it, nothing exists to run.
-    monkeypatch.setattr(init_mod, "hook_command", lambda: "/nonexistent/python -m tycho.cli hook")
+    monkeypatch.setattr(init_mod.spelling, "hook_command", lambda: "/nonexistent/python -m tycho.cli hook")
     _install(tmp_path)
     findings = doctor.diagnose(tmp_path)
     assert doctor.BROKEN in _levels(findings)
@@ -174,11 +182,9 @@ def test_a_stale_path_to_a_deleted_venv_is_broken(tmp_path: Path):
 
 
 def test_the_console_script_form_is_not_flagged(tmp_path: Path):
-    # Regression, caught by running doctor on the real repo: `init.hook_command()` returns
-    # the console script (`.venv/bin/tycho hook`) or `<python> -m tycho.cli hook` depending
-    # on whether the venv is on PATH at that instant. Comparing the installed command
-    # against it marked four perfectly working hooks OUTDATED. Both forms run; both are
-    # healthy. Anything that resolves and is ours passes.
+    # `init.hook_command()` returns a console script or `<python> -m` depending on whether
+    # the venv is on PATH right then, and comparing against it marked four working hooks
+    # OUTDATED. Both forms run: anything that resolves and is ours passes.
     script = tmp_path / "venv" / "bin" / "tycho"
     script.parent.mkdir(parents=True)
     script.write_text("#!/bin/sh\n")
@@ -198,6 +204,105 @@ def test_malformed_config_is_broken_not_a_traceback(tmp_path: Path):
     assert doctor.BROKEN in _levels(doctor.diagnose(tmp_path))
 
 
+# --- the turn record's exposure to git ---------------------------------------
+# 0.1.0 shipped no gitignore step, so an upgraded repo can be committing turns.jsonl — the
+# agent's prose and every command it ran. An ignore rule doesn't untrack what git follows.
+
+
+def _repo(tmp_path: Path) -> Path:
+    import subprocess
+
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "config", "user.email", "t@t"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "config", "user.name", "t"], check=True)
+    return tmp_path
+
+
+def _commit_tycho_dir(repo: Path) -> None:
+    """What a 0.1.0-era `git add -A` did: .tycho/ committed, no ignore rule anywhere."""
+    import subprocess
+
+    state.dir_for(repo).mkdir(parents=True, exist_ok=True)
+    (state.dir_for(repo) / "turns.jsonl").write_text('{"claims":["I hardcoded the creds"]}\n')
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "work"], check=True)
+
+
+def test_an_unignored_tycho_dir_is_reported(tmp_path: Path):
+    repo = _repo(tmp_path)
+    state.dir_for(repo).mkdir(parents=True)
+    findings = doctor._exposure(repo)
+    assert _levels(findings) == [doctor.EXPOSED]
+    assert "tycho init" in findings[0].fix
+
+
+def test_a_tracked_tycho_dir_is_reported_louder_and_init_is_not_the_fix(tmp_path: Path):
+    # The one init cannot repair. Doctor names the command and refuses to run it: untracking
+    # someone's files is their call, not a diagnostic's.
+    repo = _repo(tmp_path)
+    _commit_tycho_dir(repo)
+    findings = doctor._exposure(repo)
+    assert doctor.TRACKED in _levels(findings)
+    tracked = next(f for f in findings if f.level == doctor.TRACKED)
+    assert "git rm -r --cached .tycho/" in tracked.fix
+    assert "cannot repair" in tracked.fix
+
+
+def test_init_leaves_an_already_tracked_tycho_dir_tracked(tmp_path: Path):
+    # The reason the finding is distinct: adding the ignore rule fixes only half of it.
+    repo = _repo(tmp_path)
+    _commit_tycho_dir(repo)
+    _install(repo)
+    assert doctor.TRACKED in _levels(doctor._exposure(repo))
+
+
+def test_an_ignored_untracked_tycho_dir_says_nothing(tmp_path: Path):
+    repo = _repo(tmp_path)
+    (repo / ".gitignore").write_text(".tycho/\n")
+    state.dir_for(repo).mkdir(parents=True)
+    assert doctor._exposure(repo) == []
+
+
+def test_exposure_is_silent_outside_a_git_repo(tmp_path: Path):
+    # Fail safe: no git, no repo, no unreadable index may produce a privacy alarm.
+    assert doctor._exposure(tmp_path) == []
+
+
+def test_exposure_never_makes_doctor_unhealthy(tmp_path: Path):
+    # It is a privacy finding, not a "Tycho isn't verifying" one — the footer must not lie.
+    repo = _repo(tmp_path)
+    _commit_tycho_dir(repo)
+    _install(repo)
+    findings = doctor.diagnose(repo)
+    assert doctor.TRACKED in _levels(findings)
+    assert doctor.healthy(findings)
+
+
+def test_diagnose_reports_exposure(tmp_path: Path):
+    repo = _repo(tmp_path)
+    state.dir_for(repo).mkdir(parents=True)
+    assert doctor.EXPOSED in _levels(doctor.diagnose(repo))
+
+
+# --- the upgrade note: 0.2.0 went quiet --------------------------------------
+
+
+def test_an_old_schema_install_is_told_that_0_2_0_is_quiet(tmp_path: Path):
+    # "I updated and Tycho stopped working" is this release's likeliest ticket. Said once,
+    # to the upgrader already running doctor — not per turn.
+    _install(tmp_path)
+    path = state.dir_for(tmp_path) / "install.json"
+    data = json.loads(path.read_text())
+    path.write_text(json.dumps({**data, "schema": 1}))
+    text = doctor.render(doctor.diagnose(tmp_path))
+    assert "quiet by design" in text and "tycho show" in text
+
+
+def test_a_current_install_is_not_told_anything_about_the_quiet(tmp_path: Path):
+    _install(tmp_path)
+    assert "quiet by design" not in doctor.render(doctor.diagnose(tmp_path))
+
+
 # --- what doctor must NOT cry wolf about -------------------------------------
 
 def test_a_fresh_install_that_has_not_fired_yet_is_not_broken(tmp_path: Path):
@@ -213,7 +318,7 @@ def test_a_fresh_install_that_has_not_fired_yet_is_not_broken(tmp_path: Path):
 def test_a_repo_with_no_tycho_is_not_broken(tmp_path: Path):
     findings = doctor.diagnose(tmp_path)
     assert doctor.healthy(findings)
-    assert "no Tycho hook is installed" in doctor.render(findings)
+    assert "Tycho is not set up on this machine" in doctor.render(findings)
 
 
 def test_an_uninstalled_harness_is_not_diagnosed(tmp_path: Path):
@@ -222,18 +327,22 @@ def test_an_uninstalled_harness_is_not_diagnosed(tmp_path: Path):
     assert "claude" in text and "cursor:" not in text
 
 
-# --- harness version drift (TYCHO-34) ----------------------------------------
+# --- harness version drift ----------------------------------------
 
 def test_drift_reports_when_the_harness_moved_past_the_verified_version(monkeypatch):
+    # Read the pin rather than restate it: these test the drift *rule*, and hardcoding the
+    # version made a legitimate re-verification look like a regression.
+    pinned = doctor.harness_mod.VERIFIED_AGAINST["claude"]["version"]
     monkeypatch.setattr(doctor, "_probe_version", lambda probe: "2.9.9 (Claude Code)")
     findings = doctor._harness_drift(["claude"])
     assert _levels(findings) == [doctor.DRIFT]
-    assert "verified against 2.1.210" in findings[0].text and "2.9.9" in findings[0].text
+    assert f"verified against {pinned}" in findings[0].text and "2.9.9" in findings[0].text
 
 
 def test_drift_is_silent_when_the_version_still_matches(monkeypatch):
     # The pinned version appearing anywhere in the --version line means "current".
-    monkeypatch.setattr(doctor, "_probe_version", lambda probe: "2.1.210 (Claude Code)")
+    pinned = doctor.harness_mod.VERIFIED_AGAINST["claude"]["version"]
+    monkeypatch.setattr(doctor, "_probe_version", lambda probe: f"{pinned} (Claude Code)")
     assert doctor._harness_drift(["claude"]) == []
 
 
@@ -253,12 +362,13 @@ def test_probe_version_never_raises_on_a_missing_binary():
     assert doctor._probe_version(("tycho-no-such-harness-binary", "--version")) is None
 
 
-def test_pinned_versions_stay_in_step_with_the_support_matrix_doc():
-    # The dict is the machine copy of docs/harness-support.md's "Verified against" row —
-    # guard against the two drifting apart (the exact failure the matrix exists to prevent).
-    doc = (Path(__file__).parent.parent / "docs" / "harness-support.md").read_text(encoding="utf-8")
-    for name, pinned in doctor.harness_mod.VERIFIED_AGAINST.items():
-        assert pinned["version"] in doc, f"{name} version {pinned['version']} missing from harness-support.md"
+def test_every_enabled_harness_has_a_version_pin():
+    # The pin lets `doctor` say "your harness moved past the contract we checked". Without
+    # one it never warns, which looks exactly like "the contract is fine".
+    for name in doctor.harness_mod.ENABLED_NAMES:
+        pinned = doctor.harness_mod.VERIFIED_AGAINST.get(name)
+        assert pinned, f"{name} is enabled but has no verified-against pin"
+        assert pinned["version"] and pinned["probe"]
 
 
 # --- resolution rules --------------------------------------------------------
@@ -274,9 +384,8 @@ def test_resolves_absolute_path_only_when_executable(tmp_path: Path):
 
 
 def test_resolves_an_existing_path_regardless_of_platform(tmp_path: Path):
-    # The cross-platform half of the rule: an existing program path resolves, a
-    # missing one doesn't. On Windows existence is the whole test (no +x bit); on
-    # POSIX the sibling test above adds the executable-bit requirement.
+    # An existing program path resolves, a missing one doesn't. On Windows existence is the
+    # whole test; the POSIX sibling above adds the executable bit.
     prog = tmp_path / "prog"
     prog.write_text("#!/bin/sh\n")
     prog.chmod(0o755)
@@ -305,7 +414,7 @@ def test_cli_doctor_exits_ok_when_healthy(tmp_path: Path, monkeypatch, capsys):
 
 def test_cli_doctor_exits_unhealthy_when_broken(tmp_path: Path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(init_mod, "hook_command", lambda: "/nonexistent/python -m tycho.cli hook")
+    monkeypatch.setattr(init_mod.spelling, "hook_command", lambda: "/nonexistent/python -m tycho.cli hook")
     _install(tmp_path)
     assert cli.main(["doctor"]) == cli.ExitCode.UNHEALTHY
     out = capsys.readouterr().out
@@ -313,9 +422,8 @@ def test_cli_doctor_exits_unhealthy_when_broken(tmp_path: Path, monkeypatch, cap
 
 
 def test_cli_doctor_survives_a_legacy_codepage_console(tmp_path: Path, monkeypatch):
-    # TYCHO-40: doctor prints ✓/✗/•/→; a cp1252 (legacy Windows) console can't encode
-    # them, and an unguarded print() raises UnicodeEncodeError — a traceback where the
-    # whole point is a fail-open verdict. cli._force_utf8 must keep that from happening.
+    # A cp1252 console can't encode ✓/✗/•/→, and an unguarded print() then raises — a
+    # traceback where the whole point is a fail-open verdict.
     monkeypatch.chdir(tmp_path)
     _install(tmp_path)
     buf = io.BytesIO()
@@ -338,7 +446,7 @@ def test_cli_doctor_never_edits_anything(tmp_path: Path, monkeypatch):
 def test_verify_warns_loudly_when_the_hook_is_broken(tmp_path: Path, monkeypatch, capsys):
     # The diagnostic has to reach the command people actually run.
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(init_mod, "hook_command", lambda: "/nonexistent/python -m tycho.cli hook")
+    monkeypatch.setattr(init_mod.spelling, "hook_command", lambda: "/nonexistent/python -m tycho.cli hook")
     _install(tmp_path)
     cli.main(["verify"])
     err = capsys.readouterr().err
@@ -353,14 +461,14 @@ def test_verify_stays_quiet_when_the_hook_is_fine(tmp_path: Path, monkeypatch, c
 
 
 def test_bare_tycho_defaults_to_verify(tmp_path: Path, monkeypatch, capsys):
-    # `tycho` with no subcommand is the one-word on-demand verdict (TYCHO-124). No session
+    # `tycho` with no subcommand is the one-word on-demand verdict. No session
     # here, so it renders the same INDETERMINATE "no recent session" note `verify` does.
     monkeypatch.chdir(tmp_path)
     assert cli.main([]) == cli.ExitCode.OK
     assert "no recent session found" in capsys.readouterr().out
 
 
-# --- `tycho help`: what it is, and whether it's on here (TYCHO-38) -----------
+# --- `tycho help`: what it is, and whether it's on here -----------
 
 def _boom(*a, **k):
     raise RuntimeError("disk gone")
@@ -384,13 +492,13 @@ def test_help_tells_an_unhooked_repo_how_to_install(tmp_path: Path, monkeypatch,
     monkeypatch.chdir(tmp_path)
 
     assert cli.main(["help"]) == cli.ExitCode.OK
-    assert "NOT installed here — run `tycho init`" in capsys.readouterr().out
+    assert "NOT set up — run `tycho install`" in capsys.readouterr().out
 
 
 def test_help_reports_a_broken_hook_rather_than_claiming_it_is_live(tmp_path: Path, monkeypatch):
     # The whole point of the status line: it must not answer "installed" when the
     # installed thing could never fire.
-    monkeypatch.setattr(init_mod, "hook_command", lambda: "/nonexistent/python -m tycho.cli hook")
+    monkeypatch.setattr(init_mod.spelling, "hook_command", lambda: "/nonexistent/python -m tycho.cli hook")
     _install(tmp_path)
 
     assert "not working" in doctor.liveness(tmp_path)
@@ -403,3 +511,45 @@ def test_help_status_survives_a_doctor_that_blows_up(tmp_path: Path, monkeypatch
 
     assert cli.main(["help"]) == cli.ExitCode.OK
     assert "status unknown (RuntimeError) — run `tycho doctor`" in capsys.readouterr().out
+
+
+def test_the_claude_pin_has_real_transcript_data_behind_it():
+    """A version pin is a claim that someone re-read the harness's output at that version, and
+    a bare string cannot hold anyone to it — `2.1.210` sat here while the machine ran `2.1.220`
+    for a whole release, warning on every `doctor` and meaning nothing.
+
+    So the pin is tied to captured rows: bumping it requires a transcript the new version
+    actually wrote, and the reader tests then run against that data. See the procedure beside
+    `VERIFIED_AGAINST` for what re-verifying covers.
+    """
+    import json
+    from pathlib import Path
+
+    pinned = doctor.harness_mod.VERIFIED_AGAINST["claude"]["version"]
+    fixture = Path(__file__).parent / "fixtures" / "transcript_attribution.jsonl"
+    versions = {json.loads(ln).get("version")
+                for ln in fixture.read_text(encoding="utf-8").splitlines() if ln.strip()}
+    assert pinned in versions, (
+        f"claude is pinned to {pinned} but {fixture.name} carries {sorted(v for v in versions if v)} "
+        "— capture a transcript from the pinned version before moving the pin"
+    )
+
+
+def test_the_codex_pin_has_real_transcript_data_behind_it():
+    """Same rule for Codex, and it is the harness that proved why the rule is needed: the pin
+    sat at 0.144.4 across the release where Codex moved its shell tool to a shape the reader
+    couldn't see, and a bare string held nobody to noticing.
+
+    Codex spells its version `session_meta.payload.cli_version`, not a top-level `version`.
+    """
+    import json
+    from pathlib import Path
+
+    pinned = doctor.harness_mod.VERIFIED_AGAINST["codex"]["version"]
+    fixture = Path(__file__).parent / "fixtures" / "codex_attribution.jsonl"
+    versions = {(json.loads(ln).get("payload") or {}).get("cli_version")
+                for ln in fixture.read_text(encoding="utf-8").splitlines() if ln.strip()}
+    assert pinned in versions, (
+        f"codex is pinned to {pinned} but {fixture.name} carries {sorted(v for v in versions if v)} "
+        "— capture a transcript from the pinned version before moving the pin"
+    )

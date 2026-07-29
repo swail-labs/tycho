@@ -1,4 +1,4 @@
-"""TYCHO-35 — the opt-in verdict relay: the agent gets to see its own verdict.
+""" — the opt-in verdict relay: the agent gets to see its own verdict.
 
 Three things are load-bearing here, and the tests are grouped by them:
 
@@ -23,8 +23,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from tycho import cli, config, hook, state
-from tycho import init as init_mod
+from tycho import cli
+from tycho.store import config, state
+from tycho.wire import hook
+from tycho.wire import install as init_mod
 
 CLAUDE_FIXTURE = Path(__file__).parent / "fixtures" / "transcript_sample.jsonl"
 CODEX_FIXTURE = Path(__file__).parent / "fixtures" / "codex_transcript_sample.jsonl"
@@ -84,7 +86,7 @@ def test_toggle_resets_the_streak(tmp_path: Path):
 
 
 def test_flag_lives_in_tycho_toml_and_round_trips(tmp_path: Path):
-    # The on/off setting is the hand-editable `.tycho.toml` [relay] key (TYCHO-114), not a sentinel.
+    # The on/off setting is the hand-editable `.tycho.toml` [relay] key, not a sentinel.
     state.set_relay_enabled(tmp_path, True)
     text = config.path(tmp_path).read_text(encoding="utf-8")
     assert "[relay]" in text and "enabled = true" in text
@@ -266,7 +268,7 @@ def test_final_attempt_announces_it_is_the_last(tmp_path: Path, monkeypatch):
 
 
 def test_guard_uses_TYCHO_prefix_and_points_at_the_relay_command(tmp_path: Path):
-    # TYCHO-114: match the [TYCHO] status-line casing, and tell the user how to turn the relay off.
+    # match the [TYCHO] status-line casing, and tell the user how to turn the relay off.
     state.set_relay_enabled(tmp_path, True)
     out = hook.run(_claude_payload(tmp_path))
     ctx = out["hookSpecificOutput"]["additionalContext"]
@@ -379,7 +381,7 @@ def test_setup_question_no_leaves_it_off(tmp_path: Path):
 
 
 def test_setup_reflects_choice_in_tycho_toml(tmp_path: Path):
-    # The setup choice becomes the initial `.tycho.toml` [relay] value (TYCHO-114).
+    # The setup choice becomes the initial `.tycho.toml` [relay] value.
     _init_claude(tmp_path, relay_confirm=lambda: True)
     assert config.load(tmp_path).relay_enabled is True
 

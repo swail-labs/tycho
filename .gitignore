@@ -236,8 +236,9 @@ __marimo__/
 /CLAUDE.md
 /AGENTS.md
 
-# Local dev toggle (per-machine paths); commit tycho-target.ps1.example instead.
+# Local dev toggle (per-machine paths); commit scripts/tycho-target.ps1.example instead.
 /tycho-target.ps1
+scripts/tycho-target.ps1
 
 # graphify knowledge-graph output (local-only build artifact from the /graphify skill)
 graphify-out/

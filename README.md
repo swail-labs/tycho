@@ -1,12 +1,12 @@
 <div align="center">
 
-<img src="docs/swail-logo-rounded.png" alt="Swail" width="96">
+<img src="assets/swail-logo-rounded.png" alt="Swail" width="96">
 
 # Tycho
 
 **by [Swail](https://swail.dev)**
 
-The local verifier that proves your AI coding agent actually did what it claims.
+The system of record for what your coding agents did.
 
 [![CI](https://github.com/swail-labs/tycho/actions/workflows/ci.yml/badge.svg)](https://github.com/swail-labs/tycho/actions)
 [![PyPI](https://img.shields.io/pypi/v/tycho-cli)](https://pypi.org/project/tycho-cli/)
@@ -18,394 +18,175 @@ The local verifier that proves your AI coding agent actually did what it claims.
 
 ---
 
-A free, offline, open-source **local verifier** that proves an AI coding agent actually did what it
-claims — from git, the filesystem, process exit codes, and the harness event stream. When an agent
-says "done," Tycho turns some ✅s into `FAILED` / `STALE` / `INDETERMINATE` with per-check evidence,
-*before* that ✅ reaches you.
+> *"never accept the model's summary as evidence, only artifacts it can't fake by narrating"*
 
-- **No account, no network, no LLM in the trust path.** Only code renders a verdict.
-- **Stdlib only**, Python ≥ 3.11. Nothing to audit, trivial install.
-- **Claude Code** supported (auto-detected); more harnesses coming.
-- **Linux, macOS, and Windows** — see [Platforms](#platforms).
+Tycho runs as a completion hook on your agent's harness. It records what every turn actually
+did — files touched, commands run and what they returned, what the agent claimed — and checks
+that against the artifacts: git, the filesystem, exit codes, the harness event stream.
 
-## Platforms
+**Only a hook on the event stream sees the process.** A diff sees a result. CI sees a result. A
+second model sees a diff. Tycho was there when the agent ran `pytest`, got exit 1, and then said
+tests pass.
 
-| OS | Status | Verified by |
-|----|--------|-------------|
-| Linux | Supported | CI: `ubuntu-latest`, Python 3.11 / 3.12 / 3.13 — full suite, `ruff`, and a wheel + sdist install into a clean venv |
-| Windows | Supported | CI: `windows-latest`, Python 3.12 — same suite, plus the `.exe` console-script hook under cp1252/backslash |
-| macOS | Supported | Development baseline; not gated in CI |
-
-**WSL2 is Linux** (a real Linux kernel), so it's covered by the Linux row. Install and run Tycho
-*inside* the distro — launch your agent from the WSL shell — rather than driving `wsl.exe` from a
-Windows-hosted agent, so Tycho's Stop hook and the commands it verifies share one environment.
+Instant, free, silent, always-on — no API key, no second session, no tokens, no context burned.
+Nothing leaves the machine (no LLM anywhere in the trust path). Stdlib only, Python ≥ 3.11.
+Claude Code and Codex today; other harnesses in development. Linux, macOS, Windows — WSL2 counts as Linux,
+install inside the distro.
 
 ## Install
 
-Fastest — the standalone binary, no Python needed:
+```sh
+curl -fsSL https://swail.dev/tycho/install.sh | sh   # standalone binary, no Python
+brew install swail-labs/tap/tycho                    # same binary, upgradable
+uv tool install tycho-cli                            # have Python? (pipx works too)
+npx @swail-labs/tycho <command>                      # npm wrapper, same binary
+```
+
+The PyPI package is **`tycho-cli`** (`tycho` was taken); it installs the **`tycho`** command.
+Pick one channel per machine — `npm -g` and `brew` both want to own `bin/tycho`.
+
+The installer sets Tycho up as it finishes, so there is nothing to run afterwards. If you
+installed another way, or said no:
 
 ```sh
-curl -fsSL https://swail.dev/tycho/install.sh | sh
+tycho install           # once, for every repo on this machine
 ```
 
-It downloads the binary for your platform, verifies it against the release checksums, and drops
-the `tycho` command in `~/.local/bin`.
+That writes two things — the completion hook, status badge and slash commands into your
+harness's user-level config, and one line (`.tycho/`) in your global git ignore file. It names
+every path before it writes any of them.
 
-On macOS or Linux with Homebrew, the tap installs that same binary and keeps it upgradable
-alongside the rest of your kegs:
+The second write is what lets Tycho stay out of your repos: with `.tycho/` ignored
+machine-wide, it never edits any repo's `.gitignore`, so `git status` stays clean everywhere.
+It only runs inside git repos, and defers to any repo that has its own install.
+
+That's it. Every repo you open is verified from the next turn on, and Tycho says so once, the
+first time it meets a repo.
 
 ```sh
-brew install swail-labs/tap/tycho
+tycho off               # stop verifying this repo   (tycho on to resume)
+tycho uninstall         # remove it from this machine
+TYCHO_AUTO=0            # only verify repos where you ran `tycho init`
 ```
 
-**Have Python?** The PyPI package is **`tycho-cli`** (the name `tycho` is taken by an unrelated
-project); it installs the **`tycho`** command:
+### Adopting a repo
+
+`tycho install` deliberately writes nothing into your repos. When you want a repo to carry
+Tycho with it — shared with your team, checked in CI:
 
 ```sh
-uv tool install tycho-cli     # uv (recommended)
-pipx install tycho-cli        # or pipx
+tycho init              # in the repo
 ```
 
-Both drop the `tycho` command on your PATH in its own isolated environment. Other paths:
+That adds a `.tycho.toml` to commit (scope, relay — settings the whole team gets) and a
+`prepare-commit-msg` hook stamping a `Tycho-Attestation:` trailer onto commits an agent worked
+on. It merges with hooks you already have, backs up what it changes, and refuses to touch a
+config it can't parse. On a machine where you never ran `tycho install`, `tycho init` also
+wires that repo's hooks, so a single repo works on its own.
+
+### Upgrading from 0.1.x
+
+Your per-repo installs keep working untouched, and take precedence over a machine-wide one.
+Two things changed names: **`tycho uninstall` now removes Tycho from the whole machine** — it
+used to mean this repo, so it refuses and asks when you run it in a repo that has its own
+install. Use `tycho off` to stop verifying one repo, or `tycho uninstall --here` to remove its
+hooks. `tycho init --global` still works as a spelling of `tycho install`.
+
+## After a turn
+
+Most turns print nothing. Tycho speaks when a check says the turn isn't proven, when the prose
+claims done but the evidence doesn't reach it, when a run of proven turns breaks, or when a turn
+touches far more files than this repo's turns usually do. A condition that fired the last two
+turns goes quiet, so a standing failure doesn't repeat at you forever.
+
+```
+🔍 Tycho: FAILED — file_state: docs/product-direction.md — missing
+   ✓ attempted  · executed  ✓ artifact_changed  ✓ claim_supported
+   2 files · pytest -q… failed · +7 more
+   `tycho show` for the full receipt
+```
+
+The second line is the **acceptance ladder**: `attempted → executed → artifact_changed →
+claim_supported`. Unreached rungs render `·`, not `✗` — a gap in the evidence isn't a failure.
+Verdicts are `VERIFIED` · `FAILED` · `STALE` (evidence exists but predates the code) ·
+`INDETERMINATE` (ran, couldn't conclude) · `UNSUPPORTED` · `OVERRIDDEN`.
+
+## What you can do with it
 
 ```sh
-uvx --from tycho-cli tycho <command>   # run once, no install (uv)
-uv add tycho-cli                       # add to a project's dependencies
-pip install --user tycho-cli           # plain pip
+tycho show                       # the full receipt for the last turn (or `show <id>`)
+tycho log                        # what agents did here, newest first (--verdict, --since, -n)
+tycho blame src/app.py           # which turns touched this file, what they claimed, what backed it
+tycho review                     # which changed hunks no test covered and no command exercised
+tycho backfill                   # record what agents did here before Tycho was installed
+tycho verify                     # re-run the engine over a session on demand
+tycho count --ledger             # catch and blind rates, per model and per check
+tycho exec -- pytest -q          # run it and put the real exit status on the record
+tycho attest --verify            # check a commit's trailer against the record
+tycho scope add 'src/**'         # bound where the agent may edit (opt-in; `--exclude` denies)
+tycho relay --on                 # let the agent see its own verdict and keep working (off by default)
+tycho rewrite --on               # route a piped runner through `tycho exec` for you (off by default)
+tycho off                        # stop verifying this repo (`tycho on` resumes)
+tycho doctor                     # is the hook installed, current, and firing?
 ```
 
-Prefer an isolated *tool* install (`uv tool install` / `pipx`) over a bare `pip install`, which
-drops the CLI into whatever environment you happen to be in. There's also an npm wrapper that
-fetches the same checksummed binary:
-
-```sh
-npx @swail-labs/tycho <command>     # run once, cached after first use
-npm install -g @swail-labs/tycho    # or put the `tycho` command on your PATH
-```
-
-Pick one channel per machine. `npm install -g` and `brew install` both want to own
-`<brew-prefix>/bin/tycho` when your node is Homebrew-installed, so the second one you run won't
-link. They ship the same binary from the same release — `brew` tells you how to choose if you hit
-it.
-
-Then wire it into your repo (or let Tycho offer to on first run):
-
-```sh
-tycho init
-```
-
-## Quickstart
-
-```sh
-tycho init              # install the completion hook into the harnesses you actually have
-                        # (asks per harness; idempotent, self-healing, repo-local only)
-tycho init --yes        # skip the prompts (scripts and CI)
-```
-
-Tycho only touches Claude Code, and only inside this repo. It merges with hooks you already have, backs
-up anything it changes, and refuses to touch a config it can't parse rather than risk it. (Cursor, Codex,
-and OpenCode support is in development.)
-
-It also adds a status-bar badge and a set of `/tycho` slash commands, so you can see it's on and drive it
-without leaving the session — see [In Claude Code](#in-claude-code) below. `tycho statusline` also prints
-that badge for a shell prompt or tmux status line — see [The badge in any shell](#the-badge-in-any-shell).
-
-That's it. The next time an agent finishes a turn, Tycho verifies it automatically and prints the
-verdict. To run it by hand:
-
-```sh
-tycho verify                     # auto-discovers the most-recently-used session and verifies it
-tycho verify --harness claude    # force a harness (default: whichever ran most recently)
-tycho verify --session <path>    # verify a specific transcript
-tycho verify --claim "added rate limiting, tests pass"   # echo the claim above the verdict
-tycho help                       # what Tycho is, whether it's live here, and every command
-tycho statusline                     # the one-line status-bar indicator (what Claude Code renders)
-tycho count                      # how many problems Tycho has caught — in this repo, and all-time
-tycho run -- pytest -q           # run a command so its true exit code is seen (see "tycho run" below)
-tycho scope list                 # show/edit which files the agent may edit (see "Scope" below)
-tycho relay                      # let the agent see its verdict & work till VERIFIED (opt-in; see below)
-tycho --version                  # print the version
-tycho --help                     # full usage (also `tycho verify --help`)
-```
-
-```
-🔍 Tycho: FAILED
-  ✗ test_freshness — auth_test.py passed 14:22:01, auth.py edited 14:22:47 (46s later)
-  ✗ assertion_weakening — 2 assertions removed from test_login_expiry
-  ✓ command_execution — pytest ran, exit 0
-  • scope_drift — no [scope] set — run `tycho scope add '<glob>'` to bound edits (zero-config)
-```
-
-`tycho verify` exits non-zero on an adverse finding so you can gate in `pre-push`/CI. The completion
-hook never blocks — it annotates; you decide.
-
-| Exit | Meaning |
-|---|---|
-| `0` | `VERIFIED` / `UNSUPPORTED` / `INDETERMINATE` — nothing adverse found |
-| `1` | `FAILED` — a check proved the claim wrong |
-| `2` | usage error |
-| `3` | `STALE` — edits landed after the last passing test run |
-| `4` | Tycho could not complete (unreadable transcript/config) |
-
-`FAILED` and `STALE` are separate codes so you can pick which one blocks: gate on `1` alone, or on
-both.
-
-## `tycho run` — when a test run is hidden from Tycho
-
-Tycho recognises a test/build run from the command in the transcript. It reads *through* the common
-ways a runner is wrapped — a pipe (`pytest | tail`), a variable interpreter (`"$PY" -m pytest`), and
-nested shells (`wsl.exe -d Ubuntu -- bash -c 'pytest'`, `ssh host 'pytest'`) — automatically, with
-nothing to remember. **WSL runs verify on their own; you don't need `tycho run` for them.**
-
-The one case it can't see is when the runner's name isn't in the command at all — a Makefile target
-(`make test`), a shell alias, or a `./run-tests.sh` that calls pytest inside. For those, prefix it:
-
-```sh
-tycho run -- make test
-```
-
-`tycho run` execs the command, forwards its output and exit code **unchanged**, and lets Tycho read
-the runner's true status. It's a thin, safe wrapper — never use it as a habit for WSL or piped runs,
-only where the runner is genuinely hidden behind indirection.
-
-## Scope — bounding what the agent may edit
-
-Tycho is **zero-config**: with no `.tycho.toml`, `scope_drift` reports `UNSUPPORTED` and every other
-check runs exactly as normal. Nothing assumes the file exists.
-
-Opt in when you want to bound *where* the agent edits. `tycho init` drops a starter `.tycho.toml`
-(empty, so behaviour is unchanged until you add a glob), and you manage the allowlist with:
-
-```
-tycho scope add 'src/**' 'tests/**'   # allow these; an edit elsewhere FAILs scope_drift
-tycho scope remove 'tests/**'         # drop one or more
-tycho scope set 'src/**'              # replace the whole list
-tycho scope list                      # show the current bounds
-
-tycho scope set '**'                  # allow the whole tree…
-tycho scope add --exclude 'LICENSE'   # …but carve this back out (exclude wins)
-```
-
-`set`, `add`, and `remove` each take **one or more** globs — quote them so your shell keeps them
-literal. The bound is an **explicit, deterministic** declaration: Tycho stores exactly what you wrote
-and never infers scope from the prompt. Set it once as a standing bound, or change it whenever the task
-changes. In Claude Code the same four are `/tycho-scope-list`, `/tycho-scope-set`, `/tycho-scope-add`,
-and `/tycho-scope-remove`.
-
-**Excluding paths.** Add `--exclude` to `set`/`add`/`remove` to edit a **denylist** instead of the
-allowlist: a path that matches `exclude` FAILs `scope_drift` even if it also matches `include` — exclude
-wins. This lets you allow a broad area and carve specific files back out (e.g. `include = ["**"]`,
-`exclude = ["LICENSE"]` allows the whole repo but that one file). An empty exclude is a pure allowlist,
-exactly as before; exclude has no effect while `include` is empty (scope stays zero-config `UNSUPPORTED`).
-
-## In Claude Code
-
-`tycho init` wires Claude Code up with a status badge and slash commands, so you can drive Tycho without
-leaving the session. Everything here also runs as a plain `tycho <command>` in your terminal — the slash
-commands are just the in-editor shortcut.
-
-**Slash commands.** Type `/` and each shows with its own description:
-
-| Command | Does |
-|---|---|
-| `/tycho <args>` | run any Tycho subcommand, e.g. `/tycho verify --claim "added rate limiting"` |
-| `/tycho-verify` | verify the latest session and render a verdict |
-| `/tycho-status` | the one-line badge (what the status bar renders) |
-| `/tycho-doctor` | full diagnostics: is Tycho installed, current, and firing? |
-| `/tycho-help` | what Tycho is, whether it's live here, and every command |
-| `/tycho-count` | how many problems Tycho has caught here, and all-time |
-| `/tycho-hide` · `/tycho-show` | hide / show the status badge |
-| `/tycho-relay` · `-on` · `-off` | show / turn on / turn off the verdict relay (see [below](#let-the-agent-see-its-own-verdict--the-relay)) |
-| `/tycho-override` · `-on` · `-off` · `-veto` | show / turn on / turn off the agent verdict override, or veto one (see [below](#let-the-agent-see-its-own-verdict--the-relay)) |
-| `/tycho-scope-list` · `-set` · `-add` · `-remove` | show or edit the files the agent may edit (each `set`/`add`/`remove` takes one or more globs) |
-
-**Status badge.** A `[TYCHO]` indicator in the status bar, coloured by the last run:
-
-| Color | Meaning |
-|---|---|
-| 🟢 green | last run `VERIFIED` |
-| 🔴 red | last run `FAILED` or `STALE` — something to look at |
-| 🔵 blue | verifying right now — a run is in flight this turn |
-| 🟡 yellow | an `INDETERMINATE` run (ran, couldn't conclude) |
-| 🟦 teal | last run `OVERRIDDEN` — agent-authorized, not proven |
-| ⚪ grey | nothing to say yet — never fired here, `UNSUPPORTED`, or a turn with nothing to verify |
-
-It settles on green or red once a real verdict exists; blue is only the in-flight moment,
-yellow is the inconclusive-but-noteworthy run, and grey is the honest "no signal" — including a
-fresh install that hasn't fired yet. The colors are muted on purpose, to stay readable on a dark
-terminal.
-
-`tycho verify` updates the badge too, so a manual verify that comes back `VERIFIED` turns it green. If you
-already run a status line — a third-party badge, a shell prompt — Tycho **composes** with it instead of
-replacing it: it takes Claude Code's single `statusLine` slot, runs your existing command too, and renders
-both (`[OTHER] [TYCHO]`). Nothing you had is lost, and `tycho uninstall` restores it.
-
-**Toggle the badge.** `/tycho-hide` (or `tycho statusline --off`) hides only Tycho's segment — the hook keeps
-verifying every turn; `/tycho-show` (or `tycho statusline --on`) brings it back. `TYCHO_STATUS=off` hides it
-everywhere for a session.
-
-## Let the agent see its own verdict — the relay
-
-By default Tycho's verdict on Claude Code is **human-only**: it renders to your terminal and never enters
-the model's context, so the agent can't see when its own turn came back `FAILED` or `STALE`. That's the
-safe default — **Tycho free never spends your context or tokens unless you ask it to.**
-
-Turn on the **verdict relay** and Tycho feeds a non-`VERIFIED` verdict back to the agent as it finishes a
-turn, so the agent keeps working **until the verdict is `VERIFIED`** — catching a false "done" the moment
-it happens instead of waiting for you to paste the verdict back in. `tycho init` asks once (default **no**)
-when a repo has no `.tycho.toml` yet; if you already have one, it leaves your setting alone and just points
-you at the toggle. Flip it any time:
-
-```sh
-tycho relay            # show the current setting
-tycho relay --on       # feed non-VERIFIED verdicts back to the agent (works until VERIFIED)
-tycho relay --off      # back to human-only (the default)
-```
-
-In Claude Code the same three are `/tycho-relay`, `/tycho-relay-on`, and `/tycho-relay-off`; bare
-`/tycho-relay` shows the current status and how to toggle. The setting is a hand-editable, per-repo key in
-`.tycho.toml` (`[relay] enabled`). It works on Claude Code today; other harnesses are in development.
-
-**Agent override.** Off by default, and it requires the relay to be on — an override only exists
-to break a relay loop, so there's nothing for it to do while the agent never sees its verdict.
-Turn it on with `tycho override --on` (or `/tycho-override-on` in Claude Code); back off with
-`tycho override --off` (`/tycho-override-off`). Stored the same way as the relay, per-repo in
-`.tycho.toml` (`[override] enabled`).
-
-With override on, the verdict the relay feeds back tells the agent it may record a justified
-per-check override — `tycho override <check> "<reason>"` — logged to `.tycho/overrides.json` and
-shown to you. It can never hide a real failure: any check that's still genuinely `FAILED` or
-`STALE` keeps that verdict regardless of what else gets overridden. Only when *every* adverse
-check has been overridden does the turn resolve to the distinct, logged `OVERRIDDEN` verdict (teal
-badge) — never `VERIFIED`.
-
-**What you see, and your controls.** An `OVERRIDDEN` verdict shows you a human-only line naming
-the checks the agent set aside, plus two levers: **veto** it — `tycho override --veto`
-(`/tycho-override-veto`) — so the relay fires again and the agent has to actually satisfy the
-check next turn; or **turn override off** entirely — `tycho override --off`
-(`/tycho-override-off`). `tycho override --unveto` lifts a previous veto so that check can be
-overridden again.
-
-**It is bounded — no infinite loops.** Each user turn can be auto-continued at most **3 times** before
-Tycho goes quiet and hands control back to you, so a verdict the agent can't satisfy converges on a hard
-stop, not an endless cycle. A fresh prompt from you resets the leash. Change the ceiling with
-`TYCHO_RELAY_MAX` (e.g. `TYCHO_RELAY_MAX=5`; `0` disables the auto-continue entirely, leaving the verdict as
-a one-shot note the agent sees but isn't pushed to act on).
-
-**Estimated extra token usage.** With the relay **off** (default), **zero** — nothing reaches the model.
-With it **on**, each turn that ends non-`VERIFIED` costs:
-
-- the injected verdict itself — small and fixed, roughly **120–200 tokens** per re-check (the verdict lines
-  plus a one-paragraph guard), and
-- **up to `TYCHO_RELAY_MAX` extra agent turns** (default 3) — the real cost, since each is a full generation
-  in which the agent reads context and works. Budget on the order of *your agent's normal per-turn token
-  use × up to 3* for a turn Tycho keeps re-checking; a turn that's already `VERIFIED` adds **nothing**.
-
-So the relay trades tokens for the agent catching its own mistakes without you in the loop. Leave it off for
-the cheapest, quietest default; turn it on when you'd rather the agent fix a bad turn before it reaches you.
-
-## The badge in any shell
-
-The badge isn't tied to the editor: `tycho statusline` reads `.tycho/` off disk and prints one line,
-whichever agent wrote the state. Call it from anything that renders a command:
-
-```sh
-PS1='$(tycho statusline) '$PS1                                        # bash / zsh prompt
-set -g status-right '#(cd #{pane_current_path} && tycho statusline)'  # tmux (in tmux.conf)
-```
-
-```toml
-[custom.tycho]                                # starship (in starship.toml)
-command = "tycho statusline"
-when = true
-```
-
-No stdin needed — with no JSON on stdin it resolves the repo from the current directory, walking up to
-find `.tycho/`, so the badge stays put as you `cd` around the tree. It prints nothing in repos where
-Tycho isn't installed, so it stays out of every other prompt you have. `tycho statusline --off` / `--on` and
-`TYCHO_STATUS=off` work here exactly as they do in Claude Code.
-
-## Is the hook still firing?
-
-A silently dead hook is the worst failure a verifier has — silence looks exactly like "everything
-passed." `tycho doctor` checks, without editing anything, that Tycho's entry is still in each harness's
-config, that the command it would run resolves to a real executable, and when the hook last fired:
-
-```sh
-tycho doctor    # exits 0 when healthy, 5 when installed-but-not-working
-```
-
-Repair is always the same self-healing `tycho init`. `tycho verify` runs the config half of this check
-too, warning on stderr if the hook is broken. See [`docs/hooks.md`](docs/hooks.md#is-it-still-working-tycho-doctor).
-
-## Uninstall
-
-```sh
-tycho uninstall                  # remove Tycho's hooks
-tycho uninstall --harness claude # just one
-tycho uninstall --purge          # hooks, plus this repo's .tycho/ state and .tycho.toml config
-```
-
-Only Tycho's own entries come out — your other hooks, and any unrelated settings in the same file,
-are left exactly as they were. It's idempotent, so running it twice is safe.
-
-By default uninstall leaves two repo-local files behind: `.tycho/` (the catch tally and evidence trail)
-and `.tycho.toml` (your scope/checks config). Add **`--purge`** to delete those too — an explicit opt-in,
-never the default, since it drops your catch history. It stays repo-local; the machine-wide all-time tally
-under `~/.local/share/tycho` is never touched.
-
-Removing the hooks and removing the package are two separate steps: uninstall first (otherwise the
-harness is left calling a command that no longer exists), then remove the package the same way you
-installed it — `uv tool uninstall tycho-cli`, `pipx uninstall tycho-cli`, `pip uninstall tycho-cli`,
-`brew uninstall tycho`, or deleting the standalone binary. (The distribution is `tycho-cli`, not
-`tycho`.)
-
-## The checks
-
-`command_execution` · `test_freshness` · `test_provenance` · `assertion_weakening` ·
-`skip_mock_injection` · `file_state` · `git_state` · `scope_drift` · `tool_call_provenance`. A check
-that can't run returns `UNSUPPORTED`/`INDETERMINATE` with a reason — Tycho degrades honestly rather
-than guess.
-
-`tool_call_provenance` catches an agent that *claims* a tool action it never took. It currently
-recognizes two families of claim — web search/fetch and issue-tracker actions (Jira/Linear). Broader
-tool-call coverage — calendar, email, file/drive, code execution, and other connectors — is **not yet
-supported and is in development**; until then a claim it can't classify is left `UNSUPPORTED`, never
-guessed.
-
-This is a **scope limitation, not a finished feature** — treat its result as advisory for now. Two
-consequences follow from how narrowly it's currently drawn, both of which we'll address as the family
-table is widened:
-
-- **Missed claims ("no tool-action claims recognized").** The claim-recognition patterns are narrower
-  than real phrasing, so a turn that genuinely performed a supported action can still read as *no claim
-  recognized* — e.g. issue-tracker verbs like "parented", "linked", "added N links", or "created ticket
-  X" that fall outside the pattern set. That's a recall gap, not a statement that no tools ran.
-- **Coarse (potentially false-positive) matches.** Within a supported family the match is **broad —
-  family-presence only, with no content-correlation.** A claim is considered backed if *some* tool call
-  of that family occurred; it does not yet verify that the specific claimed action (that ticket, that
-  URL) is the one the tool actually touched. So a claim could be marked backed by an unrelated call in
-  the same family.
-
-Both are deliberate: the check is tuned to **never emit a false FAIL** today, at the cost of these gaps.
-Tightening the phrasing coverage and adding safe content-correlation is planned, not shipped — so for
-now, read `tool_call_provenance` as a hint, and confirm from the transcript when it matters.
-
-## How it works
-
-The engine is pure and harness-agnostic: `gather → check → verdict` over an immutable snapshot, all I/O
-at the edges. Harness-specific differences (transcript format, repo field, output channel) are isolated
-in one adapter, so more harnesses can be added without touching the engine. See
-[`docs/hooks.md`](docs/hooks.md) for the design.
-
-Tycho looks for Claude Code's sessions under the usual `~/.claude`. If yours live elsewhere, set
-`TYCHO_CLAUDE_HOME` to the directory that holds them — Claude's own `CLAUDE_CONFIG_DIR` is honored too.
-See [`docs/hooks.md`](docs/hooks.md#overriding-where-an-agents-data-lives).
-
-Tycho's own machine-level state — just the all-time tally behind `tycho count` — lives under
-`~/.local/share/tycho`; set `TYCHO_HOME` (or `XDG_DATA_HOME`) to move it. Everything else Tycho
-knows is per-repo, in `<repo>/.tycho/`.
+`tycho help` lists everything, including `hook`, `install`, `init`, `on`/`off`, `uninstall`,
+`statusline`, `run`, `override` and `update`.
+
+**Exit codes** — one per adverse kind, so a gate picks what blocks. `1` FAILED, `3` STALE
+(`verify`); `6` unexercised (`review --exit-code`); `7` trailer mismatch (`attest --verify`); `5`
+installed-but-broken (`doctor`); `2` usage, `4` couldn't complete. The hook itself always exits 0
+and never blocks your agent.
+
+## What Tycho won't claim
+
+Tycho answers *can't tell* rather than guessing, so there are places it deliberately says less
+than you might expect:
+
+- **`blame PATH:LINE` is file-level.** The record stores which turns touched a file, never which
+  lines. Joining through `git blame` would put a confident wrong name on a line.
+- **`review` speaks about the record, not execution.** "No command Tycho recorded ran after this
+  hunk" — never "this line never ran". There's no per-line coverage here.
+- **The attestation proves consistency, not authenticity.** Unkeyed SHA-256 over a record this
+  machine wrote: tamper-evidence against accidents, not a defence against a motivated agent.
+  `--verify` can answer *cannot tell*, and a pruned record must never read as a forged one.
+- **`tool_call_provenance` is advisory.** Two claim families (web, issue trackers), matched on
+  family presence only. Tuned to never emit a false FAIL, at the cost of recall.
+- **A backfilled turn has no verdict, and never will.** `tycho backfill` replays transcripts
+  written before Tycho was here, but most checks are functions of state that no longer exists —
+  whether an edited file is on disk *now*, an mtime *now* against a run three weeks ago. So those
+  rows record what the transcript proves (files, commands, claims, when) and read `UNVERIFIED`.
+  They're excluded from every rate in `count --ledger`. Tycho will not tell you what it "would
+  have caught".
+- **`verifier_integrity` raises the cost of tampering; it doesn't make it impossible.** It reports
+  a turn that edits `.tycho/`, `.tycho.toml`, a harness hook config or a git hook — via the edit
+  tools, a shell redirect, or a mutating command. It cannot see a write smuggled through an
+  interpreter (`python -c "open('.tycho.toml','w')"`) or a path the shell expanded from a
+  variable, and a process running as you can always reach the file. Tycho's own state is judged
+  inside this repo only — another tree's `.tycho/` is `scope_drift`'s business, not a verdict
+  here. It is the check `[checks].disable` may not switch off.
+- **A piped runner's exit status is gone before Tycho can read it.** `pytest | tail -20` hands the
+  harness tail's status, so the verdict falls back to reading pytest's summary line — inference,
+  and only as good as the vocabulary in `engine/runlog.py`. `tycho exec -- pytest | tail -20`
+  fixes it at the source, and `tycho rewrite --on` does that for you. Rewriting is opt-in because
+  Claude Code matches your `Bash(...)` rules against the rewritten command, so an allow rule you
+  already granted can stop covering it; under `--permission-mode bypassPermissions` there are no
+  rules to void and it always applies.
+- **Nothing polls in the background.** A hook that died goes undiagnosed until someone runs
+  `doctor`.
+
+## Configuration
+
+Settings in `.tycho.toml` (`scope`, `relay`, `override`, `rewrite`), state in `<repo>/.tycho/`. Command
+strings, evidence and agent prose are pattern-filtered for secrets before hitting disk — a match
+becomes a visible `[REDACTED]` — but it's best-effort, so keep `.tycho/` out of git regardless.
+
+`TYCHO_HOME` · `TYCHO_CLAUDE_HOME` · `TYCHO_AUTO` · `TYCHO_STATUS` · `TYCHO_RELAY_MAX` ·
+`TYCHO_TURNS_MAX` · `TYCHO_COMMANDS_MAX` · `TYCHO_NO_UPDATE_CHECK` · `TYCHO_INSTALL`.
+
+The one thing that touches the network: a SessionStart hook asks `pypi.org` once a day whether a
+newer Tycho exists, disclosing your version and IP. `TYCHO_NO_UPDATE_CHECK=1` turns it off.
 
 ## License
 
-Apache-2.0.
+Apache-2.0. Contributing: [CONTRIBUTING.md](CONTRIBUTING.md).

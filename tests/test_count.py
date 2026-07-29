@@ -1,4 +1,4 @@
-"""`tycho count` + the catch record `catches.json` (TYCHO-50/62).
+"""`tycho count` + the catch record `catches.json`.
 
 catches.json holds what Tycho caught — the running tally *and* the evidence trail (which
 checks failed or couldn't pass), newest first. Every adverse/intermediate run is recorded
@@ -10,7 +10,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from tycho import cli, state
+from tycho import cli
+from tycho.store import state
 from tycho.model import CheckResult, CheckStatus
 
 ZERO = {"FAILED": 0, "STALE": 0, "INDETERMINATE": 0}
@@ -39,7 +40,7 @@ def test_stale_and_indeterminate_count_too(tmp_path: Path):
 
 
 def test_clean_verdicts_count_as_runs_but_are_not_catches(tmp_path: Path):
-    # TYCHO-58: VERIFIED/UNSUPPORTED are still not catches (no adverse count, no evidence) —
+    # VERIFIED/UNSUPPORTED are still not catches (no adverse count, no evidence) —
     # but they ARE runs, and UNSUPPORTED is blind (Tycho had nothing to say).
     for verdict in ("VERIFIED", "UNSUPPORTED"):
         state.record_catch(tmp_path, "claude", verdict, _results(("x", "PASS", "ok")))
@@ -49,7 +50,7 @@ def test_clean_verdicts_count_as_runs_but_are_not_catches(tmp_path: Path):
 
 
 def test_totals_track_the_denominator_and_blind_spot(tmp_path: Path):
-    # TYCHO-58: runs is every verdict recorded; blind is INDETERMINATE + UNSUPPORTED.
+    # runs is every verdict recorded; blind is INDETERMINATE + UNSUPPORTED.
     for v in ("VERIFIED", "VERIFIED", "FAILED", "STALE", "INDETERMINATE", "UNSUPPORTED"):
         state.record_catch(tmp_path, "claude", v, _results(("x", "PASS", "ok")))
     assert state.totals(tmp_path) == {"runs": 6, "blind": 2}
@@ -57,7 +58,7 @@ def test_totals_track_the_denominator_and_blind_spot(tmp_path: Path):
 
 
 def test_every_adverse_run_is_recorded_no_dedup(tmp_path: Path):
-    # TYCHO-62: hold ALL — a standing failure across three turns is three entries, not one.
+    # hold ALL — a standing failure across three turns is three entries, not one.
     for _ in range(3):
         state.record_catch(tmp_path, "claude", "FAILED", _results(*FAIL_RUN))
     assert state.counts(tmp_path)["FAILED"] == 3
@@ -168,7 +169,7 @@ def test_count_command_reports_both_scopes(tmp_path, monkeypatch, capsys):
     other = tmp_path / "other"
     other.mkdir()
     # A *separate* repo, so its catch counts toward all-time but not this one. The `.git` is
-    # what makes it separate: state resolution walks up until a git root (TYCHO-79), so without
+    # what makes it separate: state resolution walks up until a git root, so without
     # the marker `other` is just a subdirectory of tmp_path and its catch lands in tmp_path.
     (other / ".git").mkdir()
     state.record_catch(tmp_path, "claude", "FAILED", _results(*FAIL_RUN))
@@ -178,9 +179,10 @@ def test_count_command_reports_both_scopes(tmp_path, monkeypatch, capsys):
 
     assert cli.main(["count"]) == cli.ExitCode.OK
     out = capsys.readouterr().out
-    # TYCHO-58: catches read against a denominator; INDETERMINATE now folds into "blind".
-    assert "this repo: 2 caught (1 FAILED, 1 STALE) of 3 runs, 1 blind (33%)" in out
-    assert "all-time: 3 caught (2 FAILED, 1 STALE) of 4 runs, 1 blind (25%)" in out
+    # catches read against a denominator; INDETERMINATE now folds into "blind".
+    # runs + blind rate lead — blind is the metric that doesn't decay (§7).
+    assert "this repo: 3 runs, 1 blind (33%), 2 caught (1 FAILED, 1 STALE)" in out
+    assert "all-time: 4 runs, 1 blind (25%), 3 caught (2 FAILED, 1 STALE)" in out
 
 
 def test_count_command_on_a_quiet_repo(tmp_path, monkeypatch, capsys):
@@ -225,3 +227,37 @@ def test_user_dir_expands_user_in_override(tmp_path, monkeypatch):
     monkeypatch.setenv("USERPROFILE", str(tmp_path))  # Windows reads this one
     monkeypatch.setenv("TYCHO_HOME", "~/relocated")
     assert state.user_dir() == tmp_path / "relocated"
+
+
+# --- the evidence trail is durable, so it is redacted too --------------------
+
+def test_check_evidence_is_redacted_before_it_reaches_catches_json(tmp_path: Path):
+    """The README says evidence is redacted before it hits disk, and `catches.json` is as
+    durable and as greppable as `turns.jsonl` — it just wrote the raw string."""
+    results = _results(("secrets", "FAIL", "ran `deploy --token=abcd1234efgh5678ijkl`"))
+    state.record_catch(tmp_path, "claude", "FAILED", results)
+    blob = (state.dir_for(tmp_path) / "catches.json").read_text(encoding="utf-8")
+    assert "abcd1234efgh5678ijkl" not in blob
+    assert "[REDACTED]" in blob
+# --- where state lives ------------------------------------------------------
+
+def test_root_for_does_not_escape_into_an_unrelated_parent(tmp_path: Path, monkeypatch):
+    """A non-git directory nested under a Tycho-installed parent used to adopt the parent's
+    `.tycho/`, so a child project's turns — claims and all — were written into another
+    project's ledger. The walk stops at `$HOME`."""
+    home = tmp_path / "home"
+    (home / ".tycho").mkdir(parents=True)          # the unrelated parent, installed
+    scratch = home / "projects" / "scratch"        # a plain directory, no git, no marker
+    scratch.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    assert state.root_for(scratch) == scratch
+    assert state.dir_for(scratch) == scratch / ".tycho"
+
+
+def test_root_for_still_walks_up_to_the_repo_that_owns_the_state(tmp_path: Path, monkeypatch):
+    """The walk it exists for: a developer standing in `src/` is still in the same repo."""
+    repo = tmp_path / "home" / "repo"
+    (repo / ".tycho").mkdir(parents=True)
+    (repo / "src" / "deep").mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
+    assert state.root_for(repo / "src" / "deep") == repo

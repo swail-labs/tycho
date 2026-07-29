@@ -1,4 +1,4 @@
-"""TYCHO-118 — the agent verdict override (OVERRIDDEN): a per-check, logged, opt-in escape
+""" — the agent verdict override (OVERRIDDEN): a per-check, logged, opt-in escape
 hatch that breaks an unclearable relay loop without ever masquerading as VERIFIED."""
 
 from __future__ import annotations
@@ -10,7 +10,10 @@ from pathlib import Path
 
 import pytest
 
-from tycho import cli, config, hook, init as init_mod, report, state, status
+from tycho import cli
+from tycho.store import config, state
+from tycho.wire import hook, install as init_mod, status
+from tycho.views import report
 from tycho.model import CheckResult, CheckStatus, Verdict
 from tycho.model import Verdict as V
 
@@ -304,7 +307,7 @@ def test_cli_unveto(tmp_path, monkeypatch, capsys):
 
 
 def test_apply_overrides_never_downgrades_a_real_verified(tmp_path: Path):
-    # TYCHO-119: overriding a non-adverse check on an already-VERIFIED turn must leave VERIFIED —
+    # overriding a non-adverse check on an already-VERIFIED turn must leave VERIFIED —
     # OVERRIDDEN is a downgrade (proven → not-proven) and must never replace a real green verdict.
     state.set_relay_enabled(tmp_path, True)
     state.set_override_enabled(tmp_path, True)
@@ -347,7 +350,8 @@ def test_cli_override_still_records_a_known_check(tmp_path, monkeypatch, capsys)
 def test_overridden_verdict_tells_user_how_to_veto_or_disable(tmp_path, monkeypatch):
     # relay + override ON, agent overrode the only adverse check -> verdict OVERRIDDEN.
     # The Stop output the HUMAN sees must explain the veto/disable escape hatches.
-    from tycho import hook, state
+    from tycho.wire import hook
+    from tycho.store import state
     from tycho.model import Verdict
 
     # Arrange state: enable relay+override, record an override on "test_freshness".
@@ -368,7 +372,7 @@ def test_overridden_verdict_tells_user_how_to_veto_or_disable(tmp_path, monkeypa
     # Non-OVERRIDDEN verdict -> no notice.
     assert hook._override_notice(repo, _HumanHarness, Verdict.VERIFIED, results) == ""
 
-    # Model-facing harness (no human-only channel) -> suppressed (TYCHO-35).
+    # Model-facing harness (no human-only channel) -> suppressed.
     class _ModelHarness:
         notice_output = None
     assert hook._override_notice(repo, _ModelHarness, Verdict.OVERRIDDEN, results) == ""
@@ -385,7 +389,7 @@ _CLAUDE_FIXTURE = Path(__file__).parent / "fixtures" / "transcript_sample.jsonl"
 
 
 def test_run_end_to_end_surfaces_override_notice_in_systemMessage(tmp_path: Path):
-    # TYCHO-122 seam: `_override_notice` is unit-tested above but never driven through
+    # seam: `_override_notice` is unit-tested above but never driven through
     # `hook.run()` itself, so a dropped `+ override_notice` at the format_output call site
     # would go unnoticed. Reuse test_relay's real-transcript pattern (sample fixture verifies
     # to FAILED on `file_state`) so this exercises the actual run() integration end to end.

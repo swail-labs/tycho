@@ -1,4 +1,4 @@
-"""TYCHO-39 — the passive indicator: can the user see Tycho is on without asking?
+""" — the passive indicator: can the user see Tycho is on without asking?
 
 Two things are worth guarding here, and neither is the pretty output.
 
@@ -8,8 +8,8 @@ VERIFIED after a run that verified nothing, it is worse than no indicator at all
 the silent-trust failure `doctor` exists to catch, dressed up as reassurance.
 
 The second is that it can't hurt anything. It runs on every render, inside a harness that
-gives it ~5s and reads stdout only on exit 0 (Claude Code 2.1.210 — see
-`docs/harness-support.md`). So: never raise, never block, never clobber the user's own
+gives it ~5s and reads stdout only on exit 0 (Claude Code 2.1.220 — see
+the pinned harness contract). So: never raise, never block, never clobber the user's own
 status line.
 """
 
@@ -20,8 +20,11 @@ from pathlib import Path
 
 import pytest
 
-from tycho import cli, state, status
-from tycho import init as init_mod
+from tycho import cli
+from tycho.store import state
+from tycho.views import colour
+from tycho.wire import status
+from tycho.wire import install as init_mod
 
 CLAUDE = Path(".claude/settings.json")
 
@@ -57,41 +60,70 @@ def test_a_repo_without_tycho_shows_nothing(tmp_path: Path):
     assert status.line(tmp_path) == ""
 
 
-def test_the_line_is_just_bracket_tycho(tmp_path: Path):
-    # TYCHO-47: text is always `[TYCHO]`; the *colour* carries the status, not the text.
-    # (NO_COLOR from the fixture strips the codes, so the text shows bare here.)
+def test_the_text_carries_the_state_when_the_colour_cannot(tmp_path: Path):
+    """The badge encoded its state in colour alone, so with `NO_COLOR` — honoured right here —
+    every state rendered the identical `[TYCHO]` and said nothing. Same for a status bar that
+    strips ANSI, and for a colourblind reader looking at red against green, which the harness
+    renders dimmed on top. The mark is the channel that survives all three.
+
+    (NO_COLOR comes from the fixture, so these show bare.)"""
     _install(tmp_path)
-    assert status.line(tmp_path) == "[TYCHO]"                 # never fired → still [TYCHO]
+    assert status.line(tmp_path) == "[TYCHO]"  # never fired — no signal, and no mark to give
+    state.record_run(tmp_path, "claude", pending=True)
+    assert status.line(tmp_path) == "[TYCHO …]"
     state.record_run(tmp_path, "claude", verdict="VERIFIED")
-    assert status.line(tmp_path) == "[TYCHO]"
+    assert status.line(tmp_path) == "[TYCHO ✓]"
     state.record_run(tmp_path, "claude", verdict="FAILED")
+    assert status.line(tmp_path) == "[TYCHO ✗]"
+    state.record_run(tmp_path, "claude", verdict="STALE")
+    assert status.line(tmp_path) == "[TYCHO ✗]"          # adverse, like FAILED
+    state.record_run(tmp_path, "claude", verdict="INDETERMINATE")
+    assert status.line(tmp_path) == "[TYCHO ?]"
+    state.record_run(tmp_path, "claude", verdict="OVERRIDDEN")
+    assert status.line(tmp_path) == "[TYCHO ~]"
+
+
+def test_every_state_the_colour_distinguishes_the_text_distinguishes_too(tmp_path: Path):
+    """The point of the mark is parity with the colour, so a verdict added to one and not the
+    other silently puts that state back to colour-only."""
+    marks = {v: status._VERDICT_MARK.get(v) for v in colour._VERDICT_COLOUR}
+    assert all(marks.values()), f"verdict with a colour but no mark: {marks}"
+    # Distinct colours must stay distinct as text: FAILED and STALE share both, deliberately.
+    for a, b in ((a, b) for a in marks for b in marks if a < b):
+        if colour._VERDICT_COLOUR[a] != colour._VERDICT_COLOUR[b]:
+            assert marks[a] != marks[b], f"{a} and {b} differ in colour but not in text"
+
+
+def test_a_verdict_with_no_mark_shows_no_signal_rather_than_guessing(tmp_path: Path):
+    _install(tmp_path)
+    state.record_run(tmp_path, "claude", verdict="SOMETHING_NEW")
     assert status.line(tmp_path) == "[TYCHO]"
 
 
 def test_colour_tracks_the_verdict(tmp_path: Path, monkeypatch):
     # green = VERIFIED, red = FAILED/STALE (both adverse), frost blue = verifying (pending),
-    # grey = never-fired / no-verdict. The badge lands on green or red (TYCHO-47/59/94).
+    # grey = never-fired / no-verdict. The badge lands on green or red.
     monkeypatch.delenv("NO_COLOR", raising=False)
     _install(tmp_path)
 
-    assert status.line(tmp_path).startswith(status._GREY)     # installed, never fired — grey
+    assert status.line(tmp_path).startswith(colour._GREY)     # installed, never fired — grey
     state.record_run(tmp_path, "claude", pending=True)
-    assert status.line(tmp_path).startswith(status._FROST)    # verifying now — frost blue (TYCHO-94)
+    assert status.line(tmp_path).startswith(colour._FROST)    # verifying now — frost blue
     state.record_run(tmp_path, "claude", verdict="VERIFIED")
-    assert status.line(tmp_path).startswith(status._GREEN)
+    assert status.line(tmp_path).startswith(colour._GREEN)
     state.record_run(tmp_path, "claude", verdict="FAILED")
-    assert status.line(tmp_path).startswith(status._RED)
+    assert status.line(tmp_path).startswith(colour._RED)
     state.record_run(tmp_path, "claude", verdict="STALE")
-    assert status.line(tmp_path).startswith(status._RED)      # STALE is adverse → red
+    assert status.line(tmp_path).startswith(colour._RED)      # STALE is adverse → red
 
 
 def test_pending_is_frost_not_yellow(tmp_path: Path, monkeypatch):
-    # mid-run and INDETERMINATE must be distinct colours now — frost blue vs yellow (TYCHO-94)
+    # mid-run and INDETERMINATE must be distinct colours now — frost blue vs yellow
     monkeypatch.delenv("NO_COLOR", raising=False)
     _install(tmp_path)
     state.record_run(tmp_path, "claude", pending=True)
-    assert status.line(tmp_path).startswith(status._FROST)
-    assert status._FROST != status._YELLOW
+    assert status.line(tmp_path).startswith(colour._FROST)
+    assert colour._FROST != colour._YELLOW
 
 
 def test_unsupported_and_nothing_to_verify_are_grey(tmp_path: Path, monkeypatch):
@@ -100,17 +132,17 @@ def test_unsupported_and_nothing_to_verify_are_grey(tmp_path: Path, monkeypatch)
     monkeypatch.delenv("NO_COLOR", raising=False)
     _install(tmp_path)
     state.record_run(tmp_path, "claude", verdict="UNSUPPORTED")
-    assert status.line(tmp_path).startswith(status._GREY)
+    assert status.line(tmp_path).startswith(colour._GREY)
     state.record_run(tmp_path, "claude")  # fired, nothing to report (no verdict, not pending)
-    assert status.line(tmp_path).startswith(status._GREY)
+    assert status.line(tmp_path).startswith(colour._GREY)
 
 
 def test_indeterminate_is_yellow(tmp_path: Path, monkeypatch):
-    # INDETERMINATE ran but couldn't conclude — noteworthy, so yellow, distinct from frost (TYCHO-94)
+    # INDETERMINATE ran but couldn't conclude — noteworthy, so yellow, distinct from frost
     monkeypatch.delenv("NO_COLOR", raising=False)
     _install(tmp_path)
     state.record_run(tmp_path, "claude", verdict="INDETERMINATE")
-    assert status.line(tmp_path).startswith(status._YELLOW)
+    assert status.line(tmp_path).startswith(colour._YELLOW)
 
 
 def test_a_run_that_verified_nothing_is_not_green(tmp_path: Path, monkeypatch):
@@ -120,11 +152,65 @@ def test_a_run_that_verified_nothing_is_not_green(tmp_path: Path, monkeypatch):
     _install(tmp_path)
     state.record_run(tmp_path, "claude", verdict="VERIFIED")
     state.record_run(tmp_path, "claude")
-    assert not status.line(tmp_path).startswith(status._GREEN)  # not green anymore
-    assert status.line(tmp_path).startswith(status._GREY)       # grey — nothing to report
+    assert not status.line(tmp_path).startswith(colour._GREEN)  # not green anymore
+    assert status.line(tmp_path).startswith(colour._GREY)       # grey — nothing to report
 
 
-# --- refresh cadence so the badge settles on the verdict (TYCHO-59) ----------
+# --- the running catch count -------------------------------------------------
+#
+# The badge is the one Tycho surface that is on screen all day, and until now it only ever
+# said "still running". The count is what makes it say "still worth running" — but it is
+# read off the same tally `tycho count` prints, and it must not become a second, drifting
+# opinion about what a catch is.
+
+def test_the_badge_carries_the_running_catch_count(tmp_path: Path):
+    _install(tmp_path)
+    state.record_run(tmp_path, "claude", verdict="FAILED")
+    state.record_catch(tmp_path, "claude", "FAILED", [])
+
+    assert status.line(tmp_path) == "[TYCHO ✗ · 1 caught]"
+
+
+def test_a_repo_that_has_caught_nothing_shows_no_count(tmp_path: Path):
+    """"0 caught" is not an advertisement — it reads as a tool that has never worked, and
+    it is the state every new install starts in."""
+    _install(tmp_path)
+    state.record_run(tmp_path, "claude", verdict="VERIFIED")
+    state.record_catch(tmp_path, "claude", "VERIFIED", [])
+
+    assert status.line(tmp_path) == "[TYCHO ✓]"
+
+
+def test_the_count_agrees_with_tycho_count(tmp_path: Path):
+    """The badge and `tycho count` must never disagree about how many were caught: both are
+    FAILED + STALE, and an INDETERMINATE is a blind spot, not a save."""
+    _install(tmp_path)
+    for verdict in ("FAILED", "STALE", "INDETERMINATE", "VERIFIED"):
+        state.record_catch(tmp_path, "claude", verdict, [])
+    state.record_run(tmp_path, "claude", verdict="VERIFIED")
+
+    counts = state.counts(tmp_path)
+    assert counts["FAILED"] + counts["STALE"] == 2
+    assert status.line(tmp_path) == "[TYCHO ✓ · 2 caught]"
+
+
+def test_the_count_survives_a_badge_with_no_verdict_yet(tmp_path: Path):
+    # Installed, caught things before, this session hasn't verified anything yet.
+    _install(tmp_path)
+    state.record_catch(tmp_path, "claude", "FAILED", [])
+
+    assert status.line(tmp_path) == "[TYCHO · 1 caught]"
+
+
+def test_an_unreadable_tally_costs_the_count_not_the_badge(tmp_path: Path, monkeypatch):
+    _install(tmp_path)
+    state.record_run(tmp_path, "claude", verdict="VERIFIED")
+    monkeypatch.setattr(state, "counts", _boom)
+
+    assert status.line(tmp_path) == "[TYCHO ✓]"
+
+
+# --- refresh cadence so the badge settles on the verdict ----------
 
 def test_install_sets_a_status_refresh_interval(tmp_path: Path):
     # Without polling the badge lags to the next prompt; the interval makes it re-render a
@@ -183,7 +269,7 @@ def test_cli_status_survives_unreadable_state(tmp_path: Path, monkeypatch, capsy
 
 
 def test_cli_status_survives_a_console_that_cannot_encode_it(tmp_path: Path, monkeypatch):
-    # TYCHO-40's crash, in the one place it would be worst: a status bar that raises on
+    # that crash, in the one place it would be worst: a status bar that raises on
     # every render. A non-zero exit also makes the harness discard stdout entirely.
     _install(tmp_path)
     state.record_run(tmp_path, "claude", verdict="VERIFIED")
@@ -200,17 +286,17 @@ def _cp1252_write(text: str) -> int:
     return len(text)
 
 
-# --- toggle on/off (TYCHO-47) ------------------------------------------------
+# --- toggle on/off ------------------------------------------------
 
 def test_toggle_off_hides_the_line_but_keeps_the_install(tmp_path: Path):
     _install(tmp_path)
     state.record_run(tmp_path, "claude", verdict="VERIFIED")
-    assert status.line(tmp_path) == "[TYCHO]"       # NO_COLOR from the fixture
+    assert status.line(tmp_path) == "[TYCHO ✓]"     # NO_COLOR from the fixture
     state.set_status_enabled(tmp_path, False)
     assert status.line(tmp_path) == ""              # hidden...
     assert state.read_install(tmp_path)             # ...but the hook is still installed
     state.set_status_enabled(tmp_path, True)
-    assert status.line(tmp_path) == "[TYCHO]"       # and back
+    assert status.line(tmp_path) == "[TYCHO ✓]"     # and back
 
 
 def test_env_override_hides_it_everywhere(tmp_path: Path, monkeypatch):
@@ -237,7 +323,7 @@ def test_cli_status_off_then_on_toggles_the_repo(tmp_path: Path, monkeypatch, ca
 
 def test_verify_records_its_verdict_for_the_status_bar(tmp_path: Path, monkeypatch, capsys):
     # A manual `tycho verify` is a real verification — the badge must reflect it, so a
-    # verify → VERIFIED can turn [TYCHO] green (TYCHO-47), same channel the hook writes.
+    # verify → VERIFIED can turn [TYCHO] green, same channel the hook writes.
     monkeypatch.chdir(tmp_path)
     _install(tmp_path)
     fixture = Path(__file__).parent / "fixtures" / "transcript_sample.jsonl"
@@ -250,7 +336,7 @@ def test_verify_records_its_verdict_for_the_status_bar(tmp_path: Path, monkeypat
     assert beat["verdict"] in out  # the badge shows the same verdict verify just printed
 
 
-# --- /tycho slash command (TYCHO-48) -----------------------------------------
+# --- /tycho slash command -----------------------------------------
 
 def test_init_installs_the_slash_command_and_subcommands(tmp_path: Path):
     _install(tmp_path)
@@ -259,7 +345,9 @@ def test_init_installs_the_slash_command_and_subcommands(tmp_path: Path):
     assert top.exists() and "$ARGUMENTS" in top.read_text()   # /tycho <freeform>
     # One flat file per subcommand (/tycho-status etc.) → each autocompletes with its own
     # description shown in Claude Code's interface.
-    for name in ("status", "doctor", "verify", "help", "hide", "show", "count"):
+    for name in ("status", "doctor", "verify", "help", "count",
+                 "show", "log", "blame", "review", "attest",   # the record-backed set
+                 "badge-on", "badge-off"):                     # the renamed badge toggles
         sub = commands / f"tycho-{name}.md"
         assert sub.exists(), name
         body = sub.read_text()
@@ -267,6 +355,12 @@ def test_init_installs_the_slash_command_and_subcommands(tmp_path: Path):
         assert 'description: "' in body               # quoted, so a colon in the text is safe
     # The doctor description has a colon — the exact case that broke YAML unquoted.
     assert 'description: "Full diagnostics:' in (commands / "tycho-doctor.md").read_text()
+    # /tycho-show is the turn digest, not the status badge. Before 0.2.0 this name was bound
+    # to `statusline --on`, which would have shadowed the release's most useful command.
+    # The CLI spelling is host-flavoured (`tycho`, `tycho.EXE`, `python -m tycho.cli`) — what
+    # matters is the subcommand it ends in.
+    assert "show $ARGUMENTS`" in (commands / "tycho-show.md").read_text()
+    assert not (commands / "tycho-hide.md").exists()  # renamed to badge-off, cleaned up
 
 
 def test_uninstall_removes_the_slash_commands(tmp_path: Path):
@@ -315,7 +409,7 @@ def test_init_claims_the_slot_when_it_is_free(tmp_path: Path):
 
 def test_init_composes_with_a_repo_level_statusline_and_restores_it(tmp_path: Path):
     # A foreign repo-level statusLine is not clobbered — Tycho takes the slot but records
-    # their command and runs it too, then puts it back on uninstall (TYCHO-47).
+    # their command and runs it too, then puts it back on uninstall.
     (tmp_path / ".claude").mkdir()
     theirs = {"type": "command", "command": "~/.claude/other-statusline.sh"}
     (tmp_path / CLAUDE).write_text(json.dumps({"statusLine": theirs}))
@@ -332,9 +426,9 @@ def test_init_composes_with_a_repo_level_statusline_and_restores_it(tmp_path: Pa
 
 
 def test_init_composes_with_a_user_level_statusline(tmp_path: Path, monkeypatch):
-    # The real case: a user status line lives in ~/.claude/settings.json (user level), which a
-    # repo-level line would shadow. Tycho records it (origin "user") and composes; we never
-    # write the user file, so it resurfaces on its own when ours is removed (TYCHO-47).
+    # A user status line lives in ~/.claude/settings.json, which a repo-level line shadows.
+    # Tycho records it as origin "user" and composes; the user file is never written, so it
+    # resurfaces on its own.
     home = tmp_path / "home"
     (home / ".claude").mkdir(parents=True)
     (home / ".claude" / "settings.json").write_text(
@@ -378,12 +472,11 @@ def test_uninstall_leaves_someone_elses_statusline_alone(tmp_path: Path):
     assert json.loads((tmp_path / CLAUDE).read_text())["statusLine"] == theirs
 
 
-# --- finding the repo from a subdirectory (TYCHO-79) -------------------------
+# --- finding the repo from a subdirectory -------------------------
 #
-# A shell prompt follows the user into subdirectories and supplies no payload, so `repo`
-# arrives as the cwd rather than the root. Root-only resolution made that read as "not
-# installed" — the badge silently blank for most of a session, indistinguishable from
-# Tycho being absent, which is the exact silence Tycho exists to prevent.
+# A shell prompt follows the user into subdirectories, so `repo` arrives as the cwd.
+# Root-only resolution read that as "not installed" — the badge blank for most of a session,
+# indistinguishable from Tycho being absent.
 
 def test_the_badge_survives_a_subdirectory(tmp_path: Path):
     _install(tmp_path)
@@ -391,7 +484,7 @@ def test_the_badge_survives_a_subdirectory(tmp_path: Path):
     deep = tmp_path / "tycho" / "checks"
     deep.mkdir(parents=True)
 
-    assert status.line(deep) == "[TYCHO]"                     # was "" — blank below the root
+    assert status.line(deep) == "[TYCHO ✓]"                   # was "" — blank below the root
     assert state.last_run(deep)["verdict"] == "VERIFIED"      # same state, not a fresh miss
 
 
@@ -422,7 +515,7 @@ def test_the_walk_stops_at_the_git_root(tmp_path: Path):
 def test_config_resolves_from_a_subdirectory(tmp_path: Path):
     # `.tycho.toml` is `.tycho/`'s sibling and must follow the same root, or `scope` run one
     # directory down reports "no scope set" and silently widens what the agent may edit.
-    from tycho import config as config_mod
+    from tycho.store import config as config_mod
 
     config_mod.set_scope(tmp_path, ["src/**"])
     deep = tmp_path / "src" / "inner"
@@ -433,11 +526,10 @@ def test_config_resolves_from_a_subdirectory(tmp_path: Path):
 
 
 def test_doctor_from_a_subdirectory_does_not_cry_wolf(tmp_path: Path):
-    # TYCHO-79: state resolution and *harness config* resolution must agree. If only the
-    # former walks, doctor finds the root's install record, looks for `.claude/settings.json`
-    # beside itself one directory down, finds none, and reports the hook as ripped out —
-    # a false alarm about wiring that is fine, which is its own kind of lie.
-    from tycho import doctor
+    # State and harness-config resolution must agree. If only the former walks, doctor finds
+    # the root's install record, looks for `.claude/settings.json` one directory down, and
+    # reports the hook ripped out — a false alarm about wiring that is fine.
+    from tycho.wire import doctor
 
     _install(tmp_path)
     deep = tmp_path / "tycho"

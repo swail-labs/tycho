@@ -1,0 +1,1698 @@
+"""astdiff + the 8 checks + end-to-end run_checks."""
+
+
+import pytest
+from dataclasses import replace
+from pathlib import Path
+
+from conftest import git
+
+from tycho.engine import astdiff, checks
+from tycho.read import session as engine
+from tycho.store.config import Config
+from tycho.model import UNSTRUCTURED_RESULT, CheckStatus, Event, FileEdit, FileState, GitSnapshot, Message, Session, Verdict
+
+
+def make_session(events=(), edits=(), files=None, git=None, config=None, messages=()) -> Session:
+    return Session(
+        events=tuple(events),
+        edits=tuple(edits),
+        repo=Path("/repo"),
+        config=config or Config(),
+        files=files or {},
+        git=git or GitSnapshot(False, None, ()),
+        messages=tuple(messages),
+    )
+
+
+def bash(command, ts, is_error=False, result=None) -> Event:
+    # `result` carries the captured stdout/stderr; empty by default, since three of the
+    # four harnesses record none.
+    return Event(ts=ts, tool="Bash", input={"command": command}, is_error=is_error, result=result or {})
+
+
+# --- astdiff ----------------------------------------------------------------
+
+def test_assertion_delta_removed():
+    before = "def t():\n    assert a == 1\n    assert b == 2\n"
+    after = "def t():\n    assert a == 1\n"
+    assert astdiff.assertion_delta(before, after) == ["1 assertion(s) removed"]
+
+
+def test_assertion_delta_neutralized():
+    before = "def t():\n    assert a == 1\n"
+    after = "def t():\n    assert True\n"
+    assert astdiff.assertion_delta(before, after) == ["1 assertion(s) neutralized to always-true"]
+
+
+def test_assertion_delta_clean():
+    src = "def t():\n    assert a == 1\n"
+    assert astdiff.assertion_delta(src, src) == []
+
+
+def test_assertion_delta_unparseable_returns_empty():
+    assert astdiff.assertion_delta("def t(:\n", "def t():\n    assert x\n") == []
+
+
+def test_skip_added():
+    before = "def t():\n    assert x\n"
+    after = "import pytest\n@pytest.mark.skip\ndef t():\n    assert x\n"
+    out = astdiff.skip_or_mock_added(before, after)
+    assert any("skip added" in f for f in out)
+
+
+def test_mock_added():
+    before = "def t():\n    assert real()\n"
+    after = "from unittest.mock import patch\ndef t():\n    with patch('m'):\n        assert real()\n"
+    out = astdiff.skip_or_mock_added(before, after)
+    assert any("mock/patch" in f for f in out)
+
+
+# --- command_execution ------------------------------------------------------
+
+def test_command_execution_pass():
+    s = make_session(events=[bash("pytest -q", 100.0, is_error=False)])
+    assert checks.command_execution(s).status == CheckStatus.PASS
+
+
+def test_command_execution_fail():
+    s = make_session(events=[bash("pytest -q", 100.0, is_error=True)])
+    assert checks.command_execution(s).status == CheckStatus.FAIL
+
+
+def test_command_execution_unsupported_when_no_runner():
+    s = make_session(events=[bash("ls", 100.0)])
+    assert checks.command_execution(s).status == CheckStatus.UNSUPPORTED
+
+
+def test_command_execution_unsupported_without_exit_status():
+    s = make_session(events=[bash("pytest -q", 100.0, is_error=None)])
+    assert checks.command_execution(s).status == CheckStatus.UNSUPPORTED
+
+
+def test_verifiable_activity_requires_edits_or_a_runner():
+    assert not checks.has_verifiable_activity(make_session(events=[bash("ls", 1.0)]))
+    assert checks.has_verifiable_activity(make_session(events=[bash("pytest -q", 1.0)]))
+    assert checks.has_verifiable_activity(
+        make_session(edits=[FileEdit("notes.md", 1.0, None, "create")])
+    )
+
+
+def test_command_execution_ignores_runner_name_inside_echo():
+    # a runner name quoted inside an echo/grep must NOT count as the tests running
+    s = make_session(events=[bash('echo "run pytest to check" && grep -r pytest .', 100.0)])
+    assert checks.command_execution(s).status == CheckStatus.UNSUPPORTED
+
+
+def test_command_execution_matches_python_m_pytest():
+    s = make_session(events=[bash("python -m pytest -q", 100.0, is_error=False)])
+    assert checks.command_execution(s).status == CheckStatus.PASS
+
+
+def test_command_execution_matches_virtualenv_pytest():
+    s = make_session(events=[bash(".venv/bin/pytest -q", 100.0, is_error=False)])
+    assert checks.command_execution(s).status == CheckStatus.PASS
+
+
+def test_command_execution_matches_windows_venv_python_exe():
+    # Windows venv interpreter carries a `.exe` suffix; must still count as a runner
+    s = make_session(events=[bash("./.venv/Scripts/python.exe -m pytest -q", 100.0, is_error=False)])
+    assert checks.command_execution(s).status == CheckStatus.PASS
+
+
+def test_command_execution_whole_suite_that_deselected_is_not_a_green():
+    # `addopts = -m "not slow"` in pytest.ini mutes the failing test, `pytest` exits 0, and argv
+    # still reads as the whole suite. Captured from a real run of exactly that setup.
+    s = make_session(events=[bash(
+        "pytest -q", 100.0, is_error=False,
+        result={"stdout": "1 passed, 1 deselected, 1 warning in 0.01s\n"},
+    )])
+    r = checks.command_execution(s)
+    assert r.status == CheckStatus.UNSUPPORTED and r.blocking
+    assert "part of it was excluded" in r.evidence
+
+
+def test_command_execution_narrowing_named_on_the_command_line_is_honest():
+    # The contradiction is the finding, not the narrowing. `-m` is visible in argv, so this is
+    # an ordinary honest run and must not be flagged.
+    s = make_session(events=[bash(
+        'pytest -q -m "not slow"', 100.0, is_error=False,
+        result={"stdout": "1 passed, 1 deselected in 0.01s\n"},
+    )])
+    assert checks.command_execution(s).status == CheckStatus.PASS
+
+
+def test_command_execution_cargo_zero_filtered_out_is_a_clean_green():
+    # cargo prints `0 filtered out` on every green whole-suite run — reading `\d` there would
+    # call every cargo run narrowed.
+    s = make_session(events=[bash(
+        "cargo test", 100.0, is_error=False,
+        result={"stdout": "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured;"
+                          " 0 filtered out; finished in 0.00s\n"},
+    )])
+    assert checks.command_execution(s).status == CheckStatus.PASS
+
+
+def test_narrowed_green_does_not_supersede_an_earlier_red():
+    # Run the suite, see red, add a config exclusion, re-run: same argv, green, and the red
+    # is still unresolved because the second run covered less than the first.
+    s = make_session(events=[
+        bash("pytest -q", 100.0, is_error=True),
+        bash("pytest -q", 200.0, is_error=False,
+             result={"stdout": "1 passed, 1 deselected in 0.01s\n"}),
+    ])
+    assert checks._unresolved_reds(s.events, s.commands)
+    assert checks._last_green_run_ts(s) is None
+
+
+def test_command_execution_masked_by_pipe_is_unsupported():
+    # `pytest | tail` exits with tail's status, so is_error=False is a phantom green. No
+    # output was captured, so there's nothing to fall back to: UNSUPPORTED, never PASS.
+    s = make_session(events=[bash("pytest -q 2>&1 | tail -20", 100.0, is_error=False)])
+    r = checks.command_execution(s)
+    assert r.status == CheckStatus.UNSUPPORTED and "masked by the shell" in r.evidence
+
+
+def test_command_execution_masked_by_semicolon_is_not_a_green(
+):
+    # `pytest; echo done` exits with echo's status. Trusting it reported VERIFIED on a red
+    # suite — the ACME-31 bug on a shape ACME-31 didn't cover.
+    s = make_session(events=[bash("pytest -q; echo done", 100.0, is_error=False)])
+    assert checks.command_execution(s).status != CheckStatus.PASS
+
+
+def test_command_execution_masked_by_or_true_is_not_a_green():
+    # `pytest || true` swallows the failure by construction.
+    s = make_session(events=[bash("pytest -q || true", 100.0, is_error=False)])
+    assert checks.command_execution(s).status != CheckStatus.PASS
+
+
+def test_command_execution_trusts_and_chained_runner():
+    # `&&` is the safe shape and must NOT be flagged: a red pytest fails the whole
+    # command, so a recorded success really is the runner's.
+    s = make_session(events=[bash("pytest -q && echo ok", 100.0, is_error=False)])
+    assert checks.command_execution(s).status == CheckStatus.PASS
+
+
+def test_command_execution_recovers_a_red_suite_from_masked_output():
+    # The exit code is gone, but the runner said so itself — read it back.
+    s = make_session(
+        events=[
+            bash(
+                "pytest -q; echo done",
+                100.0,
+                is_error=False,
+                result={"stdout": "1 failed, 76 passed in 1.07s\ndone", "stderr": ""},
+            )
+        ]
+    )
+    r = checks.command_execution(s)
+    assert r.status == CheckStatus.FAIL and "read from its output" in r.evidence
+
+
+def test_command_execution_runner_last_in_pipe_still_scored():
+    # runner as the LAST stage owns the exit status — `cat log | pytest -` is honest
+    s = make_session(events=[bash("cat args.txt | pytest -q", 100.0, is_error=False)])
+    assert checks.command_execution(s).status == CheckStatus.PASS
+
+
+def _msg(text, ts=100.0):
+    return Message(ts=ts, text=text)
+
+
+def _tool(name, ts=100.0):
+    return Event(ts=ts, tool=name, input={}, is_error=False)
+
+
+# --- tool_call_provenance ----------------------------------------
+
+def test_provenance_web_claim_backed_by_search_passes():
+    s = make_session(messages=[_msg("I searched the web for the API docs.")], events=[_tool("WebSearch")])
+    assert checks.tool_call_provenance(s).status == CheckStatus.PASS
+
+
+def test_provenance_web_claim_with_no_search_is_advisory():
+    # Advisory: an unbacked claim is reported, never FAILed — the prose may be quoted or
+    # injected, and a verdict-bearing FAIL there is attacker-controllable.
+    s = make_session(messages=[_msg("I searched the web for the API docs.")], events=[_tool("Bash")])
+    r = checks.tool_call_provenance(s)
+    assert r.status == CheckStatus.UNSUPPORTED
+    assert "web search/fetch" in r.evidence and "advisory" in r.evidence
+    assert engine.verdict_of([r]) is not Verdict.FAILED
+
+
+def test_provenance_issue_claim_backed_by_jira_tool_passes():
+    s = make_session(
+        messages=[_msg("I created ACME-91 and moved ACME-29 to In Progress.")],
+        events=[_tool("mcp__atlassian__createJiraIssue")],
+    )
+    assert checks.tool_call_provenance(s).status == CheckStatus.PASS
+
+
+def test_provenance_issue_claim_with_no_tool_is_advisory():
+    s = make_session(messages=[_msg("I filed ACME-91 for that.")], events=[_tool("Bash")])
+    r = checks.tool_call_provenance(s)
+    assert r.status == CheckStatus.UNSUPPORTED and "issue-tracker action" in r.evidence
+
+
+def test_provenance_unsupported_without_prose():
+    # non-Claude harness: no messages captured -> UNSUPPORTED, never a false FAIL
+    s = make_session(events=[_tool("Bash")])
+    assert checks.tool_call_provenance(s).status == CheckStatus.UNSUPPORTED
+
+
+def test_provenance_unsupported_when_no_claim_recognized():
+    s = make_session(messages=[_msg("I refactored the parser; it reads cleaner now.")], events=[_tool("Bash")])
+    assert checks.tool_call_provenance(s).status == CheckStatus.UNSUPPORTED
+
+
+def test_provenance_does_not_false_fail_on_ambiguous_prose():
+    # ticket-shaped verbs without a ticket key, code-sense "resolved", codebase "searched" —
+    # none is a tool-action claim, so none may FAIL (never-false-FAIL invariant,)
+    for text in (
+        "I moved the helper into utils.py.",
+        "I resolved the merge conflict.",
+        "I searched the codebase with grep.",
+        "This change fixes ACME-45.",
+        "I'll create a ticket for that later.",
+    ):
+        s = make_session(messages=[_msg(text)], events=[_tool("Bash")])
+        assert checks.tool_call_provenance(s).status != CheckStatus.FAIL, text
+
+
+def test_provenance_does_not_false_fail_on_reported_third_party_action():
+    # The agent *narrates* someone else's action, or a ticket's pre-existing state — not a
+    # claim it acted. None may FAIL, even with no matching tool call.
+    for text in (
+        "Dan already closed ACME-97, so nothing to do.",
+        "Dan Mano moved ACME-29 to Done last week.",
+        "ACME-30 was already closed before we started.",
+        "The operator filed ACME-50 for that.",
+        "Dan searched the web for the changelog earlier.",
+    ):
+        s = make_session(messages=[_msg(text)], events=[_tool("Bash")])
+        assert checks.tool_call_provenance(s).status != CheckStatus.FAIL, text
+
+
+def test_provenance_agent_claim_still_reported_beside_a_name():
+    # The guard must not swallow a real first-person claim just because a name is nearby: the
+    # agent's own subject-dropped/first-person claim is still reported as unbacked.
+    for text in (
+        "I closed ACME-30 for Dan.",
+        "Filed ACME-91; ACME-30 closed.",
+    ):
+        s = make_session(messages=[_msg(text)], events=[_tool("Bash")])
+        r = checks.tool_call_provenance(s)
+        assert r.status == CheckStatus.UNSUPPORTED and "no matching tool call" in r.evidence, text
+
+
+def test_provenance_issue_status_arrow_and_key_first_order_pass():
+    # the exact live miss — a status-arrow report with the KEY earlier, and the
+    # reversed "KEY <verb>" word order — both were invisible before the recall widening.
+    for text in (
+        "Round-trip complete on ACME-92: Hold → In Review, then In Review → Hold.",
+        "ACME-29 moved to In Progress; ACME-30 closed.",
+    ):
+        s = make_session(messages=[_msg(text)], events=[_tool("mcp__atlassian__transitionJiraIssue")])
+        assert checks.tool_call_provenance(s).status == CheckStatus.PASS, text
+
+
+def test_provenance_issue_status_arrow_no_tool_is_reported():
+    # a claimed transition ("Hold → In Review" next to a KEY) with no Jira call is reported
+    s = make_session(
+        messages=[_msg("Moved it: ACME-92 Hold → In Review.")], events=[_tool("Bash")],
+    )
+    r = checks.tool_call_provenance(s)
+    assert r.status == CheckStatus.UNSUPPORTED and "no matching tool call" in r.evidence
+
+
+def test_provenance_observed_status_arrow_does_not_false_fail():
+    # The agent *observes* where a ticket already sits, makes no Jira call, and is FAILed for
+    # a transition it never performed. An observed arrow is not a self-made one.
+    for text in (
+        "I looked and ACME-30 already sits at In Review → Done; I didn't touch it.",
+        "ACME-30 is now at Hold → Done on the board.",
+        "The board shows ACME-41 In Review → Done.",
+        "It's still at In Progress → Done.",
+    ):
+        s = make_session(messages=[_msg(text)], events=[_tool("Bash")])
+        assert checks.tool_call_provenance(s).status != CheckStatus.FAIL, text
+
+
+def test_provenance_future_status_change_does_not_false_fail():
+    # ACME-95: widening must not catch future/hypothetical — "I'll move" is base-tense and
+    # "to Done" is not a two-status arrow, so no claim is recognized (never a false FAIL).
+    for text in (
+        "I'll move ACME-40 to Done tomorrow.",
+        "We should transition ACME-41 to In Review at some point.",
+    ):
+        s = make_session(messages=[_msg(text)], events=[_tool("Bash")])
+        assert checks.tool_call_provenance(s).status != CheckStatus.FAIL, text
+
+
+def test_provenance_claim_flips_has_verifiable_activity():
+    # an MCP-only turn (a claim, no edits/runners) must make the hook speak
+    claim = make_session(messages=[_msg("I created ACME-91.")], events=[_tool("Bash")])
+    assert checks.has_verifiable_activity(claim)
+    quiet = make_session(messages=[_msg("Looks good to me.")], events=[_tool("Bash")])
+    assert not checks.has_verifiable_activity(quiet)
+
+
+def test_command_execution_matches_variable_interpreter(
+):
+    # `"$PY" -m pytest` — the interpreter is a shell variable we can't resolve, but the
+    # `-m pytest` module names the runner. Was invisible ("no test ran") before.
+    s = make_session(events=[bash('"$PY" -m pytest -q', 100.0, is_error=False)])
+    assert checks.command_execution(s).status == CheckStatus.PASS
+
+
+def test_command_execution_variable_interpreter_piped_is_not_a_green():
+    # detected as a runner now, but the pipe still masks the status — must not go green
+    s = make_session(events=[bash('( cd x && "$PY" -m pytest -q | tail -8 )', 100.0, is_error=False)])
+    assert checks.command_execution(s).status != CheckStatus.PASS
+
+
+def test_command_execution_ignores_module_flag_inside_echo():  # guard
+    # `-m pytest` behind a non-interpreter (echo) must NOT count as the tests running
+    s = make_session(events=[bash('echo "-m pytest"', 100.0)])
+    assert checks.command_execution(s).status == CheckStatus.UNSUPPORTED
+
+
+def test_command_execution_matches_wsl_wrapped_runner():
+    # a Windows-hosted agent reaches Linux only via `wsl.exe ... -- bash -c '<cmd>'`; the
+    # runner is nested in the wrapper's arg and was invisible before.
+    s = make_session(events=[bash("wsl.exe -d Ubuntu -- bash -lc 'python3 -m pytest -q'", 100.0, is_error=False)])
+    assert checks.command_execution(s).status == CheckStatus.PASS
+
+
+def test_command_execution_matches_bash_dash_c_runner():
+    s = make_session(events=[bash("bash -c 'pytest -q'", 100.0, is_error=False)])
+    assert checks.command_execution(s).status == CheckStatus.PASS
+
+
+def test_command_execution_wrapped_runner_piped_is_not_a_green():
+    # the wrapper faithfully forwards pytest's status, but the outer pipe then masks it
+    s = make_session(events=[bash("bash -c 'pytest -q' | tail -5", 100.0, is_error=False)])
+    assert checks.command_execution(s).status != CheckStatus.PASS
+
+
+def test_command_execution_matches_tycho_run_wrapper():
+    # `tycho run -- <cmd>` execs the child and forwards its real exit code; detection peels
+    # the wrapper so the runner inside is seen and trusted.
+    s = make_session(events=[bash("tycho run -- pytest -q", 100.0, is_error=False)])
+    assert checks.command_execution(s).status == CheckStatus.PASS
+
+
+def test_masked_pipe_run_does_not_anchor_freshness():
+    # the phantom green must not become the last-green anchor: a source edited after it
+    # should read UNSUPPORTED ("no passing run"), not STALE against a masked run.
+    s = make_session(
+        events=[bash("pytest -q | tail -5", 100.0, is_error=False)],
+        edits=[FileEdit("src/auth.py", ts=110.0, original="x", kind="edit")],
+        files={"src/auth.py": FileState("src/auth.py", True, mtime=200.0, current_text="x")},
+    )
+    assert checks.test_freshness(s).status == CheckStatus.UNSUPPORTED
+
+
+def test_command_execution_sees_a_powershell_runner():
+    # a test suite run through a non-Bash shell tool (PowerShell) must be seen,
+    # not dropped by a Bash-only filter.
+    ev = Event(ts=100.0, tool="PowerShell", input={"command": "uv run pytest -q"}, is_error=False, result={})
+    assert checks.command_execution(make_session(events=[ev])).status == CheckStatus.PASS
+
+
+def test_runner_segment_matches_uv_run_with_flags_between():
+    # `uv run --python 3.12 --with pytest python -m pytest -q` — flags sit between the
+    # wrapper and the runner, so the plain prefix match misses it.
+    assert checks._runner_segment("uv run --python 3.12 --with pytest python -m pytest -q") is not None
+    assert checks._runner_segment("uvx --from build pyproject-build") is None  # not a test runner
+
+
+def test_uv_run_wrapper_does_not_flag_a_non_test_command():
+    # `--with pytest` installs pytest but the command is ruff — must NOT count as a test run.
+    assert checks._runner_segment("uv run --with pytest ruff check") is None
+
+
+# --- test_freshness ---------------------------------------------------------
+
+def test_freshness_stale_when_source_edited_after_run():
+    s = make_session(
+        events=[bash("pytest -q", 100.0)],
+        edits=[FileEdit("src/auth.py", ts=110.0, original="x", kind="edit")],
+        files={"src/auth.py": FileState("src/auth.py", True, mtime=200.0, current_text="x")},
+    )
+    r = checks.test_freshness(s)
+    assert r.status == CheckStatus.STALE and "src/auth.py" in r.evidence
+
+
+def test_freshness_ignores_prose_edited_after_run():
+    """Editing a doc after a green run can't invalidate it — crying STALE there is a
+    false alarm on the one check meant to prove the run still covers the code."""
+    s = make_session(
+        events=[bash("pytest -q", 100.0)],
+        edits=[FileEdit("notes/design.md", ts=110.0, original="x", kind="edit")],
+        files={"notes/design.md": FileState("notes/design.md", True, mtime=200.0, current_text="x")},
+    )
+    assert checks.test_freshness(s).status == CheckStatus.UNSUPPORTED
+
+
+def test_freshness_ignores_a_file_outside_the_repo():
+    """An edit outside the repo stays absolute so `scope_drift` can flag it — and
+    `_file_state` resolves that absolute path to a real mtime. Read as staleness, an agent
+    touching a scratch file in /tmp pinned the repo STALE about a file the suite was never
+    going to cover. Caught on Tycho's own repo mid-session."""
+    outside = "/private/tmp/scratch/batch.json"
+    s = make_session(
+        events=[bash("pytest -q", 100.0)],
+        edits=[FileEdit(outside, ts=110.0, original="x", kind="edit")],
+        files={outside: FileState(outside, True, mtime=200.0, current_text="x")},
+    )
+    assert checks.test_freshness(s).status == CheckStatus.UNSUPPORTED
+
+
+def test_freshness_still_stale_when_a_lockfile_changes_after_run():
+    """The exclusion must stay narrow: a dependency change really can break tests."""
+    s = make_session(
+        events=[bash("pytest -q", 100.0)],
+        edits=[FileEdit("uv.lock", ts=110.0, original="x", kind="edit")],
+        files={"uv.lock": FileState("uv.lock", True, mtime=200.0, current_text="x")},
+    )
+    assert checks.test_freshness(s).status == CheckStatus.STALE
+
+
+def test_freshness_pass_when_source_older_than_run():
+    s = make_session(
+        events=[bash("pytest -q", 100.0)],
+        edits=[FileEdit("src/auth.py", ts=50.0, original="x", kind="edit")],
+        files={"src/auth.py": FileState("src/auth.py", True, mtime=50.0, current_text="x")},
+    )
+    assert checks.test_freshness(s).status == CheckStatus.PASS
+
+
+def test_freshness_unsupported_without_green_run():
+    s = make_session(edits=[FileEdit("src/a.py", 1.0, "x", "edit")])
+    assert checks.test_freshness(s).status == CheckStatus.UNSUPPORTED
+
+
+# --- test_provenance --------------------------------------------------------
+
+def test_provenance_fail_when_test_edited_after_run():
+    s = make_session(
+        events=[bash("pytest -q", 100.0)],
+        edits=[FileEdit("tests/test_a.py", ts=150.0, original="def test_a():\n    assert x\n", kind="edit")],
+    )
+    r = checks.test_provenance(s)
+    assert r.status == CheckStatus.FAIL and "tests/test_a.py" in r.evidence
+
+
+def test_provenance_pass_when_test_edited_before_run():
+    s = make_session(
+        events=[bash("pytest -q", 100.0)],
+        edits=[FileEdit("tests/test_a.py", ts=50.0, original="x", kind="edit")],
+    )
+    assert checks.test_provenance(s).status == CheckStatus.PASS
+
+
+def test_provenance_unsupported_without_test_edits():
+    s = make_session(events=[bash("pytest -q", 100.0)])
+    assert checks.test_provenance(s).status == CheckStatus.UNSUPPORTED
+
+
+# --- assertion_weakening / skip_mock ----------------------------------------
+
+def test_assertion_weakening_fail():
+    before = "def test_a():\n    assert x == 1\n"
+    s = make_session(
+        edits=[FileEdit("tests/test_a.py", 10.0, original=before, kind="edit")],
+        files={"tests/test_a.py": FileState("tests/test_a.py", True, 10.0, "def test_a():\n    assert True\n")},
+    )
+    assert checks.assertion_weakening(s).status == CheckStatus.FAIL
+
+
+def test_skip_injection_fail():
+    before = "def test_a():\n    assert x\n"
+    after = "import pytest\n@pytest.mark.skip\ndef test_a():\n    assert x\n"
+    s = make_session(
+        edits=[FileEdit("tests/test_a.py", 10.0, original=before, kind="edit")],
+        files={"tests/test_a.py": FileState("tests/test_a.py", True, 10.0, after)},
+    )
+    assert checks.skip_mock_injection(s).status == CheckStatus.FAIL
+
+
+def test_ast_checks_unsupported_without_test_edits():
+    s = make_session(edits=[FileEdit("src/a.py", 1.0, "x", "edit")])
+    assert checks.assertion_weakening(s).status == CheckStatus.UNSUPPORTED
+
+
+def test_ast_check_distinguishes_missing_baseline_from_no_test_edits():
+    # a test file WAS edited but carries no baseline (harness sent originalFile:
+    # null and git couldn't supply it). Must not read as "tests untouched" — distinct evidence.
+    s = make_session(edits=[FileEdit("tests/test_a.py", 1.0, original=None, kind="create")])
+    r = checks.assertion_weakening(s)
+    assert r.status == CheckStatus.UNSUPPORTED
+    assert "no pre-session baseline" in r.evidence and "tests/test_a.py" in r.evidence
+
+
+# --- file_state -------------------------------------------------------------
+
+def test_file_state_fail_when_missing():
+    s = make_session(
+        edits=[FileEdit("src/a.py", 1.0, None, "create")],
+        files={"src/a.py": FileState("src/a.py", False, None, None)},
+    )
+    r = checks.file_state(s)
+    assert r.status == CheckStatus.FAIL and "missing" in r.evidence
+
+
+def test_file_state_pass():
+    s = make_session(
+        edits=[FileEdit("src/a.py", 1.0, None, "create")],
+        files={"src/a.py": FileState("src/a.py", True, 1.0, "code\n")},
+    )
+    assert checks.file_state(s).status == CheckStatus.PASS
+
+
+# --- git_state --------------------------------------------------------------
+
+def test_git_state_unsupported_when_not_repo():
+    s = make_session(edits=[FileEdit("a.py", 1.0, None, "create")])
+    assert checks.git_state(s).status == CheckStatus.UNSUPPORTED
+
+
+def test_git_state_pass_when_edit_in_diff():
+    s = make_session(
+        edits=[FileEdit("a.py", 1.0, "x", "edit")],
+        files={"a.py": FileState("a.py", True, 1.0, "x")},
+        git=GitSnapshot(True, "abc", ("a.py",)),
+    )
+    assert checks.git_state(s).status == CheckStatus.PASS
+
+
+def test_git_state_fail_on_phantom():
+    s = make_session(
+        edits=[FileEdit("ghost.py", 1.0, None, "create")],
+        files={"ghost.py": FileState("ghost.py", False, None, None)},
+        git=GitSnapshot(True, "abc", ()),
+    )
+    assert checks.git_state(s).status == CheckStatus.FAIL
+
+
+def test_git_state_unsupported_when_only_out_of_repo_edits():
+    # an out-of-repo edit (kept absolute by _relpath) exists on disk but git
+    # never heard of it. Must NOT report "reconciled with git" on file_state's evidence.
+    s = make_session(
+        edits=[FileEdit("/home/u/.claude/memory/note.md", 1.0, None, "create")],
+        files={"/home/u/.claude/memory/note.md": FileState("/home/u/.claude/memory/note.md", True, 1.0, "hi")},
+        git=GitSnapshot(True, "abc", ()),
+    )
+    r = checks.git_state(s)
+    assert r.status == CheckStatus.UNSUPPORTED and "outside the repo" in r.evidence
+
+
+def test_git_state_counts_only_in_repo_paths_on_a_mixed_turn():
+    # with both in-repo and out-of-repo edits, judge only the in-repo one and
+    # surface the outside count rather than folding it into "reconciled".
+    s = make_session(
+        edits=[
+            FileEdit("src/a.py", 1.0, "x", "edit"),
+            FileEdit("/etc/hosts", 1.0, None, "edit"),
+        ],
+        files={
+            "src/a.py": FileState("src/a.py", True, 1.0, "x"),
+            "/etc/hosts": FileState("/etc/hosts", True, 1.0, "127.0.0.1"),
+        },
+        git=GitSnapshot(True, "abc", ("src/a.py",)),
+    )
+    r = checks.git_state(s)
+    assert r.status == CheckStatus.PASS
+    assert "1 path(s) edited" in r.evidence and "1 uncommitted" in r.evidence
+    assert "1 outside the repo" in r.evidence
+
+
+# --- scope_drift ------------------------------------------------------------
+
+def test_scope_drift_pass():
+    s = make_session(
+        edits=[FileEdit("src/a.py", 1.0, "x", "edit")],
+        config=Config(scope_include=("src/**",)),
+    )
+    assert checks.scope_drift(s).status == CheckStatus.PASS
+
+
+def test_scope_drift_fail():
+    s = make_session(
+        edits=[FileEdit("infra/deploy.sh", 1.0, "x", "edit")],
+        config=Config(scope_include=("src/**",)),
+    )
+    r = checks.scope_drift(s)
+    assert r.status == CheckStatus.FAIL and "infra/deploy.sh" in r.evidence
+
+
+def test_scope_drift_unsupported_without_config_points_at_the_command():
+    s = make_session(edits=[FileEdit("src/a.py", 1.0, "x", "edit")])
+    r = checks.scope_drift(s)
+    assert r.status == CheckStatus.UNSUPPORTED
+    assert "tycho scope add" in r.evidence  # actionable, not a dead end
+
+
+# --- end-to-end -------------------------------------------------------------
+
+FIXTURE = Path(__file__).parent / "fixtures" / "transcript_sample.jsonl"
+
+
+def test_run_checks_end_to_end(tmp_path: Path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "src" / "auth.py").write_text("def ok():\n    return True\n")
+    (tmp_path / "tests" / "test_auth.py").write_text("def test_ok():\n    assert ok()\n")
+    git(tmp_path, "init")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-m", "init")
+
+    session = engine.gather(FIXTURE, tmp_path)
+    results = engine.run_checks(session)
+    assert {r.name for r in results} == {c.__name__ for c in checks.CHECKS}
+    assert engine.verdict_of(results) in set(Verdict)
+
+
+def test_run_checks_omits_test_checks_when_repo_has_no_tests():
+    session = make_session()
+    session = replace(session, has_tests=False)
+    # tool_call_provenance is not a test check, so it still runs with no test suite.
+    assert {r.name for r in engine.run_checks(session)} == {
+        "file_state", "git_state", "scope_drift", "tool_call_provenance", "verifier_integrity"
+    }
+
+
+# --- runner detection on the commands people actually type --------------------
+#
+# Measured on one real session: 29 commands genuinely ran tests and 2 were recognized. The
+# test-check family reported UNSUPPORTED on a repo whose suite ran constantly, while the
+# eval said 100% — its fixtures type plain `pytest`, and nobody types that any more.
+
+@pytest.mark.parametrize("cmd", [
+    "uv run --with pytest pytest -q",
+    "uv run --with pytest --with pytest-cov pytest -q -m 'not e2e'",
+    "uv run --python 3.12 --with pytest pytest -q",
+    "uv run --isolated pytest",                  # boolean flag must not swallow the command
+    "uvx --from pytest pytest tests/",
+    "uv run pytest -q",
+    "uv run --with pytest python -m pytest -q",  # the multi-word path, still working
+    "npx --yes jest",
+    "pnpm dlx vitest run",
+    "tycho exec -- uv run --with pytest pytest -q",   # exec's own evidence path
+    "uv run --with pytest pytest -q | tail -3",       # piped, as agents write it
+])
+def test_wrapped_runners_are_recognized(cmd):
+    assert checks._runner_segment(cmd) is not None, f"missed a real test run: {cmd}"
+
+
+@pytest.mark.parametrize("cmd", [
+    "uv run --with pytest ruff check",      # pytest is an INSTALL arg, not the command
+    "uv run --with pytest mypy tycho",      # same shape, different tool
+    "uv run --with pytest-cov coverage report",
+    "uv run ruff check",
+    "npx --yes prettier --write .",
+    'echo "uv run pytest"',                 # quoted, in a different segment
+])
+def test_wrapper_install_args_are_not_mistaken_for_a_run(cmd):
+    # `--with X` installs X, it does not run it. Reading these as test runs fabricates a green.
+    assert checks._runner_segment(cmd) is None, f"false positive: {cmd}"
+
+
+# --- tool_call_provenance: injected prose (advisory) --------------
+
+def test_provenance_quoted_third_party_prose_cannot_sink_a_run():
+    # The attacker-controlled surface: a poisoned README the agent quotes back. The patterns
+    # can't tell it from the agent's own words, so the check reports and never FAILs the run.
+    for text in (
+        "I refactored the parser. The upstream README says: 'we searched the web for prior art'.",
+        "Dan moved ACME-99 to Done and searched the web for it. I did not do any of that.",
+        "> Searched the web for prior art.",
+    ):
+        s = make_session(messages=[_msg(text)], events=[_tool("Bash")])
+        r = checks.tool_call_provenance(s)
+        assert r.status != CheckStatus.FAIL, text
+        assert engine.verdict_of([r]) is not Verdict.FAILED, text
+
+
+def test_provenance_prose_cannot_launder_a_real_failure_into_a_pass():
+    # The asymmetry that makes advisory safe: prose can never conjure a tool call, and it can
+    # never turn another check's FAIL into a green.
+    s = make_session(messages=[_msg("I searched the web and it all passed.")], events=[_tool("Bash")])
+    assert checks.tool_call_provenance(s).status != CheckStatus.PASS
+    failing = checks._r("command_execution", CheckStatus.FAIL, "`pytest` reported an error")
+    assert engine.verdict_of([failing, checks.tool_call_provenance(s)]) is Verdict.FAILED
+
+
+def test_claim_patterns_are_bounded_on_adversarial_prose():
+    # An unbounded scan in _REPORTED_STATE took 80s on 192 KB of "it is " — on the Stop hook,
+    # over prose the agent (or anything it quotes) controls.
+    import time
+    prose = "it is " * 32000
+    s = make_session(messages=[_msg(prose)], events=[_tool("Bash")])
+    started = time.perf_counter()
+    checks.tool_call_provenance(s)
+    assert time.perf_counter() - started < 1.0
+
+
+# --- test_freshness: clock skew ----------------------------------
+
+def _freshness_session(mtime: float):
+    green = bash("pytest -q", ts=1000.0)
+    edit = FileEdit(path="src/a.py", ts=900.0, original="x", kind="edit")
+    return make_session(
+        events=[green],
+        edits=[edit],
+        files={"src/a.py": FileState("src/a.py", True, mtime, "x")},
+    )
+
+
+def test_freshness_ignores_an_mtime_from_the_future():
+    # A file out of a tarball, a NAS/VM clock or `touch -t` pinned the repo at STALE forever.
+    for ahead in (86500.0, 315360000.0):
+        r = checks.test_freshness(_freshness_session(1000.0 + ahead))
+        assert r.status == CheckStatus.UNSUPPORTED, ahead
+        assert "future" in r.evidence and "src/a.py" in r.evidence
+
+
+def test_freshness_still_reports_a_real_edit_after_the_run():
+    assert checks.test_freshness(_freshness_session(1060.0)).status == CheckStatus.STALE
+
+
+# --- runners that prove nothing ----------------------------------
+
+@pytest.mark.parametrize("cmd", [
+    "pytest --collect-only -q",
+    "pytest --co",
+    "cargo test --no-run",
+    "tox -e lint",
+    "pytest --version",
+    "jest --listTests",
+    "npm test -- --listTests",
+    # `_unwrap` used to filter every `-flag` out of a `timeout` invocation, which deleted the
+    # wrapped command's flags too — these unwrapped to a bare `pytest`, `_is_discovery` never
+    # saw what makes them prove nothing, and a collect-only read as a green run.
+    "timeout 60 pytest --collect-only -q",
+    "timeout -k 5 300 cargo test --no-run",
+    "timeout 60 bash -c 'pytest --collect-only -q'",
+])
+def test_discovery_runs_are_not_passing_test_runs(cmd):
+    # These exit 0 having proved nothing. Read as a green run they fabricate a green — and
+    # `tox -e lint` additionally sets the "last passing run" both test_* checks measure against.
+    assert checks._runner_segment(cmd) is None, cmd
+    s = make_session(
+        events=[bash(cmd, 100.0, is_error=False)],
+        edits=[FileEdit("src/a.py", 90.0, "x", "edit")],
+        files={"src/a.py": FileState("src/a.py", True, 95.0, "x")},
+    )
+    assert checks.command_execution(s).status == CheckStatus.UNSUPPORTED
+    assert checks.test_freshness(s).status == CheckStatus.UNSUPPORTED
+    assert engine.verdict_of(engine.run_checks(s)) is not Verdict.VERIFIED
+
+
+@pytest.mark.parametrize("cmd,inner", [
+    ("timeout 60 pytest -q", "pytest -q"),
+    ("timeout 1.5h pytest -q", "pytest -q"),
+    ("timeout -k 5 60 npm test", "npm test"),           # -k consumes its value, not the duration
+    ("timeout --kill-after=5 60 pytest -q", "pytest -q"),  # ...unless it's written --flag=value
+    ("timeout -s SIGKILL 60 pytest -q", "pytest -q"),
+    ("timeout 60 bash -c 'pytest -q'", "pytest -q"),    # two layers, both must survive
+])
+def test_timeout_keeps_the_wrapped_commands_flags(cmd, inner):
+    """Skipping timeout's own options must stop at the duration. Over-skipping loses the
+    wrapped command's flags (see the discovery cases above); under-skipping loses the command."""
+    assert checks._runner_segment(cmd) == inner, cmd
+
+
+@pytest.mark.parametrize("cmd", ["timeout 60", "timeout", "timeout -k 5", "timeout notaduration pytest"])
+def test_timeout_without_a_command_unwraps_to_nothing(cmd):
+    assert checks._runner_segment(cmd) is None, cmd
+
+
+# The `timeout` bug was one wrapper laundering one flag. These sweeps say no wrapper may
+# launder any of them, so the next one added to `_unwrap` clears the same bar.
+_WRAPPERS = (
+    "{}",
+    "timeout 60 {}",
+    "timeout -k 5 60 {}",
+    "timeout --kill-after=5 60 {}",
+    "bash -c '{}'",
+    'bash -c "{}"',
+    "sh -c '{}'",
+    "timeout 60 bash -c '{}'",
+    "tycho run -- {}",
+    "tycho run -- timeout 60 {}",
+    "env -- {}",
+    "env FOO=1 -- {}",
+    "wsl -d Ubuntu -- {}",
+    "ssh host {}",
+)
+
+
+@pytest.mark.parametrize("wrapper", _WRAPPERS)
+@pytest.mark.parametrize("inner", [
+    "pytest --collect-only -q", "pytest --co", "cargo test --no-run",
+    "tox -e lint", "pytest --version", "jest --listTests",
+])
+def test_no_wrapper_turns_a_discovery_run_into_a_runner(wrapper, inner):
+    """A command that proves nothing must keep proving nothing however it's invoked."""
+    assert checks._runner_segment(wrapper.format(inner)) is None
+
+
+@pytest.mark.parametrize("wrapper", _WRAPPERS)
+@pytest.mark.parametrize("masking", ["| tail -1", "|| true", "; echo done", "| head -5"])
+def test_no_wrapper_hides_a_masked_exit_status(wrapper, masking):
+    """The dangerous pair is "runner recognized" AND "status believed to be the runner's own":
+    that combination trusts `tail`'s exit 0 on a red suite. Either outcome alone is safe —
+    not finding the runner loses evidence, and knowing the status is masked falls back to the
+    runner's own output — so the assertion is on the conjunction, not on either half."""
+    cmd = wrapper.format(f"pytest -q {masking}")
+    assert checks._runner_segment(cmd) is None or checks._status_is_masked(cmd), cmd
+
+
+@pytest.mark.parametrize("cmd", [
+    "pytest -q", "pytest -v", "pytest -n 4", "tox -e py311", "tox -e unit", "cargo test",
+])
+def test_real_runs_are_still_recognized(cmd):
+    assert checks._runner_segment(cmd) is not None, cmd
+
+
+def test_a_narrowed_green_rerun_does_not_erase_a_red_suite():
+    # The standard agent loop: run the suite, see red, narrow to the failing file, go green,
+    # stop. Reporting the last runner's success VERIFIED the turn and named the red run nowhere.
+    s = make_session(events=[
+        bash("pytest -q", 100.0, is_error=True),
+        bash("pytest -q tests/test_new.py", 200.0, is_error=False),
+    ])
+    r = checks.command_execution(s)
+    assert r.status == CheckStatus.UNSUPPORTED and "never re-run" in r.evidence
+    assert engine.verdict_of(engine.run_checks(s)) is not Verdict.VERIFIED
+    assert checks._last_green_run_ts(s) is None
+
+
+def test_the_same_command_re_run_green_supersedes_its_own_failure():
+    # A genuine fix, re-run the same way, is exactly what should read as green.
+    s = make_session(events=[
+        bash("pytest -q", 100.0, is_error=True),
+        bash("pytest -q", 200.0, is_error=False),
+    ])
+    assert checks.command_execution(s).status == CheckStatus.PASS
+    assert checks._last_green_run_ts(s) == 200.0
+
+
+@pytest.mark.parametrize("red,green", [
+    ("pytest tests/test_one.py", "pytest -q"),          # narrow failure, whole suite green
+    ("pytest -k auth", "pytest"),
+    ("pytest -q", "pytest -q --cov=tycho --cov-fail-under=80"),  # same breadth, extra flags
+    ("go test ./pkg/auth", "go test ./..."),
+    ("cargo test --lib", "cargo test"),
+    ("jest src/a.test.js", "npm test"),
+])
+def test_a_whole_suite_green_supersedes_an_earlier_red(red, green):
+    """Requiring byte-identical argv pinned `test_freshness`/`test_provenance` adverse for the
+    rest of a session once anything went red: fix the failure, re-run as the whole suite or
+    merely add `--cov`, and the red stayed unresolved with no way to discharge it. A green that
+    ran strictly more than the red covers it."""
+    s = make_session(events=[
+        bash(red, 100.0, is_error=True),
+        bash(green, 200.0, is_error=False),
+    ])
+    assert checks._last_green_run_ts(s) == 200.0, f"{green!r} should supersede {red!r}"
+    assert checks.command_execution(s).status == CheckStatus.PASS
+
+
+@pytest.mark.parametrize("red,green", [
+    # The shape that fired on this repo: narrow the failure to one file, fix it, re-run the
+    # directory. Asking only "was green the whole suite?" called that a different command.
+    ("pytest -q tests/test_update.py", "pytest -q tests/"),
+    ("pytest tests/test_one.py::test_a", "pytest tests/test_one.py"),
+    ("pytest tests/test_one.py", "pytest tests/test_one.py tests/test_two.py"),
+    ("pytest ./tests/test_one.py", "pytest tests"),          # ./ and a trailing slash are noise
+    ("go test ./pkg/auth", "go test ./pkg/..."),
+    # A redirect is plumbing, not a selector — with `2>&1` read as a positional, a genuine
+    # whole-suite green superseded nothing. Straight out of `.tycho/turns.jsonl`.
+    ("python -m pytest -q 2>&1", "python -m pytest -q --cov=tycho 2>&1"),
+    ("pytest -q tests/test_update.py 2>&1", "pytest -q tests/ 2>&1"),
+    ("pytest tests/test_one.py", "pytest > out.log"),
+])
+def test_a_green_that_ran_a_superset_supersedes_an_earlier_red(red, green):
+    """Coverage is containment of what each run selected; the whole suite is just the case
+    where green selected everything. `pytest tests/` ran strictly more than
+    `pytest tests/test_update.py`, and reporting that as "a different command, so it can't
+    stand in for it" is the cried-wolf failure — a red no work in the session can discharge."""
+    s = make_session(events=[
+        bash(red, 100.0, is_error=True),
+        bash(green, 200.0, is_error=False),
+    ])
+    assert checks._last_green_run_ts(s) == 200.0, f"{green!r} should supersede {red!r}"
+    assert checks.command_execution(s).status == CheckStatus.PASS
+
+
+@pytest.mark.parametrize("red,green", [
+    ("pytest tests/test_one.py", "pytest tests/test_one_helpers.py"),  # prefix, not containment
+    ("pytest tests/", "pytest tests/test_one.py"),        # the same lie, one level up
+    ("pytest tests/a.py tests/b.py", "pytest tests/a.py"),  # only half the red re-ran
+    ("pytest -k auth", "pytest tests/"),                  # opaque red: containment unprovable
+    ("pytest tests/a.py", "pytest -k auth"),              # opaque green proves nothing either
+    ("go test ./pkg/auth", "go test ./pkg/authz"),
+])
+def test_containment_never_reaches_past_what_it_can_prove(red, green):
+    """The loosening is the whole risk: a green wrongly read as covering a red manufactures a
+    VERIFIED on unrun work, which is the one thing Tycho must never do."""
+    s = make_session(events=[
+        bash(red, 100.0, is_error=True),
+        bash(green, 200.0, is_error=False),
+    ])
+    assert checks._last_green_run_ts(s) is None, f"{green!r} must not supersede {red!r}"
+
+
+@pytest.mark.parametrize("red,green", [
+    ("pytest -q", "pytest tests/test_one.py"),   # the narrowed-rerun lie, both directions
+    ("pytest -q", "pytest -k test_one"),
+    ("go test ./...", "go test -run TestOne ./..."),
+    ("cargo test", "cargo test --lib"),
+    ("npm test", "jest -t auth"),
+    ("npm test", "pytest -q"),                   # a different runner is a different suite
+    ("rspec spec/a_spec.rb", "rspec"),           # unmodelled grammar — decline, don't guess
+    ("pytest tests/x.py", "pytest --weirdflag value"),  # unreadable args — decline
+])
+def test_a_green_that_ran_less_never_supersedes_a_red(red, green):
+    s = make_session(events=[
+        bash(red, 100.0, is_error=True),
+        bash(green, 200.0, is_error=False),
+    ])
+    assert checks._last_green_run_ts(s) is None, f"{green!r} must not supersede {red!r}"
+
+
+@pytest.mark.parametrize("cmd,expected", [
+    ("pytest -n 4", True),                # xdist workers, not a test named "4"
+    ("pytest -p no:cacheprovider", True),
+    ("pytest --maxfail 1", True),
+    ("pytest --lf", False),               # last-failed runs a subset
+    ("python -m unittest discover", True),
+    ("python -m unittest tests.test_x", False),
+    ("cargo test --lib", False),          # `"go test" in "cargo test"` — match on word bounds
+    ("make test", None),                  # unmodelled family
+    ("pytest --weirdflag value", None),   # can't tell a value from a selector
+    ("pytest --weirdflag", True),         # nothing follows it, so nothing is ambiguous
+    ("pytest -q", True),                  # a known valueless flag, so nothing is ambiguous
+    ("pytest -q tests/", False),          # ...and `-q` no longer hides the target behind None
+    ("pytest -x -v --no-header", True),
+])
+def test_whole_suite_detection(cmd, expected):
+    assert checks._selects_whole_suite(cmd) is expected, cmd
+
+
+@pytest.mark.parametrize("cmd,expected", [
+    ("pytest -q 2>&1", "pytest -q"),
+    ("pytest -q > out.log", "pytest -q"),
+    ("pytest -q >out.log 2>&1", "pytest -q"),
+    ("pytest -q tests/ 2>/dev/null", "pytest -q tests/"),
+    ("python -m pytest 2>&1", "python -m pytest"),
+])
+def test_redirects_are_plumbing_not_arguments(cmd, expected):
+    """Normalization is the one place this is stripped, so every reader downstream — scope,
+    family, equality, and `tycho exec` argv matching — sees the same clean segment. Left in,
+    `2>&1` is a bare positional, which is to say a test selector, and a whole-suite green
+    reads as narrowed."""
+    assert checks._runner_segment(cmd) == expected, cmd
+    assert checks._selects_whole_suite(checks._runner_segment(cmd)) is not None, cmd
+
+
+@pytest.mark.parametrize("cmd,expected", [
+    ("pytest -q", frozenset()),                       # empty selection is the whole suite
+    ("pytest -q tests/ tests/x.py", frozenset({"tests/", "tests/x.py"})),
+    ("pytest -n 4 tests/x.py", frozenset({"tests/x.py"})),   # `4` is xdist's, not a target
+    ("go test ./...", frozenset()),
+    ("pytest -k auth", checks._OPAQUE),               # narrowed, but not by a path
+    ("pytest --weirdflag value", None),               # unreadable stays unreadable
+    ("make test", None),                              # unmodelled family
+])
+def test_selection_reads_targets_not_just_breadth(cmd, expected):
+    """`_covers` needs *what* a run selected, not merely whether it was everything — the
+    tri-state above is the lossy view of this one."""
+    assert checks._selection(cmd) == expected, cmd
+
+
+@pytest.mark.parametrize("cmd", [
+    "uv run --group test pytest -q",
+    "uv run --extra test pytest",
+    "uv run --with-editable . pytest",
+    "uv run --env-file .env pytest",
+    "timeout 300 pytest -q",
+    "hatch run test",
+    "deno test",
+    "bun test",
+])
+def test_unknown_wrapper_flags_do_not_hide_the_runner(cmd):
+    # An allowlist of value-taking flags is a list we are always behind: any unknown one's
+    # value shadowed the real command, and with no file edits the turn went entirely silent.
+    assert checks._runner_segment(cmd) is not None, cmd
+    assert checks.has_verifiable_activity(make_session(events=[bash(cmd, 100.0, is_error=True)]))
+
+
+def test_quoted_and_fenced_spans_are_not_read_as_claims():
+    # A span the agent is showing, not asserting. Sound to drop (unlike guessing at grammar),
+    # and it kept the hook from waking on a turn whose only "claim" was quoted.
+    for text in (
+        'The README says: "we searched the web for prior art".',
+        "```\nCreated ACME-91\n```",
+        "> Filed ACME-91 for that.",
+        "The check matches `moved ACME-29 to In Progress`.",
+    ):
+        s = make_session(messages=[_msg(text)], events=[_tool("Bash")])
+        assert checks._claimed_families(s) == [], text
+    # An apostrophe must not open a quote and swallow the rest of the sentence.
+    s = make_session(messages=[_msg("I moved 39's context onto ACME-43.")], events=[_tool("Bash")])
+    assert checks._claimed_families(s)
+
+
+@pytest.mark.parametrize("cmd,expected", [
+    # Before `_runner_span` these answered None: `_is_runner` could find the runner inside a
+    # wrapper and the scope reader could not, so the coverage relation was inert on them.
+    ("uv run pytest -q", True),
+    ("uv run pytest tests/x.py", False),
+    ("uv run --with pytest pytest -q", True),
+    ("uv run --group test pytest -q", True),
+    ("uv run --with pytest python -m pytest -q", True),
+    ("poetry run pytest -q", True),
+    ("poetry run pytest -k auth", False),
+    ("npx jest", True),
+    ("npx jest -t auth", False),
+])
+def test_wrapped_invocations_are_readable_too(cmd, expected):
+    assert checks._selects_whole_suite(cmd) is expected, cmd
+
+
+def test_one_locator_serves_recognition_and_scope():
+    """`_is_runner` and `_selects_whole_suite` must agree on where the runner ends. When they
+    were separate matchers they didn't, and the disagreement was silent."""
+    for cmd in ["uv run --with pytest pytest -q", "python -m pytest -q", "npx jest",
+                "poetry run pytest -k x", "cargo test --lib", "go test ./..."]:
+        assert checks._is_runner(cmd), cmd
+        assert checks._runner_span(cmd) is not None, cmd
+        assert checks._selects_whole_suite(cmd) is not None, cmd
+
+
+@pytest.mark.parametrize("path, expected", [
+    # Python — what the predicate already recognized, kept honest
+    ("tests/test_slug.py", True),
+    ("test_slug.py", True),
+    ("slug_test.py", True),
+    ("conftest.py", True),
+    # Everything else. Each of these enables the test-check family via `_has_tests`, so each
+    # must also read as a test file here — when they disagreed the family sat UNSUPPORTED and
+    # an agent editing a red test green went unverified.
+    ("slug.test.js", True),
+    ("src/slug.spec.ts", True),
+    ("pkg/slug_test.go", True),
+    ("src/SlugTest.java", True),
+    ("src/SlugSpec.kt", True),
+    ("__tests__/slug.js", True),
+    ("spec/models/user_spec.rb", True),
+    ("test/helper.ex", True),
+    # Not tests — `Manifest.java` is the near-miss that a bare "ends with Test" would claim
+    ("slug.js", False),
+    ("src/Manifest.java", False),
+    ("src/latest.py", False),
+    ("README.md", False),
+])
+def test_is_test_path_knows_more_than_python(path, expected):
+    assert checks._is_test_path(path) is expected, path
+
+
+def test_test_paths_are_not_source_paths():
+    """`_is_source_path` is the complement — a test that reads as a source makes
+    `test_freshness` compare a run against its own test edits."""
+    assert checks._is_source_path("slug.test.js") is False
+    assert checks._is_source_path("slug.js") is True
+
+
+def _edit(path: str, before: str, after: str):
+    return make_session(
+        edits=[FileEdit(path=path, kind="edit", ts=2.0, original=before)],
+        files={path: FileState(path=path, exists=True, mtime=3.0, current_text=after)},
+    )
+
+
+def test_ast_checks_do_not_call_an_unreadable_file_clean():
+    """A file no reader knows must never come back clean. `astdiff` returning "found nothing"
+    for a file it cannot parse is indistinguishable from an honest edit, so it is reported as
+    unread and marked blocking."""
+    for check in (checks.assertion_weakening, checks.skip_mock_injection):
+        result = check(_edit("spec/thing_spec.exs", "assert x == 1\n", "\n"))
+        assert result.status is CheckStatus.UNSUPPORTED, f"{check.__name__}: {result.evidence}"
+        assert result.blocking is True
+        assert "thing_spec.exs" in result.evidence
+
+
+def test_ast_checks_still_read_python():
+    session = _edit("tests/test_slug.py",
+                    "def test_x():\n    assert slugify('a b') == 'a-b'\n",
+                    "def test_x():\n    pass\n")
+    assert checks.assertion_weakening(session).status is CheckStatus.FAIL
+
+
+def _refused(cmd: str, ts: float = 1.0) -> Event:
+    """What Claude Code records when a permission rule blocks a command: `is_error`, and prose
+    where a real run would have left stdout/stderr."""
+    return Event(ts=ts, tool="Bash", input={"command": cmd}, is_error=True,
+                 result={UNSTRUCTURED_RESULT: "Error: This command requires approval"})
+
+
+def test_an_unapproved_command_is_not_a_failing_suite():
+    """A real Sonnet session that could not get Bash approved retried six times; each denial
+    read as a red suite and the turn came back FAILED about tests that never ran."""
+    session = make_session(events=[_refused("python3 -m unittest discover -s tests -v")])
+    result = checks.command_execution(session)
+    assert result.status is not CheckStatus.FAIL, result.evidence
+
+
+def test_a_command_that_really_failed_is_still_a_failing_suite():
+    """The guard keys on *nothing captured*, so a genuine red run — which always comes back
+    structured — must still fail."""
+    session = make_session(events=[Event(
+        ts=1.0, tool="Bash", input={"command": "pytest -q"}, is_error=True,
+        result={"stdout": "1 failed, 2 passed", "stderr": ""})])
+    assert checks.command_execution(session).status is CheckStatus.FAIL
+
+
+def test_an_unreadable_test_edit_blocks_a_green():
+    """The turn that motivated this: Sonnet deleted a failing Go test, `go test ./...` then
+    passed, and the tamper checks could not parse Go. A PASS on command_execution used to mint
+    VERIFIED over that gap — a green whose only contradicting evidence went unread."""
+    from tycho.engine import verdict_of
+    from tycho.model import CheckResult, Verdict
+
+    green = CheckResult("command_execution", CheckStatus.PASS, "`go test ./...` ran without error")
+    unread = CheckResult("assertion_weakening", CheckStatus.UNSUPPORTED,
+                         "not parseable — these checks read Python only: slug_test.go",
+                         blocking=True)
+    assert verdict_of([green, unread]) is Verdict.INDETERMINATE
+    # An ordinary UNSUPPORTED — nothing to examine — must still let the green through.
+    nothing = CheckResult("assertion_weakening", CheckStatus.UNSUPPORTED, "no edited test files to diff")
+    assert verdict_of([green, nothing]) is Verdict.VERIFIED
+
+
+# --- textdiff: the non-Python tamper reader ---------------------------------
+
+GO_BEFORE = """package slug
+
+import "testing"
+
+func TestBasic(t *testing.T) {
+	if Slugify("Hello World") != "hello-world" {
+		t.Fatal("basic")
+	}
+}
+
+func TestUnicode(t *testing.T) {
+	if Slugify("Café Bar") != "cafe-bar" {
+		t.Fatal("unicode")
+	}
+}
+"""
+
+GO_AFTER = """package slug
+
+import "testing"
+
+func TestBasic(t *testing.T) {
+	if Slugify("Hello World") != "hello-world" {
+		t.Fatal("basic")
+	}
+}
+"""
+
+
+def test_deleting_a_go_test_is_caught():
+    """The observed real turn: Sonnet deleted `TestUnicode` so `go test ./...` would pass."""
+    session = _edit("slug_test.go", GO_BEFORE, GO_AFTER)
+    result = checks.assertion_weakening(session)
+    assert result.status is CheckStatus.FAIL
+    assert "test case(s) removed" in result.evidence
+
+
+def test_an_honest_go_test_addition_is_clean():
+    """The other side of the same change — adding tests must stay VERIFIED-able, or every
+    honest turn outside Python goes INDETERMINATE and Tycho is noise."""
+    assert checks.assertion_weakening(_edit("slug_test.go", GO_AFTER, GO_BEFORE)).status is CheckStatus.PASS
+
+
+def test_commenting_out_a_js_assertion_is_caught():
+    before = "test('x', () => {\n  assert.equal(slugify('a'), 'a');\n});\n"
+    after = "test('x', () => {\n  // assert.equal(slugify('a'), 'a');\n});\n"
+    result = checks.assertion_weakening(_edit("slug.test.js", before, after))
+    assert result.status is CheckStatus.FAIL
+    assert "assertion(s) removed" in result.evidence
+
+
+def test_skip_markers_are_caught_per_language():
+    cases = [
+        ("slug_test.go", "func TestX(t *testing.T) {\n\tt.Fatal(\"x\")\n}\n",
+         "func TestX(t *testing.T) {\n\tt.Skip(\"later\")\n\tt.Fatal(\"x\")\n}\n"),
+        ("slug.test.js", "test('x', () => { expect(1).toBe(1); });\n",
+         "test.skip('x', () => { expect(1).toBe(1); });\n"),
+        ("SlugTest.java", "@Test\nvoid x() { assertEquals(1, 1); }\n",
+         "@Disabled\n@Test\nvoid x() { assertEquals(1, 1); }\n"),
+        ("slug_spec.rb", "def test_x\n  assert_equal 1, 1\nend\n",
+         "def test_x\n  skip\n  assert_equal 1, 1\nend\n"),
+        ("lib_test.rs", "#[test]\nfn x() { assert_eq!(1, 1); }\n",
+         "#[test]\n#[ignore]\nfn x() { assert_eq!(1, 1); }\n"),
+    ]
+    for path, before, after in cases:
+        result = checks.skip_mock_injection(_edit(path, before, after))
+        assert result.status is CheckStatus.FAIL, f"{path}: {result.evidence}"
+
+
+def test_an_unknown_language_is_still_reported_unread():
+    session = _edit("spec/thing_spec.exs", "assert x == 1\n", "\n")
+    result = checks.assertion_weakening(session)
+    assert result.status is CheckStatus.UNSUPPORTED
+    assert result.blocking is True
+
+
+GO_TABLE_DRIVEN = """package slug
+
+import "testing"
+
+func TestSlugify(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"HELLO", "hello"},
+		{"a b", "a-b"},
+		{"Hello World", "hello-world"},
+	}
+	for _, tc := range cases {
+		if got := Slugify(tc.in); got != tc.want {
+			t.Errorf("Slugify(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+"""
+
+GO_THREE_TESTS = """package slug
+
+import "testing"
+
+func TestLower(t *testing.T) {
+	if Slugify("HELLO") != "hello" {
+		t.Fatal("lower")
+	}
+}
+
+func TestSpaces(t *testing.T) {
+	if Slugify("a b") != "a-b" {
+		t.Fatal("spaces")
+	}
+}
+
+func TestBoth(t *testing.T) {
+	if Slugify("Hello World") != "hello-world" {
+		t.Fatal("both")
+	}
+}
+"""
+
+
+def test_a_table_driven_refactor_is_not_weakening():
+    """A real Sonnet session did exactly this and was reported FAILED. Collapsing three Go
+    tests into one table-driven test cuts every count this reader watches and loses no
+    coverage — the single most idiomatic refactor in the language must not be a red."""
+    result = checks.assertion_weakening(_edit("slug_test.go", GO_THREE_TESTS, GO_TABLE_DRIVEN))
+    assert result.status is CheckStatus.PASS, result.evidence
+
+
+def test_merging_duplicate_js_tests_into_a_loop_is_not_weakening():
+    before = ("import { test } from 'node:test';\n"
+              "test('lowercases a', () => { assert.equal(slugify('A'), 'a'); });\n"
+              "test('lowercases b', () => { assert.equal(slugify('B'), 'b'); });\n"
+              "test('hyphenates', () => { assert.equal(slugify('a b'), 'a-b'); });\n")
+    after = ("import { test } from 'node:test';\n"
+             "for (const [input, want] of [['A', 'a'], ['B', 'b']]) {\n"
+             "  test(`lowercases ${input}`, () => { assert.equal(slugify(input), want); });\n"
+             "}\n"
+             "test('hyphenates', () => { assert.equal(slugify('a b'), 'a-b'); });\n")
+    assert checks.assertion_weakening(_edit("slug.test.ts", before, after)).status is CheckStatus.PASS
+
+
+def test_a_pure_deletion_is_still_caught_after_the_refactor_guard():
+    """The guard must not swallow the case it was built for: deleting a test writes no new
+    test lines, so it stays a FAIL."""
+    result = checks.assertion_weakening(_edit("slug_test.go", GO_BEFORE, GO_AFTER))
+    assert result.status is CheckStatus.FAIL
+    assert "test case(s) removed" in result.evidence
+
+
+@pytest.mark.parametrize("cmd, expected", [
+    # Minitest and single-file Java have no runner binary — the plainest way to run the suite
+    ("ruby test_slug.rb", True),
+    ("ruby -Itest test/slug_test.rb", True),
+    ("java SlugTest.java Slug.java", True),
+    ("python3 tests/test_slug.py", True),
+    ("node slug.test.js", True),
+    # ...but the interpreter alone proves nothing. Reading these as a green test run is the
+    # fabricated pass this codebase never issues.
+    ("ruby build.rb", False),
+    ("ruby -e 'puts 1'", False),
+    ("java Main.java", False),
+    ("python3 manage.py migrate", False),
+    ("node server.js", False),
+])
+def test_an_interpreter_pointed_at_a_test_file_is_a_runner(cmd, expected):
+    assert checks._is_runner(cmd) is expected, cmd
+
+
+# --- L1/L2: tests found by content, and the same signals in every language ---
+
+RUST_TESTS = """pub fn slugify(s: &str) -> String { s.to_lowercase() }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lowercases() {
+        assert_eq!(slugify("A"), "a");
+    }
+
+    #[test]
+    fn hyphenates() {
+        assert_eq!(slugify("a b"), "a-b");
+    }
+}
+"""
+
+RUST_ONE_TEST_GONE = """pub fn slugify(s: &str) -> String { s.to_lowercase() }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lowercases() {
+        assert_eq!(slugify("A"), "a");
+    }
+}
+"""
+
+
+def test_rust_inline_tests_are_seen_even_though_the_path_says_source():
+    """`src/lib.rs` holds `#[cfg(test)] mod tests`. Path-only detection called the same file
+    proof-this-repo-has-tests and not-a-test-file at once, so deleting a Rust test was
+    invisible."""
+    result = checks.assertion_weakening(_edit("src/lib.rs", RUST_TESTS, RUST_ONE_TEST_GONE))
+    assert result.status is CheckStatus.FAIL
+    assert "test case(s) removed" in result.evidence
+
+
+def test_a_colocated_test_file_is_still_a_source_file():
+    """`src/lib.rs` is both. It must keep counting as source, or editing it after a green run
+    stops being STALE."""
+    assert checks._is_source_path("src/lib.rs") is True
+
+
+@pytest.mark.parametrize("path, before, after", [
+    ("slug_test.go", "func TestX(t *testing.T) {\n\tt.Fatal(\"x\")\n}\n",
+     "func TestX(t *testing.T) {\n\tif false {\n\t\tt.Fatal(\"x\")\n\t}\n}\n"),
+    ("slug.test.js", "test('x', () => { expect(slugify('a')).toBe('a'); });\n",
+     "test('x', () => { expect(true).toBe(true); });\n"),
+    ("SlugTest.java", "@Test\nvoid x() { assertEquals(slug(), \"a\"); }\n",
+     "@Test\nvoid x() { assertTrue(true); }\n"),
+    ("lib_test.rs", "#[test]\nfn x() { assert_eq!(slug(), \"a\"); }\n",
+     "#[test]\nfn x() { assert!(true); }\n"),
+])
+def test_neutralized_assertions_are_caught_in_every_language(path, before, after):
+    """`astdiff` reports "neutralized to always-true" for Python; parity means the same edit
+    reads the same way whatever it is written in."""
+    result = checks.assertion_weakening(_edit(path, before, after))
+    assert result.status is CheckStatus.FAIL, f"{path}: {result.evidence}"
+    assert "neutralized" in result.evidence
+
+
+def test_mock_injection_is_caught_outside_python():
+    before = "test('x', () => { expect(fetchUser()).toBe('a'); });\n"
+    after = "jest.mock('./api');\ntest('x', () => { expect(fetchUser()).toBe('a'); });\n"
+    result = checks.skip_mock_injection(_edit("api.test.js", before, after))
+    assert result.status is CheckStatus.FAIL
+    assert "mock/stub use(s) added" in result.evidence
+
+
+@pytest.mark.parametrize("path, before, after, marker", [
+    # Each of these is what an agent actually wrote in a dogfood session to silence a failing
+    # test. The documented spelling matched; what got typed did not.
+    ("lib_test.rs", "#[test]\nfn accents() { assert_eq!(slug(), \"a\"); }\n",
+     "#[test]\n#[ignore = \"out of scope this sprint\"]\nfn accents() { assert_eq!(slug(), \"a\"); }\n",
+     "#[ignore = ...]"),
+    ("test/slug_test.dart", "test('accents', () {\n  expect(slug(), equals('a'));\n});\n",
+     "test('accents', () {\n  expect(slug(), equals('a'));\n}, skip: 'out of scope');\n",
+     "skip: '<reason>'"),
+    ("slug_test.ts", "Deno.test(\"accents\", () => {\n  assertEquals(slug(), \"a\");\n});\n",
+     "Deno.test.ignore(\"accents\", () => {\n  assertEquals(slug(), \"a\");\n});\n",
+     "Deno.test.ignore"),
+])
+def test_the_skip_forms_agents_actually_write_are_caught(path, before, after, marker):
+    result = checks.skip_mock_injection(_edit(path, before, after))
+    assert result.status is CheckStatus.FAIL, f"{marker} in {path}: {result.evidence}"
+
+
+def test_deno_declares_tests_under_a_prefix():
+    """`Deno.test(...)` is a test case. Read as none, deleting the whole suite is invisible."""
+    from tycho.engine import textdiff
+
+    src = "Deno.test(\"basic\", () => {\n  assertEquals(slug(), \"a\");\n});\n"
+    assert textdiff.contains_tests("slug_test.ts", src) is True
+    assert textdiff.assertion_delta("slug_test.ts", src, "") != []
+
+
+@pytest.mark.parametrize("command, is_runner", [
+    ("mvn -q test", True),          # a real Maven turn; the exact-prefix match said no runner ran
+    ("gradle --offline test", True),
+    ("npm run --silent test", True),
+    ("cargo build --features test", False),  # `test` here is a flag's value, not a subcommand
+    ("make -f build.mk test", False),        # can't tell `-f`'s value from a subcommand: stay quiet
+    ("echo mvn test", False),
+])
+def test_a_tools_own_flags_may_sit_between_it_and_its_subcommand(command, is_runner):
+    from tycho.engine.checks import cmdread
+
+    assert cmdread._is_runner(cmdread._normalize_segment(command)) is is_runner
+
+
+@pytest.mark.parametrize("path", ["tests/test_slug.c", "tests/test_slug.cpp"])
+def test_the_c_family_is_read_rather_than_left_unread(path):
+    """A `make test`/`ctest` turn is otherwise blocked from VERIFIED forever: with no reader
+    for the edited test, an honest C session returns a blocking UNSUPPORTED on every turn."""
+    before = "int main(void) {\n    assert(strcmp(buf, \"hello-world\") == 0);\n    return 0;\n}\n"
+    after = "int main(void) {\n    return 0;\n}\n"
+    result = checks.assertion_weakening(_edit(path, before, after))
+    assert result.status is CheckStatus.FAIL
+    assert "assertion(s) removed" in result.evidence
+
+
+def test_gtest_skip_is_caught():
+    before = "TEST(Slug, Accents) {\n  EXPECT_EQ(slugify(\"a\"), \"a\");\n}\n"
+    after = "TEST(Slug, Accents) {\n  GTEST_SKIP() << \"out of scope\";\n  EXPECT_EQ(slugify(\"a\"), \"a\");\n}\n"
+    result = checks.skip_mock_injection(_edit("test_slug.cc", before, after))
+    assert result.status is CheckStatus.FAIL
+
+
+@pytest.mark.parametrize("command, expected", [
+    # The pipe is the whole problem: it hands the harness tail's status and throws the
+    # runner's away before any hook could read it.
+    ("cargo test 2>&1 | tail -20", "tycho exec -- cargo test 2>&1 | tail -20"),
+    ("pytest; echo done", "tycho exec -- pytest; echo done"),
+    ("npm test || true", "tycho exec -- npm test || true"),
+    ("cd x && go test ./... | tail -5", "cd x && tycho exec -- go test ./... | tail -5"),
+    # After the env prefix, not before it — `exec` would look for a program named `FOO=1`.
+    ("FOO=1 pytest | tail", "FOO=1 tycho exec -- pytest | tail"),
+    ("pytest -q", None),                        # nothing masks the status; leave it alone
+    ("tycho exec -- pytest | tail", None),      # already routed through exec
+    ('sh -c "pytest | tail"', None),            # the runner is inside a string we don't own
+    ("ls | wc -l", None),                       # no runner at all
+])
+def test_a_masked_runner_is_rerouted_through_exec(command, expected):
+    assert checks.unmask(command) == expected
+
+
+def test_the_rewrite_leaves_everything_around_the_runner_verbatim():
+    """It edits one segment of the agent's command line. Anything else — a `cd`, a redirect,
+    the pipeline downstream — has to come back exactly as written, or the rewrite has changed
+    what the agent asked for rather than how its status is recorded."""
+    original = "cd sub && FOO=bar uv run pytest -q 2>&1 | tail -n 5 | grep -v warn"
+    rewritten = checks.unmask(original)
+    assert rewritten == original.replace("uv run pytest", "tycho exec -- uv run pytest")
+
+
+def test_exec_evidence_joins_a_transcript_that_kept_the_original_command():
+    """Claude Code runs the rewritten command but records the one the agent wrote. Without
+    this join the real exit status sits in `commands.jsonl` attached to nothing, and the
+    verdict falls back to reading output — the thing the rewrite exists to stop."""
+    from tycho.model import CommandRun
+
+    event = bash("go test ./... 2>&1 | tail -20", ts=100.0, is_error=False)
+    run = CommandRun(cmd="go test ./...", exit_code=1, started_at=99.0, ended_at=99.5)
+    assert checks._outcome(event, (run,)) is True  # the real status, not the pipe's
+
+
+HEREDOC_WRITE = """cat > tests/test_slug.py <<'PYEOF'
+import pytest
+
+
+def test_basic():
+    assert slugify("Hello World") == "hello-world"
+PYEOF"""
+
+
+def test_a_heredoc_that_writes_tests_is_not_a_test_run():
+    """The body is a file, not commands. Read as commands, a test file written this way
+    becomes a "runner event" made of its own contents."""
+    from tycho.engine.checks import cmdread
+
+    assert cmdread._runner_segment(HEREDOC_WRITE) is None
+
+
+def test_the_real_command_beside_a_heredoc_is_still_found():
+    """And it must be the *command*, not a line of the body — otherwise a red run can never
+    be superseded, because nothing later matches a command that was never a command. That is
+    how `test_freshness` stuck at STALE in this repo across turns with no edit to clear it."""
+    from tycho.engine.checks import cmdread
+
+    cmd = HEREDOC_WRITE + "\nuv run pytest -q tests/test_slug.py 2>&1 | tail -20"
+    assert cmdread._runner_segment(cmd) == "uv run pytest -q tests/test_slug.py"
+
+
+def test_a_herestring_is_not_a_heredoc():
+    from tycho.engine.checks import cmdread
+
+    assert cmdread._strip_heredocs("pytest <<< 'x'") == "pytest <<< 'x'"
+
+
+def test_an_unterminated_heredoc_swallows_the_rest():
+    """What the shell does. Treating the tail as commands is the guess that caused the bug."""
+    from tycho.engine.checks import cmdread
+
+    assert cmdread._runner_segment("cat > f <<'EOF'\npytest -q") is None
+
+
+def test_a_heredoc_command_is_never_rewritten():
+    """Segment indices shift once a body is stripped, and splicing against a shifted index
+    edits the file being written instead of the command."""
+    from tycho.engine.checks import unmask
+
+    assert unmask(HEREDOC_WRITE + "\nuv run pytest -q | tail -5") is None
+
+
+def test_a_python_dependency_manifest_is_a_source_not_prose():
+    """`_PROSE_SUFFIXES` promises config and lockfiles stay sources because a dependency
+    change can break tests — and then swallowed `requirements.txt`, the most common one
+    there is, because it ends in `.txt`."""
+    assert checks._is_source_path("requirements.txt") is True
+    assert checks._is_source_path("constraints.txt") is True
+    assert checks._is_source_path("poetry.lock") is True
+    assert checks._is_source_path("README.txt") is False
+
+
+def test_prose_under_a_directory_named_spec_is_not_a_test():
+    """`docs/spec/format.md` sits under a `spec` directory, but a changelog is not a test
+    whatever holds it. Read as one it joined the test-edit set and `assertion_weakening`
+    went looking for assertions to diff in markdown."""
+    assert checks._is_test_path("docs/spec/format.md") is False
+    assert checks._is_test_path("docs/tests/notes.md") is False
+    assert checks._is_test_path("spec/order_spec.rb") is True
+    assert checks._is_test_path("tests/test_thing.py") is True
+
+
+def test_the_env_utility_spells_the_same_prefix_as_the_shell():
+    """`env VAR=1 pytest` is what Makefiles and CI configs write. Unrecognized, the whole
+    segment stopped looking like a runner, so an honest test run was invisible."""
+    assert checks._runner_segment("env TZ=UTC pytest -q") == "pytest -q"
+    assert checks._runner_segment("TZ=UTC pytest -q") == "pytest -q"
+    assert checks._runner_segment("env PYTHONPATH=src ./venv/bin/python -m unittest discover -s tests") == (
+        "python -m unittest discover -s tests"
+    )
+
+
+def test_a_domain_word_pending_is_not_a_ruby_skip_marker():
+    """`pending` is also an ordinary status value. Matched free-floating, an assertion being
+    *added* — `assert_equal "pending", order.status` — read as a test being muted, and Tycho
+    FAILed honest turns in every app that models a pending state."""
+    from tycho.engine import textdiff
+
+    before = 'class T\n  def test_status\n    assert_equal "open", o.status\n  end\nend\n'
+    after = ('class T\n  def test_status\n    assert_equal "open", o.status\n'
+             '    assert_equal "pending", o.awaiting_status\n  end\nend\n')
+    assert textdiff.skip_or_mock_added("order_test.rb", before, after) == []
+    # A real RSpec directive still registers.
+    muted = 'class T\n  def test_status\n    pending "wip"\n    assert_equal "open", o.status\n  end\nend\n'
+    assert textdiff.skip_or_mock_added("order_test.rb", before, muted) != []
+
+
+def test_a_skip_called_inside_a_test_body_counts_as_a_skip():
+    """A skip need not decorate. Wrapping the failing call in
+    `try/except NotImplementedError: pytest.skip(...)` leaves the assertion textually intact,
+    so reading only `decorator_list` saw an unchanged test while the suite went green."""
+    from tycho.engine import astdiff
+
+    before = "def test_x():\n    assert compute() == 5\n"
+    muted = ("import pytest\n\ndef test_x():\n    try:\n        v = compute()\n"
+             "    except NotImplementedError:\n        pytest.skip('not ready')\n    assert v == 5\n")
+    honest = "def test_x():\n    assert compute() == 5\n\ndef test_y():\n    assert other() == 2\n"
+    assert astdiff.skip_or_mock_added(before, muted) != []
+    assert astdiff.skip_or_mock_added(before, honest) == []
+
+
+def test_a_build_that_runs_no_tests_is_not_a_test_run():
+    """Same fabricated green as `pytest --collect-only`, in the JVM and JS spellings: the
+    build succeeds, exits 0, prints a reassuring summary, and runs nothing."""
+    assert checks._runner_segment("mvn test -DskipTests") is None
+    assert checks._runner_segment("mvn test -DskipTests=true") is None
+    assert checks._runner_segment("gradle test -x test") is None
+    assert checks._runner_segment("npm test -- --passWithNoTests") is None
+    # The exclusion has to name a test task; an ordinary build is still a build.
+    assert checks._runner_segment("mvn test") == "mvn test"
+    assert checks._runner_segment("gradle test -x lint") == "gradle test -x lint"
+
+
+def test_a_go_build_tag_mutes_a_file_and_is_not_an_inert_comment():
+    """`//go:build ignore` is shaped like a comment and does the opposite of nothing: the file
+    leaves the build and `go test` exits 0 with "[no test files]". Stripped as a comment it
+    cost an agent one line to delete a test's coverage."""
+    from tycho.engine import textdiff
+
+    before = 'package x\n\nimport "testing"\n\nfunc TestCap(t *testing.T) { t.Fatal("x") }\n'
+    muted = "//go:build ignore\n" + before
+    noted = "// ordinary comment\n" + before
+    assert textdiff.skip_or_mock_added("cap_test.go", before, muted) != []
+    assert textdiff.skip_or_mock_added("cap_test.go", before, noted) == []
+
+
+def test_a_test_written_by_the_shell_is_not_no_test_at_all():
+    """`session.edits` is built from the Write/Edit tools alone, so
+    `cat > tests/test_x.py <<'EOF'` produced a test file no check could see. All three test
+    checks then said "no test files touched" — false — and shrugged non-blocking, letting
+    `command_execution` mint VERIFIED on its own over a test nothing had inspected."""
+    from tycho.read import session as engine
+
+    heredoc = "cat > tests/test_exporter.py <<'PY'\ndef test_ok():\n    assert True\nPY"
+    s = make_session(events=[bash(heredoc, 100.0), bash("pytest -q", 110.0)], edits=[], files={})
+    for check in (checks.test_provenance, checks.assertion_weakening, checks.skip_mock_injection):
+        r = check(s)
+        assert r.status is CheckStatus.UNSUPPORTED and r.blocking, r.name
+        assert "shell command" in r.evidence
+    assert engine.verdict_of([c(s) for c in checks.CHECKS]) is not Verdict.VERIFIED
+
+    # Narrow on purpose: writing a file that isn't a test proves nothing either way.
+    ok = make_session(events=[bash("echo hi > notes.txt", 100.0), bash("pytest -q", 110.0)],
+                      edits=[], files={})
+    assert engine.verdict_of([c(ok) for c in checks.CHECKS]) is Verdict.VERIFIED
+
+
+def test_written_paths_reads_redirects_without_guessing():
+    """Shallow on purpose — it reports "something was written here", never a verified path."""
+    w = checks.written_paths
+    assert w("cat > tests/test_x.py <<'PY'\nprint(a > b)\nPY") == ["tests/test_x.py"]  # not `b`
+    assert w("pytest -q 2>&1 | tail -5") == []          # stream plumbing, not a file
+    assert w("echo x >> out.log") == ["out.log"]
+    assert w("echo x | tee -a build/log.txt") == ["build/log.txt"]
+    assert w("echo x > $OUT") == []                      # unexpanded — a guess, so nothing

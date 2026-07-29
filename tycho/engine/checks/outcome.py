@@ -1,0 +1,295 @@
+"""Did a runner invocation pass? One predicate — `_outcome` — for every caller, so no two
+checks can disagree about what "green" means.
+
+Where `cmdread` gives up by finding no runner, this gives up by saying *masked*: when we
+can no longer tell whether the shell overwrote the status, the honest answer is that the
+exit code isn't the runner's.
+"""
+
+from __future__ import annotations
+
+import shlex
+
+from .. import runlog
+from ...model import UNSTRUCTURED_RESULT, Session
+from .cmdread import (
+    _ENV_PREFIX,
+    _strip_heredocs,
+    _MAX_CMD_LEN,
+    _covers,
+    _MAX_UNWRAP_DEPTH,
+    _SEGMENT_TOKENS,
+    _SHELL_TOOLS,
+    _exec_argv,
+    _is_runner,
+    _normalize_segment,
+    _runner_segment,
+    _selects_whole_suite,
+    _unwrap,
+)
+
+# pytest's verdict is the last line; the slack absorbs the trailing warnings block. Small on
+# purpose — further up we'd be reading the run, not its conclusion.
+_SUMMARY_TAIL_LINES = 12
+
+
+# Slack between the harness's event clock and ours. Generous on purpose — the ambiguity rule
+# below is what protects correctness, not this number.
+_EXEC_CLOCK_SLACK = 5.0
+
+
+def _exec_run_for(event, commands) -> "CommandRun | None":  # noqa: F821 — model.CommandRun
+    """The `tycho exec` evidence for this transcript event, or None. Matched on the inner argv,
+    and **an ambiguous match is no match**.
+
+    `commands.jsonl` is shared by every process in the repo, so `tycho exec -- pytest -q`
+    appears twice when two agents work one tree. Picking the newest let agent B's pass answer
+    for agent A's failure — VERIFIED on a red suite, citing the strongest evidence there is.
+
+    ponytail: argv + a time window, no process identity. `tycho exec` could stamp its pid if
+    the window proves too coarse.
+    """
+    if not commands:
+        return None
+    cmd = event.input.get("command") or ""
+    # `tycho exec` in the command text is the direct case — the agent typed it. The second is
+    # the PreToolUse rewrite: the harness runs the rewritten command but records the one the
+    # agent wrote, so the transcript says `go test ./... | tail -20` while the log says
+    # `go test ./...`. Without this the strongest evidence Tycho has sits in `commands.jsonl`
+    # attached to nothing, and the verdict falls back to reading output — which is the whole
+    # thing the rewrite exists to stop doing.
+    argv = _exec_argv(cmd) or _runner_argv(cmd)
+    if not argv:
+        return None
+    # The event is stamped when the tool *finished*; a run that began after that is a
+    # different run.
+    latest = (event.ts or 0.0) + _EXEC_CLOCK_SLACK
+    matches = []
+    for run in commands:
+        try:
+            if shlex.split(run.cmd) != argv:
+                continue
+        except ValueError:
+            continue
+        if event.ts and run.started_at > latest:
+            continue  # a later run, by us or by another agent in this repo
+        matches.append(run)
+    return matches[-1] if len(matches) == 1 else None
+
+
+def _runner_argv(cmd: str) -> list[str] | None:
+    """The runner's argv as `tycho exec` would have logged it, or None.
+
+    The join key when the rewrite happened but the transcript kept the original text. Uses the
+    *normalized* segment — path and env prefix stripped, redirects removed — which is what the
+    rewrite hands `exec` in the common case. An unusual spelling (`./venv/bin/pytest -q`) does
+    not normalize to what was logged, so it simply doesn't match: no join, no claim.
+    """
+    segment = _runner_segment(cmd)
+    if segment is None:
+        return None
+    try:
+        return shlex.split(segment) or None
+    except ValueError:
+        return None
+
+
+def _status_is_masked(cmd: str, _depth: int = 0) -> bool:
+    """True when the exit status the harness recorded is *not* the runner's own.
+
+        pytest | tail -1      the pipeline's status is tail's (no pipefail here)
+        pytest; echo done     `;` discards what came before
+        pytest || true        the failure is swallowed by construction
+
+    `&&` is safe and must NOT be flagged. A wrapper is masked when its inner command is.
+
+    When in doubt say masked and let `_outcome` fall back to the runner's own output — that
+    includes giving up past the bounds, where a masking operator could hide beyond where we
+    stopped looking. The opposite give-up direction from `_runner_segment`.
+    """
+    if len(cmd) > _MAX_CMD_LEN or _depth > _MAX_UNWRAP_DEPTH:
+        return True
+    parts = _SEGMENT_TOKENS.split(_strip_heredocs(cmd))  # [segment, sep, segment, sep, ..., segment]
+    for i in range(0, len(parts), 2):
+        seg = parts[i]
+        if not _is_runner(_normalize_segment(seg)):
+            inner = _unwrap(seg)
+            if inner is None or _runner_segment(inner) is None:
+                continue  # not the runner segment, wrapped or otherwise
+            if _status_is_masked(inner, _depth + 1):
+                return True  # a masking operator inside the wrapper hides the status
+        # The first separator that redirects, swallows, or supersedes the status masks it.
+        for j in range(i + 1, len(parts), 2):
+            sep = parts[j]
+            rest = parts[j + 1] if j + 1 < len(parts) else ""
+            if sep in ("|", "||"):
+                return True  # status replaced downstream, or the failure swallowed
+            if sep in (";", "\n") and rest.strip():
+                return True  # something ran after; its status is what got recorded
+        return False  # nothing after it can overwrite the status — trust the exit code
+    return False  # no runner in this command at all
+
+
+def unmask(cmd: str, tycho: str = "tycho") -> str | None:
+    """`cmd` with its runner routed through `tycho exec`, or None when there is nothing to fix.
+
+    The root cause of a masked status is that the status was thrown away before anyone could
+    read it: `pytest | tail -20` hands the harness tail's exit code, and pytest's is gone. No
+    amount of reading the output afterwards recovers it — that is inference from what the
+    runner said, not the status itself, and it is only ever as good as the summary vocabulary.
+
+    So take the status where it still exists. `tycho exec` runs the child with our own stdio
+    and forwards its code unchanged, which makes `tycho exec -- pytest | tail -20` behave
+    exactly as the agent wrote it while putting pytest's real status on the record. The pipe
+    still does what the pipe does; it just no longer decides what Tycho knows.
+
+    Inserted after any environment prefix — `FOO=1 pytest` prefixed at the start would ask
+    `exec` to run a program named `FOO=1` — and only into the first runner segment, since the
+    text around it must survive verbatim. Returns None when the command is already routed
+    through `exec`, when nothing masks the status, and when the runner is inside a wrapper
+    (`sh -c '...'`), where rewriting means editing a string this does not own.
+    """
+    if len(cmd) > _MAX_CMD_LEN or not _status_is_masked(cmd):
+        return None
+    # A heredoc is left alone entirely. The rewrite splices into the original text by segment
+    # index, and those indices no longer line up once a body has been stripped out — splicing
+    # against a shifted index would edit the file being written rather than the command.
+    if _strip_heredocs(cmd) != cmd:
+        return None
+    parts = _SEGMENT_TOKENS.split(cmd)
+    for i in range(0, len(parts), 2):
+        seg = parts[i]
+        if not _is_runner(_normalize_segment(seg)):
+            continue
+        head = len(seg) - len(seg.lstrip())
+        env = _ENV_PREFIX.match(seg[head:])
+        at = head + (env.end() if env else 0)
+        if seg[at:].lstrip().startswith((f"{tycho} exec", "tycho exec")):
+            return None
+        parts[i] = f"{seg[:at]}{tycho} exec -- {seg[at:]}"
+        return "".join(parts)
+    return None
+
+
+def _captured_output(event) -> str:
+    """The runner's own words, tail-first — or "" when the harness kept none.
+
+    Tail only: Claude Code caps `toolUseResult.stdout` at 30k and keeps the *head* (checked
+    against 2356 real payloads) while pytest prints its summary last, so a truncated capture
+    reports nothing rather than matching a stray "5 passed" from a red run.
+    """
+    result = event.result or {}
+    text = "\n".join(str(result.get(key) or "") for key in ("stdout", "stderr")).strip()
+    return "\n".join(text.splitlines()[-_SUMMARY_TAIL_LINES:]) if text else ""
+
+
+def _ran_less_than_claimed(event) -> bool:
+    """True when the command line claimed the whole suite and the run's own output says it
+    covered less than that.
+
+    Scope was read from argv alone, and argv is not where scope is decided — the real selection
+    is argv ∪ config ∪ env ∪ plugins ∪ conftest hooks. `pytest` with `addopts = -m "not slow"`
+    in `pytest.ini` reads as the whole suite, exits 0, and prints `1 passed, 1 deselected` over
+    the failing test the config muted. Reproduced exactly: a fabricated green out of a run whose
+    own output said what it had skipped, because nothing was reading that part of the output.
+
+    So take the census from the runner rather than inferring it from the command. Config is only
+    the most common route in; an env var, a plugin or a CI wrapper narrows the same way, and all
+    of them have to pass through the runner's own accounting to matter.
+
+    Only the *contradiction* counts. `pytest -m "not slow"` typed by hand is already narrowed in
+    argv, `_selection` already returns `_OPAQUE` for it, and flagging it here would cry wolf on
+    an ordinary honest choice.
+
+    ponytail: catches the runners that report a census (pytest, cargo, go). A runner that prints
+    only `OK (5 tests)` — phpunit with `<exclude>`, say — can still narrow invisibly. Comparing
+    collected counts between two identical commands in one session would cover those too; it
+    needs a baseline run in the session, so it is strictly more code for strictly less often.
+    """
+    segment = _runner_segment(event.input.get("command") or "")
+    if segment is None or _selects_whole_suite(segment) is not True:
+        return False
+    return runlog.narrowed(_captured_output(event))
+
+
+def _was_refused(event) -> bool:
+    """True when the harness never let this command reach the shell.
+
+    A command that ran comes back structured, with stdout/stderr, whatever its exit code. A
+    refusal — unapproved permission rule, denied tool — comes back as prose with `is_error`
+    set and nothing captured. Read as a failure it is a false red: a real Sonnet session that
+    could not get `python3 -m unittest` approved retried six times and Tycho reported
+    "`python3 -m unittest discover -s tests -v` ran but reported an error", FAILED, about a
+    suite that never executed. Crying wolf costs more trust than staying quiet, so an
+    unapproved command is "can't tell", never "failed".
+    """
+    return bool(event.is_error) and UNSTRUCTURED_RESULT in (event.result or {})
+
+
+def _outcome(event, commands=()) -> bool | None:
+    """Did this runner invocation fail? True = failed, False = passed, None = can't tell.
+
+    One predicate for every caller, so no two checks disagree about what "green" means.
+    Evidence ladder, strongest first: a status Tycho captured itself (`tycho exec` read
+    `wait()`), the transcript's exit code when nothing masked it, then the runner's own summary
+    line. When the first two disagree, failure wins — `tycho exec -- pytest && ./deploy.sh` can
+    fail for a reason the capture can't see.
+    """
+    if _was_refused(event):
+        return None
+    run = _exec_run_for(event, commands)
+    if run is not None:
+        masked = _status_is_masked(event.input.get("command") or "")
+        return run.failed or bool(event.is_error and not masked)
+    if not _status_is_masked(event.input.get("command") or "") and event.is_error is not None:
+        return event.is_error
+    return runlog.outcome(_captured_output(event))
+
+
+def _runner_events(events) -> list:
+    """The test/build runner invocations among ``events`` — pass the scope you mean."""
+    return [
+        e
+        for e in events
+        if e.tool in _SHELL_TOOLS and _runner_segment(e.input.get("command") or "") is not None
+    ]
+
+
+def _unresolved_reds(events, commands) -> list:
+    """Failed runner invocations that no later green run covers.
+
+    Run the suite, see red, narrow to the failing file, go green, stop — the standard agent
+    loop, and taking that last success at face value reported VERIFIED. So a green supersedes a
+    red only when it ran *at least as much*: the same command, or the whole suite.
+
+    Identity alone was its own bug — a re-run with anything but byte-identical argv left the
+    red unresolved, pinning the `test_*` checks adverse with no way to discharge them.
+    """
+    runs = sorted(_runner_events(events), key=lambda e: e.ts)
+    reds = []
+    for e in runs:
+        if _outcome(e, commands) is not True:
+            continue
+        red_cmd = _runner_segment(e.input.get("command") or "")
+        if any(
+            later.ts > e.ts
+            and _outcome(later, commands) is False
+            and _covers(_runner_segment(later.input.get("command") or ""), red_cmd)
+            and not _ran_less_than_claimed(later)
+            for later in runs
+        ):
+            continue
+        reds.append(e)
+    return reds
+
+
+def _last_green_run_ts(session: Session) -> float | None:
+    # Session-scoped: a run three turns back still covers a source unchanged since. A green
+    # following an unresolved red is the narrowed re-run, not the suite.
+    reds = _unresolved_reds(session.events, session.commands)
+    greens = [
+        e.ts
+        for e in _runner_events(session.events)
+        if _outcome(e, session.commands) is False and not any(r.ts < e.ts for r in reds)
+    ]
+    return max(greens) if greens else None

@@ -4,14 +4,14 @@ Every other test imports ``tycho`` straight from the working tree, which proves 
 about the artifact people ``pip install``: a module left out of the wheel, a broken
 ``[project.scripts]`` entry point, or a version silently desynced from pyproject would
 all sail through the rest of the suite. So this module builds the artifact, installs it
-into a clean venv, and drives the installed ``tycho`` command as a subprocess (TYCHO-9).
+into a clean venv, and drives the installed ``tycho`` command as a subprocess.
 
 Both artifacts are built and both get installed, because ``pip install tycho`` falls back
 to the sdist wherever no wheel matches (and always under ``--no-binary :all:``), and an
 sdist is assembled by *different* Hatchling rules than a wheel — a ``README.md`` excluded
 from the tarball breaks the source install while the wheel stays green. The ``artifact``
 fixture parameterizes over the two, so every console-script test below runs against both
-(TYCHO-37).
+.
 
 Marked ``e2e``: the build+install costs a couple of seconds per artifact, so it is
 session-scoped. Skip with ``-m "not e2e"``. Unlike the rest of the suite these tests need
@@ -33,6 +33,8 @@ from pathlib import Path
 
 import pytest
 from packaging.version import Version
+
+from conftest import git
 
 import tycho
 from tycho.cli import ExitCode
@@ -56,14 +58,6 @@ def _run(*cmd: object, cwd: Path | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(
         [str(c) for c in cmd], cwd=cwd, capture_output=True, text=True,
         encoding="utf-8", errors="replace",
-    )
-
-
-def _git(repo: Path, *args: str) -> None:
-    subprocess.run(
-        ["git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t", *args],
-        check=True,
-        capture_output=True,
     )
 
 
@@ -134,10 +128,18 @@ def test_installed_console_script_reports_the_packaged_version(tycho_cmd: Path):
     assert r.stdout.strip() == f"tycho {tycho.__version__}"
 
 
+def _package_sources() -> set[str]:
+    """Every `.py` under `tycho/` as a POSIX path, so the build is compared against the tree
+    rather than a hand-listed pair of files that goes stale the next time one moves."""
+    root = Path(__file__).parent.parent
+    return {p.relative_to(root).as_posix() for p in (root / "tycho").rglob("*.py")}
+
+
 def test_wheel_ships_the_package_and_entry_point_but_not_the_tests(wheel: Path):
     names = zipfile.ZipFile(wheel).namelist()
 
-    assert "tycho/cli.py" in names and "tycho/checks.py" in names
+    missing = _package_sources() - set(names)
+    assert not missing, f"source files absent from the wheel: {sorted(missing)}"
     assert not [n for n in names if n.startswith(("tests/", "docs/"))]  # ship the product only
     entry = next(n for n in names if n.endswith("entry_points.txt"))
     assert "tycho = tycho.cli:main" in zipfile.ZipFile(wheel).read(entry).decode()
@@ -158,12 +160,13 @@ def test_sdist_ships_the_sources_and_metadata_files_pyproject_points_at(sdist: P
         pkg_info = tar.extractfile(f"{root}/PKG-INFO").read().decode()
     shipped = {n.split("/", 1)[1] for n in names if "/" in n}
 
-    assert "tycho/cli.py" in shipped and "tycho/checks.py" in shipped
+    missing = _package_sources() - shipped
+    assert not missing, f"source files absent from the sdist: {sorted(missing)}"
     assert "README.md" in shipped and "LICENSE" in shipped
     assert "pyproject.toml" in shipped  # no build backend config, no install from source
 
     meta = email.message_from_string(pkg_info)
-    assert meta["Name"].replace("_", "-").lower() == "tycho-cli"  # distribution name (TYCHO-73)
+    assert meta["Name"].replace("_", "-").lower() == "tycho-cli"  # distribution name
     # PKG-INFO carries the PEP 440-normalized version (Hatchling normalizes on build, e.g. a
     # prerelease 0.1.0-rc.1 -> 0.1.0rc1), so compare semantically, not by raw string.
     assert Version(meta["Version"]) == Version(tycho.__version__)
@@ -180,10 +183,10 @@ def test_installed_cli_verifies_a_real_session_and_honours_the_exit_code_contrac
     (cli.ExitCode) rather than freezing today's outcome into the test.
     """
     # Arrange: a real git repo — verify reads git state.
-    _git(tmp_path, "init")
+    git(tmp_path, "init")
     (tmp_path / "seed.txt").write_text("seed\n")
-    _git(tmp_path, "add", "seed.txt")
-    _git(tmp_path, "commit", "-m", "init")
+    git(tmp_path, "add", "seed.txt")
+    git(tmp_path, "commit", "-m", "init")
 
     # Act
     r = _run(tycho_cmd, "verify", "--session", FIXTURE, cwd=tmp_path)

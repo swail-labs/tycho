@@ -20,7 +20,11 @@ tag="${1:?usage: publish.sh <tag>}"
 work="${RUNNER_TEMP:-$(mktemp -d)}"
 
 if [ -z "${TAP_TOKEN:-}" ]; then
-  echo "HOMEBREW_TAP_TOKEN not set — skipping tap publish (scaffold inert)."; exit 0
+  # Fail, don't skip — same reason as npm: `brew upgrade tycho` finding nothing new while the
+  # release reads green is a lie the operator never sees.
+  echo "HOMEBREW_TAP_TOKEN is not set — cannot stamp the tap for $tag." >&2
+  echo "Set the secret, or delete the homebrew-publish job if the tap is not a channel." >&2
+  exit 1
 fi
 # The tap tracks stable only: `brew install` resolves one formula per name, so a prerelease
 # landing there would hand every user an RC (npm keeps them off `latest` via the `next`

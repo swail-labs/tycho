@@ -1,5 +1,5 @@
 "use strict";
-// Self-check for the npm wrapper's verification logic (TYCHO-106). Run: `node test.js`.
+// Self-check for the npm wrapper's verification logic. Run: `node test.js`.
 // No framework — asserts the checksum parse/compare, the piece that fails silently if wrong.
 const assert = require("node:assert");
 const { expectedHash, sha256, targetName } = require("./bin/tycho.js");
