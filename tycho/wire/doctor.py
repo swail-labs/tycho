@@ -82,9 +82,24 @@ def diagnose(repo: Path) -> list[Finding]:
     findings.extend(_exposure(repo))
     findings.extend(_upgrade_notes(repo))
 
-    if not wired:
+    # Before anything about wiring: a repo switched off is not a broken repo, and reporting it
+    # as one sends people to reinstall something that is working exactly as they asked.
+    if state.excluded(repo):
         findings.append(Finding(
-            INFO, "no Tycho hook is installed in this repo", "run `tycho init` to install one"
+            INFO, "verification is OFF for this repo (`tycho off`)", "turn it back on: `tycho on`"
+        ))
+        return findings
+
+    if not wired and init_mod.global_installed():
+        findings.append(Finding(
+            INFO,
+            "covered by the machine-wide install — no per-repo hook needed",
+            "`tycho init` also adds the commit trailer and a shareable .tycho.toml",
+        ))
+        wired = ["claude"]
+    elif not wired:
+        findings.append(Finding(
+            INFO, "Tycho is not set up on this machine", "run `tycho install` (once, for every repo)"
         ))
         return findings
 
@@ -104,9 +119,13 @@ def liveness(repo: Path) -> str:
     an honest "unknown"; `tycho doctor` stays the full answer."""
     try:
         findings: list[Finding] = []
+        if state.excluded(repo):
+            return "OFF for this repo — run `tycho on` to resume"
         wired = _wired_harnesses(repo, findings)
+        if not wired and init_mod.global_installed():
+            return "live here (machine-wide install)"
         if not wired:
-            return "NOT installed here — run `tycho init`"
+            return "NOT set up — run `tycho install`"
         broken = adverse(findings)
         if broken:
             return f"installed, but not working — {broken[0].text}"
@@ -179,7 +198,8 @@ def _schema_finding(repo: Path) -> Finding | None:
         return Finding(
             OUTDATED,
             f"installed hook config is schema v{stamped}; this Tycho speaks v{state.SCHEMA}",
-            "run `tycho init` to rewrite it",
+            "run `tycho install` (machine-wide setup), then `tycho init` here if you want the "
+            "commit trailer",
         )
     return None
 

@@ -138,11 +138,33 @@ def _update(skip: bool, force: bool = False) -> int:
     try:
         import subprocess
 
-        return subprocess.run(cmd).returncode or ExitCode.OK
+        rc = subprocess.run(cmd).returncode or ExitCode.OK
     except Exception as exc:
         print(f"tycho: couldn't run the upgrade ({type(exc).__name__}). Run it yourself:\n  {' '.join(cmd)}",
               file=sys.stderr)
         return ExitCode.OK
+    for line in _setup_nudge():
+        print(line)
+    return rc
+
+
+def _setup_nudge() -> list[str]:
+    """Said after a successful upgrade, to someone who wired Tycho up per repo.
+
+    Upgrading the package deliberately does not re-run any install — so without this, a 0.1.x
+    user upgrades into the machine-wide model and never hears that it exists. `doctor` would
+    tell them, but the person who has to be told is exactly the person not running `doctor`.
+    Silent once they're set up.
+    """
+    from ..wire import install as init_mod
+
+    try:
+        if init_mod.global_installed():
+            return []
+    except Exception:
+        return []
+    return ["", "tycho: `tycho install` sets Tycho up once for every repo on this machine — "
+                "no more running `tycho init` per repo."]
 
 
 def _spawn_deferred_upgrade(cmd: Sequence[str]) -> None:

@@ -25,6 +25,22 @@ from ..views.report import render
 from .install import spelling
 
 
+def _skip(repo: Path) -> bool:
+    """Should this repo be left entirely alone?
+
+    Two ways to say so, both machine-level so neither writes into the repo being excluded:
+    `tycho off` for one repo, `TYCHO_AUTO=0` for "only where I ran `tycho init`". The second
+    only suppresses a *machine-wide* install — a repo with its own install was asked for
+    explicitly, and a global switch must not silently undo a per-repo decision.
+    """
+    try:
+        if state.excluded(repo):
+            return True
+        return not state.auto_enabled() and not state.read_install(repo)
+    except Exception:
+        return False  # unreadable state must never be why a verifier goes quiet
+
+
 def run(stdin_text: str) -> dict | None:
     """Hook payload text → output dict, or None for "say nothing" / anything went wrong."""
     try:
@@ -36,6 +52,10 @@ def run(stdin_text: str) -> dict | None:
 
     harness = harness_mod.detect(payload)
     repo = harness.repo_root(payload)
+    # Before the heartbeat, and before anything is written: a repo the user switched off must
+    # see no `.tycho/` appear at all, or "off" leaves a directory behind and reads as a lie.
+    if _skip(repo):
+        return None
     # Up front on every path: it answers "did the wiring fire?" even with nothing to verify.
     # Every path below re-beats a terminal state so the badge never sticks on "verifying".
     state.record_run(repo, harness.name, pending=True)
@@ -268,12 +288,34 @@ def session_start() -> int:
         note = version_mod.notice(refresh_first=True)
         if note:
             notices.append(f"Tycho: {note}")
-        notices.extend(_weekly(harness.repo_root(payload)))
+        repo = harness.repo_root(payload)
+        if not _skip(repo):
+            notices.extend(_first_seen(repo))
+            notices.extend(_weekly(repo))
         if notices:
             print(json.dumps(harness.notice_output("\n".join(notices))))
     except Exception:
         pass
     return 0
+
+
+def _first_seen(repo: Path) -> list[str]:
+    """Said once, the first time a machine-wide install meets a repo.
+
+    A verifier that appears in a repo nobody set it up in has to say so — silence there isn't
+    the quiet-by-design kind, it's a tool running unannounced. Once per repo, never per turn,
+    and it carries the way out as well as the way in.
+
+    Skipped where the user already knows: a repo with its own install was a deliberate act.
+    """
+    if state.read_install(repo) or state.announced(repo):
+        return []
+    state.mark_announced(repo)
+    return [
+        "Tycho is verifying this repo (machine-wide install) — it speaks up when a turn "
+        "isn't proven. `tycho log` for history · `tycho init` to adopt this repo · "
+        "`tycho off` to skip it."
+    ]
 
 
 def _weekly(repo: Path) -> list[str]:

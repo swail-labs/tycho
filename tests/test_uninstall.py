@@ -137,6 +137,8 @@ def test_uninstall_harness_filter_touches_only_that_harness(tmp_path: Path):
 def test_cli_uninstall_exits_ok(tmp_path: Path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     _init_all(tmp_path)
-    assert cli.main(["uninstall"]) == cli.ExitCode.OK
+    # `uninstall` is machine-wide now, so removing THIS repo's install is `--here`. A bare
+    # `uninstall` in a repo that has its own install refuses — see test_uninstall_refuses_*.
+    assert cli.main(["uninstall", "--here"]) == cli.ExitCode.OK
     assert "removed" in capsys.readouterr().out
     assert _tycho_commands(tmp_path) == []

@@ -105,7 +105,24 @@ main() {
       printf '\n  export PATH="%s:$PATH"\n\n' "$dir" >&2 ;;
   esac
 
-  say "next: run 'tycho init' in a repo to wire it into Claude Code"
+  setup "$dir/tycho"
+}
+
+# Wire Tycho up for every repo, here, rather than telling the reader to go do it. Downloading
+# a verifier and then leaving it switched off until someone remembers a second command is how
+# a tool ends up installed and never used.
+#
+# Only with a terminal to answer on: `curl | sh` gives the script no stdin, so the prompt is
+# read from /dev/tty when there is one and skipped entirely when there isn't (CI, Dockerfile),
+# where printing the command is the honest move.
+setup() {
+  tycho_bin="$1"
+  if [ -t 1 ] && [ -r /dev/tty ]; then
+    "$tycho_bin" install < /dev/tty && return 0
+    say "setup didn't complete — run 'tycho install' when you're ready"
+    return 0
+  fi
+  say "next: run 'tycho install' (once, for every repo on this machine)"
 }
 
 main "$@"

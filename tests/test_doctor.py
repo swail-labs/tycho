@@ -318,7 +318,7 @@ def test_a_fresh_install_that_has_not_fired_yet_is_not_broken(tmp_path: Path):
 def test_a_repo_with_no_tycho_is_not_broken(tmp_path: Path):
     findings = doctor.diagnose(tmp_path)
     assert doctor.healthy(findings)
-    assert "no Tycho hook is installed" in doctor.render(findings)
+    assert "Tycho is not set up on this machine" in doctor.render(findings)
 
 
 def test_an_uninstalled_harness_is_not_diagnosed(tmp_path: Path):
@@ -492,7 +492,7 @@ def test_help_tells_an_unhooked_repo_how_to_install(tmp_path: Path, monkeypatch,
     monkeypatch.chdir(tmp_path)
 
     assert cli.main(["help"]) == cli.ExitCode.OK
-    assert "NOT installed here — run `tycho init`" in capsys.readouterr().out
+    assert "NOT set up — run `tycho install`" in capsys.readouterr().out
 
 
 def test_help_reports_a_broken_hook_rather_than_claiming_it_is_live(tmp_path: Path, monkeypatch):

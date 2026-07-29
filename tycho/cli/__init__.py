@@ -134,6 +134,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         from ..wire import hook
 
         return hook.pre_tool_use()
+    if args.command == "install":
+        from ..wire import install as init_mod
+
+        rc = _install(init_mod.install(
+            assume_yes=args.yes,
+            ignore_confirm=_ask_global_ignore if args.no_defaults else None,
+        ))
+        _print_update_notice()  # tell them if a newer Tycho exists
+        return rc
+    if args.command == "off":
+        from ..wire import install as init_mod
+
+        return _install(init_mod.off(Path.cwd(), purge=args.purge))
+    if args.command == "on":
+        from ..wire import install as init_mod
+
+        return _install(init_mod.on(Path.cwd()))
     if args.command == "init":
         from ..wire import install as init_mod
 
@@ -151,16 +168,54 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(doctor.render(findings))
         return ExitCode.OK if doctor.healthy(findings) else ExitCode.UNHEALTHY
     if args.command == "uninstall":
-        from ..wire import install as init_mod
-
-        return _install(
-            init_mod.uninstall_global() if args.globally
-            else init_mod.uninstall(Path.cwd(), only=args.harness, purge=args.purge)
-        )
+        return _uninstall(args)
     if args.command == "verify":
         return _verify(args)
     parser.error(f"unknown command: {args.command}")  # argparse exits; unreachable below
     return ExitCode.USAGE
+
+
+def _ask_global_ignore() -> bool:
+    """`install --no-defaults`: the one setup choice with a real trade-off.
+
+    Yes writes one line to your global git excludes and Tycho never touches a repo's
+    `.gitignore`. No means each repo gets `.tycho/` added to its own `.gitignore` the first
+    time it's used — a diff in a tracked file, in every repo.
+    """
+    print("tycho: add `.tycho/` to your global git ignore file?")
+    print("  yes → Tycho never edits any repo's .gitignore")
+    print("  no  → each repo's .gitignore gets the entry as it's first used")
+    try:
+        return input("tycho: add it? [Y/n] ").strip().lower() in ("", "y", "yes")
+    except EOFError:
+        return False
+
+
+def _uninstall(args: argparse.Namespace) -> int:
+    """`tycho uninstall` — machine-wide, as of 0.2.x. It used to mean this repo.
+
+    That inversion is the one change here that can surprise someone badly, and it lands on
+    everyone upgrading from 0.1.x, where every repo has its own install. So a bare
+    `uninstall` in a repo that has one refuses and makes the choice explicit rather than
+    offering a default — the wrong answer here is expensive and the right one is one word.
+    """
+    from ..wire import install as init_mod
+
+    cwd = Path.cwd()
+    if args.here:
+        return _install(init_mod.uninstall(cwd, only=args.harness, purge=args.purge))
+    if not args.globally and not args.yes and init_mod.wired_here(cwd):
+        print(
+            "tycho uninstall now removes Tycho from EVERY repo on this machine.\n"
+            "  This repo has its own install, which is what `uninstall` used to remove.\n"
+            "\n"
+            "  Just this repo:   tycho off          (stop verifying here)\n"
+            "                    tycho uninstall --here   (remove this repo's hooks)\n"
+            "  This machine:     tycho uninstall --global\n",
+            file=sys.stderr,
+        )
+        return ExitCode.USAGE
+    return _install(init_mod.uninstall_global())
 
 
 def _run(argv: list[str]) -> int:

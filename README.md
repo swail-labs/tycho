@@ -45,20 +45,52 @@ npx @swail-labs/tycho <command>                      # npm wrapper, same binary
 The PyPI package is **`tycho-cli`** (`tycho` was taken); it installs the **`tycho`** command.
 Pick one channel per machine — `npm -g` and `brew` both want to own `bin/tycho`.
 
-## Setup
+The installer sets Tycho up as it finishes, so there is nothing to run afterwards. If you
+installed another way, or said no:
 
 ```sh
-tycho init              # wire up this repo (asks per harness; idempotent, self-healing)
-tycho init --yes        # skip the prompts
-tycho init --global     # every repo; defers to any per-repo install
+tycho install           # once, for every repo on this machine
 ```
 
-One run wires the completion hook, a status-bar badge and `/tycho` slash commands, a `.tycho/`
-entry in `.gitignore`, and a `prepare-commit-msg` hook that stamps a `Tycho-Attestation:` trailer
-onto commits an agent worked on. It merges with hooks you already have, backs up what it changes,
-and refuses to touch a config it can't parse. Undo with `tycho uninstall`.
+That writes two things — the completion hook, status badge and slash commands into your
+harness's user-level config, and one line (`.tycho/`) in your global git ignore file. It names
+every path before it writes any of them.
 
-That's it. The next time an agent finishes a turn, Tycho verifies it.
+The second write is what lets Tycho stay out of your repos: with `.tycho/` ignored
+machine-wide, it never edits any repo's `.gitignore`, so `git status` stays clean everywhere.
+It only runs inside git repos, and defers to any repo that has its own install.
+
+That's it. Every repo you open is verified from the next turn on, and Tycho says so once, the
+first time it meets a repo.
+
+```sh
+tycho off               # stop verifying this repo   (tycho on to resume)
+tycho uninstall         # remove it from this machine
+TYCHO_AUTO=0            # only verify repos where you ran `tycho init`
+```
+
+### Adopting a repo
+
+`tycho install` deliberately writes nothing into your repos. When you want a repo to carry
+Tycho with it — shared with your team, checked in CI:
+
+```sh
+tycho init              # in the repo
+```
+
+That adds a `.tycho.toml` to commit (scope, relay — settings the whole team gets) and a
+`prepare-commit-msg` hook stamping a `Tycho-Attestation:` trailer onto commits an agent worked
+on. It merges with hooks you already have, backs up what it changes, and refuses to touch a
+config it can't parse. On a machine where you never ran `tycho install`, `tycho init` also
+wires that repo's hooks, so a single repo works on its own.
+
+### Upgrading from 0.1.x
+
+Your per-repo installs keep working untouched, and take precedence over a machine-wide one.
+Two things changed names: **`tycho uninstall` now removes Tycho from the whole machine** — it
+used to mean this repo, so it refuses and asks when you run it in a repo that has its own
+install. Use `tycho off` to stop verifying one repo, or `tycho uninstall --here` to remove its
+hooks. `tycho init --global` still works as a spelling of `tycho install`.
 
 ## After a turn
 
@@ -94,11 +126,12 @@ tycho attest --verify            # check a commit's trailer against the record
 tycho scope add 'src/**'         # bound where the agent may edit (opt-in; `--exclude` denies)
 tycho relay --on                 # let the agent see its own verdict and keep working (off by default)
 tycho rewrite --on               # route a piped runner through `tycho exec` for you (off by default)
+tycho off                        # stop verifying this repo (`tycho on` resumes)
 tycho doctor                     # is the hook installed, current, and firing?
 ```
 
-`tycho help` lists everything, including `hook`, `init`, `uninstall`, `statusline`, `run`,
-`override` and `update`.
+`tycho help` lists everything, including `hook`, `install`, `init`, `on`/`off`, `uninstall`,
+`statusline`, `run`, `override` and `update`.
 
 **Exit codes** — one per adverse kind, so a gate picks what blocks. `1` FAILED, `3` STALE
 (`verify`); `6` unexercised (`review --exit-code`); `7` trailer mismatch (`attest --verify`); `5`
@@ -148,8 +181,8 @@ Settings in `.tycho.toml` (`scope`, `relay`, `override`, `rewrite`), state in `<
 strings, evidence and agent prose are pattern-filtered for secrets before hitting disk — a match
 becomes a visible `[REDACTED]` — but it's best-effort, so keep `.tycho/` out of git regardless.
 
-`TYCHO_HOME` · `TYCHO_CLAUDE_HOME` · `TYCHO_STATUS` · `TYCHO_RELAY_MAX` · `TYCHO_TURNS_MAX` ·
-`TYCHO_COMMANDS_MAX` · `TYCHO_NO_UPDATE_CHECK` · `TYCHO_INSTALL`.
+`TYCHO_HOME` · `TYCHO_CLAUDE_HOME` · `TYCHO_AUTO` · `TYCHO_STATUS` · `TYCHO_RELAY_MAX` ·
+`TYCHO_TURNS_MAX` · `TYCHO_COMMANDS_MAX` · `TYCHO_NO_UPDATE_CHECK` · `TYCHO_INSTALL`.
 
 The one thing that touches the network: a SessionStart hook asks `pypi.org` once a day whether a
 newer Tycho exists, disclosing your version and IP. `TYCHO_NO_UPDATE_CHECK=1` turns it off.
