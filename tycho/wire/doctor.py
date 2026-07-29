@@ -198,8 +198,8 @@ def _schema_finding(repo: Path) -> Finding | None:
         return Finding(
             OUTDATED,
             f"installed hook config is schema v{stamped}; this Tycho speaks v{state.SCHEMA}",
-            "run `tycho install` (machine-wide setup), then `tycho init` here if you want the "
-            "commit trailer",
+            "run `tycho init` here — it rewires this repo's hooks and restamps them; "
+            "`tycho install` is the machine-wide setup and leaves them alone",
         )
     return None
 

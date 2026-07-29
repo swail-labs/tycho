@@ -120,15 +120,24 @@ def init(
     state.set_excluded(repo, False)
     if only:
         names = [only]
-    else:
+    elif global_installed():
         # Global already covers this repo — a second Stop hook would fire twice per turn. Wire
         # what global can't: the committed config and the commit trailer. That *is* adoption.
-        if global_installed():
+        #
+        # Unless the repo carries hooks of its own from an earlier version. The global hook
+        # stands down wherever it finds them (`spelling._GLOBAL_GUARD`), so those are what
+        # actually fires here — and only `init` can bring them up to the current schema.
+        # Skipping them left every repo wired under 0.1.x reporting HOOK OUTDATED forever,
+        # with a remedy (`tycho install`, then `tycho init`) that cleared nothing.
+        names = [n for n in HARNESSES
+                 if n in harness_mod.ENABLED_NAMES and _wired_here(repo, n)]
+        if not names:
             return [
                 "tycho: already verifying this repo (machine-wide install). Adopting it here:",
                 *_adopt_lines(repo),
                 "  Undo: `tycho off` (this repo) · `tycho uninstall` (this machine).",
             ]
+    else:
         names = detect(repo)
         if not names:
             return ["no supported harness detected here — pass --harness <name> to install anyway"]

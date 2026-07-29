@@ -30,7 +30,7 @@ tests pass.
 
 Instant, free, silent, always-on — no API key, no second session, no tokens, no context burned.
 Nothing leaves the machine (no LLM anywhere in the trust path). Stdlib only, Python ≥ 3.11.
-Claude Code and Codex today; other harnesses in development. Linux, macOS, Windows — WSL2 counts as Linux,
+Claude Code today; Codex and other harnesses in development. Linux, macOS, Windows — WSL2 counts as Linux,
 install inside the distro.
 
 ## Install
