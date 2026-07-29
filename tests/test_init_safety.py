@@ -759,7 +759,7 @@ def test_global_install_wires_the_user_level_config_on_yes(user_home: Path):
     command = data["hooks"]["Stop"][0]["hooks"][0]["command"]
     assert init_mod._is_tycho_hook(command), "uninstall must recognize what install wrote"
     assert init_mod.global_installed() is True
-    assert any("uninstall --global" in ln for ln in lines)  # loud about how to undo it
+    assert any("tycho uninstall" in ln for ln in lines)  # loud about how to undo it
 
 
 def test_the_global_command_refuses_to_fire_outside_a_git_repo(user_home: Path):
@@ -802,7 +802,7 @@ def test_a_plain_init_defers_to_an_active_global_install(tmp_path: Path, user_ho
     lines = init_mod.init(repo, assume_yes=True)
 
     assert not (repo / CLAUDE).exists(), "two Stop hooks would fire on every turn"
-    assert any("global install is active" in ln for ln in lines)
+    assert any("already verifying this repo" in ln for ln in lines)
     # …but the commit trailer is per-repo and global can't provide it, so it still lands.
     assert _hook_path(repo).is_file()
 
@@ -863,7 +863,7 @@ def test_global_install_refuses_a_user_config_it_cannot_parse(user_home: Path):
 def test_global_install_says_so_when_the_harness_is_not_installed(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(init_mod.harness_mod, "home", lambda name: tmp_path / "nowhere")
     lines = init_mod.init_global(assume_yes=True)
-    assert "isn't installed" in lines[0]
+    assert "no supported agent harness found" in lines[0]
     assert not (tmp_path / "nowhere").exists()
 
 
@@ -874,12 +874,16 @@ def test_global_install_needs_a_terminal_or_an_explicit_yes(user_home: Path, mon
     assert not (user_home / "settings.json").exists()
 
 
-def test_the_global_prompt_defaults_to_no(user_home: Path, monkeypatch, capsys):
-    # `[y/N]`, not the per-repo `[Y/n]`: a bare Enter must never install machine-wide.
+def test_the_install_prompt_defaults_to_yes(user_home: Path, monkeypatch, capsys):
+    """`[Y/n]`, where the old `init --global` was `[y/N]`.
+
+    That prompt guarded an escalation typed inside one repo. This one is the whole reason the
+    user ran the command, so a bare Enter does it — but it still names every path first, and
+    an explicit `n` still declines."""
     monkeypatch.setattr("builtins.input", lambda prompt: "")
-    assert init_mod._ask_global() is False
-    monkeypatch.setattr("builtins.input", lambda prompt: "y")
-    assert init_mod._ask_global() is True
+    assert init_mod._ask_install() is True
+    monkeypatch.setattr("builtins.input", lambda prompt: "n")
+    assert init_mod._ask_install() is False
     assert str(user_home / "settings.json") in capsys.readouterr().out  # names what it writes
 
 

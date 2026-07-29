@@ -14,9 +14,12 @@ from . import ExitCode, _count_arg
 _COMMANDS = {
     "verify": "verify what the agent claimed and render a verdict",
     "hook": "Stop-hook entrypoint: read hook JSON on stdin, verify, print",
-    "init": "install Tycho's hook into this repo's detected harnesses",
+    "install": "set Tycho up for every repo on this machine (the one command to run)",
+    "init": "adopt this repo: commit trailer + a .tycho.toml your team can share",
+    "off": "stop verifying this repo",
+    "on": "resume verifying this repo",
     "doctor": "check that Tycho's hooks are installed, current, and firing",
-    "uninstall": "remove Tycho's hooks (leaves your other hooks alone)",
+    "uninstall": "remove Tycho from this machine (leaves your other hooks alone)",
     "statusline": "one line for a harness status bar: is Tycho live here, and the last verdict",
     "count": "how many problems Tycho has caught — in this repo, and all-time",
     "show": "the full digest of a turn: what changed, what ran, what's still unverified",
@@ -70,6 +73,18 @@ def build() -> argparse.ArgumentParser:
     sub.add_parser("session-start", help="SessionStart-hook entrypoint (internal): update notice at agent bootup")
     sub.add_parser("prompt-submit", help="UserPromptSubmit-hook entrypoint (internal): mark a run in flight for the badge")
     sub.add_parser("pre-tool-use", help="PreToolUse-hook entrypoint (internal): keep a piped runner's exit status readable")
+    ins = sub.add_parser("install", help=_COMMANDS["install"])
+    ins.add_argument("--yes", action="store_true", help="skip the prompt (for scripts and CI)")
+    ins.add_argument(
+        "--no-defaults", action="store_true",
+        help="ask about each choice instead of using the recommended ones",
+    )
+    off = sub.add_parser("off", help=_COMMANDS["off"])
+    off.add_argument(
+        "--purge", action="store_true",
+        help="also delete this repo's Tycho state (.tycho/) and config (.tycho.toml)",
+    )
+    sub.add_parser("on", help=_COMMANDS["on"])
     i = sub.add_parser("init", help=_COMMANDS["init"])
     i.add_argument(
         "--harness",
@@ -93,14 +108,23 @@ def build() -> argparse.ArgumentParser:
         action="store_true",
         help="also delete repo-local Tycho state (.tycho/) and config (.tycho.toml)",
     )
+    # Accepted forever: this used to be how you removed a machine-wide install, and bare
+    # `uninstall` now means exactly that. A script that passes it must keep working.
     u.add_argument(
         "--global", dest="globally", action="store_true",
-        help="remove the machine-wide install instead of this repo's",
+        help="(the default now) remove the machine-wide install",
     )
+    u.add_argument(
+        "--here", dest="here", action="store_true",
+        help="remove only this repo's own install — what bare `uninstall` used to mean",
+    )
+    u.add_argument("--yes", action="store_true", help="skip the confirmation (for scripts and CI)")
     # `status` stays as a hidden back-compat alias: deployed statusLine entries and slash
     # commands still say `status`.
     s = sub.add_parser("statusline", aliases=["status"], help=_COMMANDS["statusline"])
     toggle = s.add_mutually_exclusive_group()
+    # `statusline --off` hides the badge; `tycho off` stops verifying. Adjacent names, very
+    # different acts — so each says which it is, here and in `_COMMANDS`.
     toggle.add_argument("--off", action="store_true", help="hide the indicator in this repo (the hook keeps verifying)")
     toggle.add_argument("--on", action="store_true", help="show the indicator again")
     ct = sub.add_parser("count", help=_COMMANDS["count"])

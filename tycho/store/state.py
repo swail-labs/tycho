@@ -20,7 +20,10 @@ from pathlib import Path
 # 2 (0.2.0): prepare-commit-msg trailer hook + the `.gitignore` entry.
 # 3 (0.2.0): `attest.py` moved to `tycho.wire.attest`, so an existing trailer hook runs a
 #            module that no longer imports. Fails open, but silently — hence the bump.
-SCHEMA = 3
+# 4 (0.2.0): `tycho install` became the machine-wide setup and `init` the per-repo adoption.
+#            A repo wired before this has repo-local hooks that still work and still take
+#            precedence — the bump exists so `doctor` can route the upgrader to `install`.
+SCHEMA = 4
 
 _DIR = ".tycho"
 _INSTALL = "install.json"
@@ -33,7 +36,14 @@ _GIT = ".git"
 def root_for(repo: Path) -> Path:
     """`repo` or the nearest ancestor holding `.tycho/` or `.tycho.toml`, so a reader works
     from a subdirectory. Bounded by the git root and `$HOME` so a scratch directory never
-    writes its turns into an unrelated project's ledger."""
+    writes its turns into an unrelated project's ledger.
+
+    The git root is a *fallback*, not just a bound. Under a machine-wide install a repo has
+    no `.tycho/` until the first write, and without this the first turn in a fresh repo
+    anchors wherever the agent stood — so `cd packages/slug && pytest` would open the ledger
+    at `packages/slug`, and every later turn would find `.tycho/` there and keep using it.
+    One misplaced first write is permanent, which is why the marker can't be the only signal.
+    """
     try:
         home = Path.home()
     except (OSError, RuntimeError):
@@ -53,7 +63,7 @@ def root_for(repo: Path) -> Path:
         if (d / _DIR).is_dir() or (d / _CONFIG_MARKER).is_file():
             return d
         if (d / _GIT).exists():  # repo root reached (a dir, or a worktree/submodule's file)
-            break
+            return d
     return repo
 
 
@@ -559,6 +569,73 @@ def _key(repo: Path) -> str:
         return str(repo.resolve())
     except OSError:
         return str(repo)
+
+
+_ANNOUNCED = "announced.json"
+
+
+def announced(repo: Path) -> bool:
+    """Have we told the user Tycho is verifying this repo? Machine-level and keyed by repo,
+    like `offered.json`, and deliberately a *separate* marker: "we offered to set up here" and
+    "we said we're already running here" are different sentences, and sharing one flag would
+    let whichever fired first silence the other forever."""
+    data = _read_json(user_dir() / _ANNOUNCED) or {}
+    return _key(repo) in (data.get("repos") if isinstance(data.get("repos"), list) else [])
+
+
+def mark_announced(repo: Path) -> None:
+    try:
+        data = _read_json(user_dir() / _ANNOUNCED) or {}
+        repos = data.get("repos") if isinstance(data.get("repos"), list) else []
+        key = _key(repo)
+        if key not in repos:
+            repos.append(key)
+        _write_json(user_dir() / _ANNOUNCED, {"repos": repos})
+    except OSError:
+        pass
+
+
+# --- per-repo opt-out of a machine-wide install (`tycho off`) ----------------
+#
+# Machine-level, keyed by repo path, deliberately NOT a file in the repo: the whole request is
+# "leave this repo alone", and answering it by writing into the repo answers it badly. Cost of
+# that choice, stated rather than hidden: the opt-out does not survive a re-clone or a move. A
+# fresh clone is a fresh decision, and a team that wants a repo excluded for everyone wants a
+# committed setting, not this.
+
+_EXCLUDED = "excluded.json"
+
+
+def excluded(repo: Path) -> bool:
+    """Has this repo been switched off with `tycho off`? Unreadable state means *not* off —
+    a verifier that goes quiet because it couldn't read a file is the worst failure here."""
+    data = _read_json(user_dir() / _EXCLUDED) or {}
+    repos = data.get("repos") if isinstance(data.get("repos"), list) else []
+    return _key(repo) in repos
+
+
+def set_excluded(repo: Path, off: bool) -> bool:
+    """Switch verification off (or back on) for `repo`. True when the state changed."""
+    try:
+        data = _read_json(user_dir() / _EXCLUDED) or {}
+        repos = data.get("repos") if isinstance(data.get("repos"), list) else []
+        key = _key(repo)
+        if off == (key in repos):
+            return False
+        repos = [*repos, key] if off else [r for r in repos if r != key]
+        _write_json(user_dir() / _EXCLUDED, {"repos": repos})
+        return True
+    except OSError:
+        return False
+
+
+def auto_enabled() -> bool:
+    """Whether a machine-wide install may verify repos that never ran `tycho init`.
+
+    The single switch for people who want Tycho only where they asked for it. Off is spelled
+    the usual way — `TYCHO_AUTO=0`.
+    """
+    return os.environ.get("TYCHO_AUTO", "1").strip().lower() not in ("0", "false", "no", "off")
 
 
 _STATUS_OFF = "status-off"
