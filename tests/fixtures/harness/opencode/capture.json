@@ -1,0 +1,5 @@
+{
+  "version_captured": "1.17.20",
+  "captured_by": null,
+  "note": "Real session rebuilt from opencode.db, captured before scripts/capture_harness.py existed. Version read from the session's own info.version. Re-capture with the tool before OpenCode enters ENABLED_NAMES."
+}

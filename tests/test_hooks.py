@@ -24,7 +24,7 @@ CURSOR_FIXTURE = FIXTURES / "cursor_transcript_sample.jsonl"
 CODEX_FIXTURE = FIXTURES / "codex_transcript_sample.jsonl"
 CODEX_PIN_FIXTURE = FIXTURES / "codex_attribution.jsonl"
 OPENCODE_FIXTURE = FIXTURES / "opencode_transcript_sample.json"
-CURSOR_STOP_PAYLOAD = FIXTURES / "cursor_stop_payload.json"
+CURSOR_STOP_PAYLOAD = FIXTURES / "harness" / "cursor" / "stop_payload.json"
 
 
 # --- harness detection + adapters -------------------------------------------

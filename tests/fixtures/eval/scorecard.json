@@ -1,0 +1,8 @@
+{
+  "floors": {
+    "claude": 1,
+    "cursor": 0,
+    "codex": 1,
+    "opencode": 0
+  }
+}

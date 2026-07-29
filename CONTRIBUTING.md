@@ -68,11 +68,41 @@ source be swapped without touching a check.
 
 ## Adding support for a new harness
 
-One adapter + one reader + one fixture, no engine change:
+One adapter + one reader + one captured corpus, no engine change. Run the eval as you go — it
+is the checklist, and it tells you what is still missing:
 
-1. Add an adapter in `read/harness.py` (detect, repo root, transcript location, output format).
-2. Add a `parse_*` reader in `read/events.py`, pinned to a real fixture in `tests/fixtures/`.
-3. That's it — the engine and the checks stay untouched.
+```
+python scripts/harness_eval.py
+```
+
+```
+tycho harness eval
+  harness     conform   reach   catch  corpus     pin
+  claude        27 ok    7/8     1/1  captured   2.1.220 ok
+  cursor        25 ok    1/8     0/1  authored   2026.07.09-a3815c0 ok  (not enabled)
+```
+
+The steps, each enforced by a test in `tests/test_harness_conformance.py`:
+
+1. Add an adapter in `read/harness.py` (detect, repo root, transcript location, output
+   format) and a `Capabilities` declaration — the honest list of what the harness records.
+   It is a required field, so it cannot be skipped.
+2. Add a `parse_*` reader in `read/events.py`.
+3. Add a Stop payload at `tests/fixtures/harness/<name>/stop_payload.json`, and name the
+   transcript in `tests/harness_assets.py`.
+4. Capture a real session — run the harness in a scratch repo, then
+   `python scripts/capture_harness.py <name> --repo /path/to/scratch`. Authored fixtures only
+   prove what their author already believed; every reader bug found so far was a shape nobody
+   would have invented. Entering `ENABLED_NAMES` requires a captured corpus.
+5. `pytest tests/test_harness_conformance.py --update-goldens`, then **read the diff** — that
+   diff is the re-verification, and it is how a version bump is done from then on.
+6. Add a `VERIFIED_AGAINST` entry (`probe: None` is fine if the harness ships no version).
+7. `python scripts/harness_eval.py --update` to pin the initial floors.
+
+`reach` is how much the harness records, not how well Tycho works: Cursor's 1/8 is a fact
+about Cursor, and no amount of work here moves it. It stays printed rather than hidden,
+because a harness that records nothing must *decline* — never fabricate a green — and the
+declaration is what lets the suite tell "correctly blind" apart from "quietly broken".
 
 Each adapter's docstring in `read/harness.py` records the contract it depends on, and
 `harness.VERIFIED_AGAINST` pins the harness version that contract was last checked

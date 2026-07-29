@@ -344,9 +344,24 @@ def _codex_relay_boundary(entry: dict) -> float:
 
 
 def _opencode_data(transcript: Path) -> dict:
-    """Load an OpenCode session JSON (``{info, messages:[{info, parts:[…]}]}``)."""
-    text = Path(transcript).read_text(encoding="utf-8", errors="replace")
-    return json.loads(text[text.index("{"):])
+    """Load an OpenCode session JSON (``{info, messages:[{info, parts:[…]}]}``).
+
+    Damaged input yields ``{}``, never a raise — the same contract ``_entries`` gives the
+    JSONL readers, and for the same reason: the Stop hook swallows exceptions and exits 0, so
+    a reader that raises doesn't surface an error, it makes Tycho go quiet for that session
+    forever while the bad byte sits there. A truncated file, one with no object at all and a
+    non-JSON file all arrive as a session with no events, which is at least a state the rest
+    of the engine is honest about.
+
+    Both OpenCode readers route through this, so the guard belongs here rather than at each
+    call site.
+    """
+    try:
+        text = Path(transcript).read_text(encoding="utf-8", errors="replace")
+        data = json.loads(text[text.index("{"):])
+    except (OSError, ValueError):  # unreadable, no object at all, or malformed JSON
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def parse_opencode(transcript: Path) -> tuple[Event, ...]:

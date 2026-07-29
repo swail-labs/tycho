@@ -1,0 +1,272 @@
+[
+  {
+    "tool": "Bash",
+    "command": "ls -la ~/.opencode/ 2>/dev/null",
+    "path": null,
+    "is_error": false,
+    "has_result": false,
+    "has_output": false,
+    "has_ts": true
+  },
+  {
+    "tool": "read",
+    "command": null,
+    "path": "/repo/tycho/opencode.py",
+    "is_error": null,
+    "has_result": false,
+    "has_output": false,
+    "has_ts": true
+  },
+  {
+    "tool": "Bash",
+    "command": "cat ~/.opencode/.gitignore 2>/dev/null; echo \"---\"; ls -la /repo/.opencode/ 2>/dev/null",
+    "path": null,
+    "is_error": false,
+    "has_result": false,
+    "has_output": false,
+    "has_ts": true
+  },
+  {
+    "tool": "Bash",
+    "command": "ls -la /repo/.opencode/plugins/",
+    "path": null,
+    "is_error": false,
+    "has_result": false,
+    "has_output": false,
+    "has_ts": true
+  },
+  {
+    "tool": "grep",
+    "command": null,
+    "path": "/repo/tycho",
+    "is_error": null,
+    "has_result": false,
+    "has_output": false,
+    "has_ts": true
+  },
+  {
+    "tool": "read",
+    "command": null,
+    "path": "/repo/.opencode/plugins/tycho.js",
+    "is_error": null,
+    "has_result": false,
+    "has_output": false,
+    "has_ts": true
+  },
+  {
+    "tool": "read",
+    "command": null,
+    "path": "/repo/tycho/init.py",
+    "is_error": null,
+    "has_result": false,
+    "has_output": false,
+    "has_ts": true
+  },
+  {
+    "tool": "Bash",
+    "command": "cat /repo/.opencode/package.json 2>/dev/null",
+    "path": null,
+    "is_error": false,
+    "has_result": false,
+    "has_output": false,
+    "has_ts": true
+  },
+  {
+    "tool": "Bash",
+    "command": "cat ~/.opencode/package.json 2>/dev/null; echo \"---\"; ls -la ~/.opencode/node_modules/ 2>/dev/null | head -5",
+    "path": null,
+    "is_error": false,
+    "has_result": false,
+    "has_output": false,
+    "has_ts": true
+  },
+  {
+    "tool": "Bash",
+    "command": "find ~/.opencode -name \"*.json\" -not -path \"*/node_modules/*\" 2>/dev/null -exec echo \"=== {} ===\" \\; -exec head -30 {} \\;",
+    "path": null,
+    "is_error": false,
+    "has_result": false,
+    "has_output": false,
+    "has_ts": true
+  },
+  {
+    "tool": "webfetch",
+    "command": null,
+    "path": null,
+    "is_error": null,
+    "has_result": false,
+    "has_output": false,
+    "has_ts": true
+  },
+  {
+    "tool": "webfetch",
+    "command": null,
+    "path": null,
+    "is_error": null,
+    "has_result": false,
+    "has_output": false,
+    "has_ts": true
+  },
+  {
+    "tool": "webfetch",
+    "command": null,
+    "path": null,
+    "is_error": null,
+    "has_result": false,
+    "has_output": false,
+    "has_ts": true
+  },
+  {
+    "tool": "read",
+    "command": null,
+    "path": "/repo/tycho/cli.py",
+    "is_error": null,
+    "has_result": false,
+    "has_output": false,
+    "has_ts": true
+  },
+  {
+    "tool": "Bash",
+    "command": "ls -la /repo/.venv/bin/tycho 2>/dev/null && /repo/.venv/bin/tycho --help 2>&1 | head -5",
+    "path": null,
+    "is_error": false,
+    "has_result": false,
+    "has_output": false,
+    "has_ts": true
+  },
+  {
+    "tool": "Bash",
+    "command": "cat ~/.local/state/opencode/prompt-history.jsonl 2>/dev/null",
+    "path": null,
+    "is_error": false,
+    "has_result": false,
+    "has_output": false,
+    "has_ts": true
+  },
+  {
+    "tool": "Bash",
+    "command": "find ~/.local/state/opencode -type f -name \"*.log\" -o -name \"*.json\" -o -name \"*.txt\" 2>/dev/null | head -20; echo \"---\"; find /tmp -name \"*opencode*\" -o -name \"*tycho*\" 2>/dev/null | head -10",
+    "path": null,
+    "is_error": false,
+    "has_result": false,
+    "has_output": false,
+    "has_ts": true
+  },
+  {
+    "tool": "Bash",
+    "command": "ls -la ~/.local/state/opencode/ 2>/dev/null; echo \"---\"; cat ~/.local/state/opencode/locks/* 2>/dev/null | head -20",
+    "path": null,
+    "is_error": false,
+    "has_result": false,
+    "has_output": false,
+    "has_ts": true
+  },
+  {
+    "tool": "Bash",
+    "command": "# Test if the opencode export command works\nopencode export --help 2>&1 | head -20",
+    "path": null,
+    "is_error": false,
+    "has_result": false,
+    "has_output": false,
+    "has_ts": true
+  },
+  {
+    "tool": "Bash",
+    "command": "cat ~/.local/state/opencode/locks/*/meta.json 2>/dev/null",
+    "path": null,
+    "is_error": false,
+    "has_result": false,
+    "has_output": false,
+    "has_ts": true
+  },
+  {
+    "tool": "Bash",
+    "command": "# Check if the lock token is the session ID\nopencode export \"6763afff-5729-4557-a16e-3e2e3fa42b2a\" 2>&1 | head -5",
+    "path": null,
+    "is_error": false,
+    "has_result": false,
+    "has_output": false,
+    "has_ts": true
+  },
+  {
+    "tool": "Bash",
+    "command": "# Also try listing sessions or checking what sessions exist\nopencode ls --help 2>&1 | head -10; echo \"---\"; opencode ls 2>&1 | head -20",
+    "path": null,
+    "is_error": false,
+    "has_result": false,
+    "has_output": false,
+    "has_ts": true
+  },
+  {
+    "tool": "read",
+    "command": null,
+    "path": "/repo/tycho/hook.py",
+    "is_error": null,
+    "has_result": false,
+    "has_output": false,
+    "has_ts": true
+  },
+  {
+    "tool": "read",
+    "command": null,
+    "path": "/repo/tycho/opencode.py",
+    "is_error": null,
+    "has_result": false,
+    "has_output": false,
+    "has_ts": true
+  },
+  {
+    "tool": "Edit",
+    "command": null,
+    "path": "/repo/tycho/opencode.py",
+    "is_error": null,
+    "has_result": true,
+    "has_output": false,
+    "has_ts": true
+  },
+  {
+    "tool": "Bash",
+    "command": "cd /repo && python3 -m pytest tests/ -v 2>&1",
+    "path": null,
+    "is_error": false,
+    "has_result": false,
+    "has_output": false,
+    "has_ts": true
+  },
+  {
+    "tool": "Bash",
+    "command": "cd /repo && python3 -c \"\nfrom pathlib import Path\nfrom tycho import verify as engine\nfrom tycho.report import render\n\n# Simulate what happens when opencode.run() runs on an empty session (no tool parts)\n# Use the opencode fixture to test\nfrom tycho.events import parse_opencode\nfixture = Path('tests/fixtures/opencode_transcript_sample.json')\n\nsession = engine.gather(fixture, Path.cwd())\nprint(f'Session has activity: {engine.has_verifiable_activity(session)}')\nprint(f'Events: {len(session.events)}')\nresults = engine.run_checks(session)\nprint(render(engine.verdict_of(results), results))\n\"\n",
+    "path": null,
+    "is_error": false,
+    "has_result": false,
+    "has_output": false,
+    "has_ts": true
+  },
+  {
+    "tool": "Bash",
+    "command": "cd /repo && python3 -c \"\nfrom pathlib import Path\nfrom tycho import verify as engine\nfrom tycho.events import parse_opencode\nfrom tycho.report import render\n\nfixture = Path('tests/fixtures/opencode_transcript_sample.json')\n\nsession = engine.gather(fixture, Path.cwd(), parse=parse_opencode)\nprint(f'Session has activity: {engine.has_verifiable_activity(session)}')\nprint(f'Events: {len(session.events)}')\nfor e in session.events:\n    print(f'  {e.tool}: {e.input.get(\\\"command\\\") or e.input.get(\\\"filePath\\\", \\\"\\\")} is_error={e.is_error}')\nresults = engine.run_checks(session)\nprint(render(engine.verdict_of(results), results))\n\"\n",
+    "path": null,
+    "is_error": false,
+    "has_result": false,
+    "has_output": false,
+    "has_ts": true
+  },
+  {
+    "tool": "grep",
+    "command": null,
+    "path": "/repo",
+    "is_error": null,
+    "has_result": false,
+    "has_output": false,
+    "has_ts": true
+  },
+  {
+    "tool": "grep",
+    "command": null,
+    "path": "/repo/tests",
+    "is_error": null,
+    "has_result": false,
+    "has_output": false,
+    "has_ts": true
+  }
+]
