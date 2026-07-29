@@ -245,24 +245,53 @@ def _relay_guard(attempt: int, cap: int, override_on: bool = False) -> str:
 
 
 def session_start() -> int:
-    """SessionStart hook: a user-facing update notice at bootup, on the harness's human-only
+    """SessionStart hook: the user-facing notices at bootup — a newer version, and at most
+    once a week the digest of what Tycho caught here — on the harness's human-only
     `notice_output`. A harness without one gets nothing, so the notice can't commission a
-    self-update. Never raises, always exit 0."""
+    self-update. Never raises, always exit 0.
+
+    One `notice_output` object, so both notices share it: the harness reads a single JSON
+    object off stdout and a second `print` would be discarded or, worse, parsed as junk.
+    """
     try:
         payload = json.loads(sys.stdin.read() or "{}")
-        harness = harness_mod.detect(payload) if isinstance(payload, dict) else harness_mod.CLAUDE
+        if not isinstance(payload, dict):
+            payload = {}
+        harness = harness_mod.detect(payload)
         # Codex's SessionStart payload isn't Stop-shaped, so `detect` reads it as Claude —
         # harmless: both emit `systemMessage`.
         if harness.notice_output is None:
             return 0  # no user-facing bootup channel on this harness (e.g. Cursor)
         from . import version as version_mod
 
+        notices = []
         note = version_mod.notice(refresh_first=True)
         if note:
-            print(json.dumps(harness.notice_output(f"Tycho: {note}")))
+            notices.append(f"Tycho: {note}")
+        notices.extend(_weekly(harness.repo_root(payload)))
+        if notices:
+            print(json.dumps(harness.notice_output("\n".join(notices))))
     except Exception:
         pass
     return 0
+
+
+def _weekly(repo: Path) -> list[str]:
+    """The weekly digest for `repo`, or nothing — this is the only line Tycho pushes at a
+    user whose agent behaves, and it is still bounded to one per week per repo.
+
+    The slot is spent only once there is something to print. A week with no turns must leave
+    the slot alone, or the first real catch waits out a week that was spent saying nothing.
+    """
+    from ..views import weekly
+
+    if not state.weekly_due(repo):
+        return []
+    text = weekly.line(repo)
+    if not text:
+        return []
+    state.mark_weekly_shown(repo)
+    return [text]
 
 
 def prompt_submit() -> int:

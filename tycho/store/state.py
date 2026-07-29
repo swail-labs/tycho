@@ -495,6 +495,36 @@ def update_dismissed_count() -> int:
     return _count_of(read_update_cache(), "dismissed")
 
 
+# --- the weekly digest slot --------------------------------------
+#
+# Per repo, not machine-wide: the line counts *this* repo's turns, and a dev working in four
+# repos should hear about each of them. The stamp is when it was last *shown*, so the cadence
+# is a week of wall clock rather than a week of sessions.
+
+_WEEKLY = "weekly.json"
+WEEK = 7 * 86400
+
+
+def weekly_due(repo: Path, now: float | None = None) -> bool:
+    """True when `repo` hasn't been shown its weekly line inside the last `WEEK`. A repo that
+    has never shown one is due; so is a stamp from the future, which is a clock that moved
+    and must not mute the line until it catches back up."""
+    stamp = (_read_json(dir_for(repo) / _WEEKLY) or {}).get("shown_at")
+    if not isinstance(stamp, (int, float)) or isinstance(stamp, bool):
+        return True
+    return not 0 <= (time.time() if now is None else now) - stamp < WEEK
+
+
+def mark_weekly_shown(repo: Path, now: float | None = None) -> None:
+    """Spend this repo's slot. Only ever called once the line has actually been printed —
+    marking a silent week would make the next real catch wait for a slot spent on nothing."""
+    try:
+        _write_json(dir_for(repo) / _WEEKLY,
+                    {"shown_at": time.time() if now is None else now})
+    except OSError:
+        pass
+
+
 # --- first-run offer bookkeeping ---------------------------------
 # Machine-level, keyed by repo path: a declined offer writes nothing into that repo.
 
