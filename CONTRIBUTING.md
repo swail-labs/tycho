@@ -14,10 +14,21 @@ pip install -e ".[dev]"       # or: uv pip install -e ".[dev]"
 
 ## Before you push
 
-- **Tests:** `python -m pytest -q`
+- **Tests:** `python -m pytest -q -m "not e2e"` (`-m "not e2e"` skips the packaging tests, which
+  build the wheel and sdist and need an index; drop it to run everything)
 - **Lint:** `ruff check tycho tests`
 
 Both run in CI (Linux, Python 3.11 / 3.12 / 3.13) on every pull request.
+
+**If you change that test command, update `[tests] standing` in `.tycho.toml` to match.** The
+two are coupled, and the coupling is silent when it breaks. A filter narrows a run, so a green
+carrying `-m "not e2e"` cannot normally stand in for a red that ran without it; declaring the
+filter standing is what cancels it from both sides. Undeclared, every green this project runs
+narrows relative to every red — and because a green that follows an unresolved red is
+disqualified outright, the first failing run would pin Tycho's last-green anchor for the rest of
+the session. Re-running the suite could never clear it, and the verdict would report a constant
+staleness that no action fixes. Declare only what genuinely runs every time: anything else in
+that array hides a real narrowing.
 
 ## Repository layout
 
