@@ -98,6 +98,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                             verdict=args.verdict, since=args.since)
     if args.command == "review":
         return _review(Path.cwd(), args.since, exit_code=args.exit_code)
+    if args.command == "backfill":
+        return _backfill(Path.cwd(), limit=args.limit, dry_run=args.dry_run)
     if args.command == "attest":
         return _attest(Path.cwd(), verify=args.verify, write=args.write,
                        require_verified=args.require_verified)
@@ -188,6 +190,7 @@ from .parser import _ABOUT as _ABOUT, _COMMANDS as _COMMANDS, _help as _help  # 
 from .record import (  # noqa: E402
     _archaeology as _archaeology,
     _attest as _attest,
+    _backfill as _backfill,
     _caught as _caught,
     _count as _count,
     _ledger_lines as _ledger_lines,

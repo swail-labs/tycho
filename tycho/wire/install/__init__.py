@@ -151,6 +151,7 @@ def init(
     # Same rule as the config seed: no install means leave the user's repo alone.
     if installed_any:
         lines += _git_lines(repo)
+        lines += _backfill(repo)
     lines += _offer_relay(
         repo, any(name in installed for name in ("claude", "codex")),
         assume_yes, config_existed, relay_confirm,
@@ -169,6 +170,27 @@ def _git_lines(repo: Path) -> list[str]:
         except ConfigRefused as exc:
             lines.append(f"git{REFUSED}{exc}")
     return [line for line in lines if line]
+
+
+def _backfill(repo: Path) -> list[str]:
+    """Seed the record from transcripts this repo already has.
+
+    Runs at `init` and only when the record is empty, so it is the onboarding moment and never
+    a surprise re-scan on a re-install. It writes nothing outside `.tycho/`, reads only files
+    the harness wrote, and every row it adds says UNVERIFIED — but the day-one `tycho blame`
+    it buys is the difference between a tool that pays off in week three and one that answers
+    now. Never raises: a transcript directory we can't read is an empty backfill.
+    """
+    from ...store import record as record_mod
+    from .. import backfill as backfill_mod
+
+    try:
+        if next(record_mod.iter_records(repo), None) is not None:
+            return []  # already has history — leave it alone
+        result = backfill_mod.run(repo)
+    except OSError:
+        return []
+    return backfill_mod.summary(result) if result["turns"] else []
 
 
 def _install_shadow(repo: Path) -> str:

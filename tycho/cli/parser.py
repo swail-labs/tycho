@@ -23,6 +23,7 @@ _COMMANDS = {
     "blame": "which turn touched this file, what the agent claimed, and what backed it",
     "log": "the recorded history of what agents did in this repo, newest first",
     "review": "risk-focus the diff: which changes no test covered and no command exercised",
+    "backfill": "seed the record from transcripts written before Tycho was installed",
     "attest": "print the Tycho-Attestation trailer for the latest recorded turn",
     "run": "run a command so its true exit code is seen even when wrapped/piped: tycho run -- pytest",
     "exec": "run a command and put its real output and exit status on the record",
@@ -130,6 +131,11 @@ def build() -> argparse.ArgumentParser:
         help=f"exit {int(ExitCode.UNEXERCISED)} if a recorded change had no command run after "
              f"it (default: always 0 — review is advisory)",
     )
+    bf = sub.add_parser("backfill", help=_COMMANDS["backfill"])
+    bf.add_argument("-n", "--limit", type=_count_arg,
+                    help="at most this many turns, newest first (default: what the record retains)")
+    bf.add_argument("--dry-run", action="store_true",
+                    help="say how many turns are available without writing any")
     at = sub.add_parser("attest", help=_COMMANDS["attest"])
     at_mode = at.add_mutually_exclusive_group()
     at_mode.add_argument("--verify", nargs="?", const="HEAD", metavar="REF",

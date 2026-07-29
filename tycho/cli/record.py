@@ -44,6 +44,29 @@ def _archaeology(action: str, cwd: Path, target: str | None, limit: int,
     return ExitCode.OK
 
 
+def _backfill(cwd: Path, limit: int | None = None, dry_run: bool = False) -> int:
+    """`tycho backfill` — replay the transcripts already on disk into the record."""
+    from ..store import state
+    from ..wire import backfill as backfill_mod
+
+    repo = state.root_for(cwd)
+    if dry_run:
+        n = backfill_mod.available(repo)
+        print(_available_line(n) if n else
+              "tycho: no past transcripts found for this repo — nothing to backfill.")
+        return ExitCode.OK
+    for line in backfill_mod.summary(backfill_mod.run(repo, limit=limit)):
+        print(line)
+    return ExitCode.OK
+
+
+def _available_line(n: int) -> str:
+    return (
+        f"tycho: {n} past turn{'' if n == 1 else 's'} in transcripts already on disk — "
+        f"`tycho backfill` records {'it' if n == 1 else 'them'}."
+    )
+
+
 def _review(cwd: Path, since: str, exit_code: bool = False) -> int:
     """`tycho review` — which changes nothing exercised. Advisory unless `--exit-code`."""
     from ..views import review as review_mod

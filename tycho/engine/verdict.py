@@ -22,6 +22,17 @@ from ..model import CheckResult, CheckStatus, Verdict
 # scope flipped a turn that ran no tests and claimed "all tests pass" to VERIFIED.
 _SUBSTANTIVE_CHECKS = frozenset({"command_execution", "test_freshness", "test_provenance"})
 
+# Checks that guard *Tycho* rather than examine the claim. Their FAIL still sinks the run —
+# that is the whole point of one — but their PASS says nothing about whether the agent's claim
+# was backed, so it must not count as Tycho having spoken about it.
+#
+# Without this, `verifier_integrity` (which PASSes on all but a hostile turn) makes the
+# all-UNSUPPORTED reduction unreachable: every turn Tycho is genuinely blind on would report
+# INDETERMINATE instead, and the blind rate — the one metric §7 says does not improve with
+# model capability — would silently stop distinguishing "nothing to examine" from "examined,
+# inconclusive".
+_GUARD_CHECKS = frozenset({"verifier_integrity"})
+
 
 def verdict_of(results: Sequence[CheckResult]) -> Verdict:
     """Reduce per-check statuses to one run verdict.
@@ -44,6 +55,7 @@ def verdict_of(results: Sequence[CheckResult]) -> Verdict:
         r.status is CheckStatus.PASS and r.name in _SUBSTANTIVE_CHECKS for r in results
     ):
         return Verdict.VERIFIED
-    if statuses and statuses <= {CheckStatus.UNSUPPORTED}:
+    about_the_claim = {r.status for r in results if r.name not in _GUARD_CHECKS}
+    if about_the_claim and about_the_claim <= {CheckStatus.UNSUPPORTED}:
         return Verdict.UNSUPPORTED
     return Verdict.INDETERMINATE

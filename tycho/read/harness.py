@@ -31,6 +31,10 @@ class Harness:
     # Transcript to verify, from a hook payload. OpenCode rebuilds it from opencode.db into
     # a temp file the caller unlinks. None: nothing to verify.
     transcript_of: Callable[[dict], Path | None]
+    # Every transcript on disk for a repo, oldest first — what `backfill` replays. Default
+    # empty: a harness whose history Tycho can't enumerate backfills nothing rather than
+    # guessing at one session.
+    history: Callable[[Path], tuple[Path, ...]] = lambda _: ()
     # Epoch the turn under review began. 0.0 means "the whole transcript is the turn".
     turn_start: Callable[[Path], float] = lambda _: 0.0
     # Assistant prose, for tool_call_provenance. Default supplies none, so the check
@@ -109,6 +113,19 @@ def _claude_discover(cwd: Path) -> Path | None:
     return _newest(root.glob("*.jsonl"))
 
 
+def _claude_history(cwd: Path) -> tuple[Path, ...]:
+    """Every Claude Code transcript this repo has, oldest first.
+
+    The same directory `_claude_discover` takes the newest from — the history is already on
+    disk from before Tycho was installed, which is the whole premise of `backfill`."""
+    root = home("claude") / "projects" / _encode(cwd)
+    try:
+        files = [p for p in root.glob("*.jsonl") if p.is_file()]
+    except OSError:
+        return ()
+    return tuple(sorted(files, key=lambda p: p.stat().st_mtime))
+
+
 def _cursor_discover(cwd: Path) -> Path | None:
     root = home("cursor") / "projects" / _encode(cwd).lstrip("-") / "agent-transcripts"
     return _newest(root.glob("*/*.jsonl"))
@@ -171,6 +188,7 @@ CLAUDE = Harness(
     notice_output=lambda text: {"systemMessage": text},
     discover=_claude_discover,
     transcript_of=_payload_transcript,
+    history=_claude_history,
     turn_start=events.turn_start,
     messages=events.assistant_messages,
     attribution=events.attribution,

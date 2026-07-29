@@ -117,9 +117,9 @@ def attribution(transcript: Path) -> Attribution:
     return Attribution(model=model, agent_version=version, session_id=session_id)
 
 
-def turn_start(transcript: Path) -> float:
-    """Epoch at which the turn under review began — the later of the final user message and
-    the last verdict-relay boundary. 0.0 when neither is found ("the whole transcript").
+def turn_starts(transcript: Path) -> tuple[float, ...]:
+    """Every turn boundary in the transcript, ascending — a user message or a verdict-relay
+    boundary opens a turn.
 
     Anchored on the *user* side, never on `end_turn` markers: one turn routinely emits two
     adjacent `end_turn` messages, so counting markers over-counts turns and puts the boundary
@@ -129,14 +129,28 @@ def turn_start(transcript: Path) -> float:
 
     Relay iterations share one user turn, so without the `stop_hook_summary` boundary each
     re-check would inherit earlier iterations' prose and re-fail claims already answered.
-    This Stop's own summary is written after this runs, so `max` lands on the previous one.
+
+    The Stop hook wants only the last of these (`turn_start`); `backfill` wants all of them,
+    to cut a whole transcript into the turns that produced it. One definition, so a replayed
+    turn is bounded exactly as the live one was.
     """
-    starts = [
+    starts = sorted(
         _epoch(e.get("timestamp"))
         for e in _entries(transcript)
         if _is_user_prose(e) or _is_relay_boundary(e)
-    ]
-    return max(starts, default=0.0)
+    )
+    return tuple(ts for ts in starts if ts)
+
+
+def turn_start(transcript: Path) -> float:
+    """Epoch at which the turn under review began — the last boundary `turn_starts` found.
+    0.0 when there is none ("the whole transcript is the turn").
+
+    This Stop's own relay summary is written after this runs, so the last boundary is the
+    previous one.
+    """
+    starts = turn_starts(transcript)
+    return starts[-1] if starts else 0.0
 
 
 # The fixed sentence in a relay `stop_hook_summary`'s injected context: stable across the

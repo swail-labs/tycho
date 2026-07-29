@@ -16,6 +16,7 @@ from __future__ import annotations
 from ...model import CheckResult, CheckStatus as CheckStatus, Session
 from .execution import command_execution
 from .freshness import test_freshness, test_provenance
+from .integrity import verifier_integrity
 from .prose import tool_call_provenance
 from .repo import file_state, git_state, scope_drift
 from .tamper import assertion_weakening, skip_mock_injection
@@ -31,7 +32,14 @@ CHECKS = (
     file_state,
     git_state,
     scope_drift,
+    verifier_integrity,
 )
+
+
+# Checks `[checks].disable` may not switch off. A verifier its own subject can turn off is
+# not a verifier, and `.tycho.toml` is a file the agent can write — so the one check that
+# reports edits to `.tycho.toml` must not be reachable from inside it.
+_UNDISABLEABLE = frozenset({verifier_integrity.__name__})
 
 
 _TEST_CHECKS = frozenset({
@@ -44,6 +52,7 @@ def run_checks(session: Session) -> list[CheckResult]:
     disabled = set(session.config.disabled_checks)
     if not session.has_tests:
         disabled.update(_TEST_CHECKS)
+    disabled -= _UNDISABLEABLE
     return [check(session) for check in CHECKS if check.__name__ not in disabled]
 
 
@@ -91,6 +100,7 @@ from .common import (  # noqa: E402
     _short as _short,
 )
 from .freshness import _clock_horizon as _clock_horizon  # noqa: E402
+from .integrity import _is_protected as _is_protected  # noqa: E402
 from .outcome import (  # noqa: E402
     _captured_output as _captured_output,
     _exec_run_for as _exec_run_for,
