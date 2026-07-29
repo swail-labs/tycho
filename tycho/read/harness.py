@@ -223,7 +223,11 @@ BY_NAME = {h.name: h for h in ALL}
 
 # Exposed in normal usage; the rest keep their adapters and unit tests but aren't wired.
 # ponytail: single gate — re-widen by adding a name here.
-ENABLED_NAMES = ("claude",)
+#
+# Codex joins Claude once its reader was checked against transcripts the current version
+# actually wrote: it reads both shell-tool shapes, takes the exit status the rollout records,
+# and reports model, version and session id. `VERIFIED_AGAINST` below is the standing claim.
+ENABLED_NAMES = ("claude", "codex")
 ENABLED = tuple(h for h in ALL if h.name in ENABLED_NAMES)
 
 # The harness version each hook contract was last checked against, plus the local

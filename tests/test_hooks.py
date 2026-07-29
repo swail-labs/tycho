@@ -331,6 +331,34 @@ def test_codex_command_ignores_a_non_exec_tool_whose_payload_mentions_cmd():
     assert events._codex_command_of(patch) is None
 
 
+def test_codex_is_exposed_in_normal_usage(tmp_path: Path):
+    """The gate that kept Codex out of `discover`, `init` and the CLI choices. Everything
+    behind it — reader, installer, relay — was already built and tested."""
+    assert "codex" in harness.ENABLED_NAMES
+    assert harness.CODEX in harness.ENABLED
+    (tmp_path / ".codex").mkdir()
+    assert "codex" in init_mod.detect(tmp_path)
+
+
+def test_discover_finds_a_codex_session_for_this_repo(tmp_path, monkeypatch):
+    # Discovery is what `tycho verify` with no arguments and `doctor` both run on.
+    root = tmp_path / "sessions" / "2026" / "07" / "23"
+    root.mkdir(parents=True)
+    rollout = root / "rollout-2026-07-23T22-09-51.jsonl"
+    rollout.write_text(
+        json.dumps({
+            "timestamp": "2026-07-23T22:09:57.512Z",
+            "type": "session_meta",
+            "payload": {"session_id": "s-1", "cwd": str(tmp_path), "cli_version": "0.145.0"},
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TYCHO_CODEX_HOME", str(tmp_path))
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    path, found = harness.discover(tmp_path, only="codex")
+    assert path == rollout and found.name == "codex"
+
+
 def test_codex_readers_hold_against_the_pinned_version(tmp_path: Path):
     """The whole adapter contract against a transcript in the pinned version's shape — the
     claim `VERIFIED_AGAINST["codex"]` makes. Reading one field is what the pin is for; this
