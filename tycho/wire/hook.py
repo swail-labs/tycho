@@ -105,7 +105,7 @@ def run(stdin_text: str) -> dict | None:
     # Adverse only: `additionalContext` renders verbatim, so a full copy would reshow the
     # verdict the human already reads on `systemMessage`.
     agent_report = render(verdict, results, only_adverse=True)
-    update = _update_suffix(harness)
+    update = _update_suffix(repo, harness)
     override_notice = _override_notice(repo, harness, verdict, results)
     # THE SEAM. Two channels, two questions, computed independently:
     #   model — "should the agent fix this?"    → `_relay_output`, verdict-driven.
@@ -184,22 +184,54 @@ def _digest_output(
         return "" if verdict is Verdict.VERIFIED else report
 
 
-def _update_suffix(harness) -> str:
-    """The update notice as a human-only suffix, or "".
+def _update_suffix(repo: Path, harness) -> str:
+    """The notices that ride a Stop, or "". Cache-only — this path never hits the network.
 
-    Gated on a *free* human channel. Where the only way to reach a person also reaches the model
-    (Codex, Cursor), this stays empty: an agent told a newer Tycho exists may go install it, and
-    a verifier that rewrites itself mid-turn on its own advice is the one update nobody asked
-    for. Cache-only — the Stop path never hits the network."""
-    if not harness.channels.human_only:
+    A person should hear that a newer Tycho exists whichever agent they run, so this is no longer
+    withheld from a harness whose only channel the model reads too. What that channel needs is
+    one more sentence: an agent handed "0.2.2 is available" may go install it unasked, and a
+    verifier that rewrites itself mid-verification on its own advice is the one update nobody
+    wanted. The instruction not to act travels *with* the notice, rather than the notice being
+    dropped.
+
+    A harness with no free channel also has no working bootup channel, so the two notices that
+    normally arrive at SessionStart come through here instead — both are state-gated and fire
+    once, so a Stop is a safe place to say them. That is what makes "Tycho is verifying this
+    repo" reach a Codex user at all; it used to be rendered by Claude's adapter into a field
+    Codex drops.
+
+    A harness with no channel to a person at all gets nothing — there is nobody to tell.
+    """
+    if not _reaches_a_human(harness):
         return ""
+    lines = []
     try:
         from . import version as version_mod
 
-        note = version_mod.notice(refresh_first=False)
-        return f"\n\n{note}" if note else ""
+        if note := version_mod.notice(refresh_first=False):
+            lines.append(note)
     except Exception:
+        pass
+    if not harness.channels.human_only:
+        try:
+            lines.extend(_first_seen(repo))
+            lines.extend(_weekly(repo))
+        except Exception:
+            pass
+    if not lines:
         return ""
+    body = "\n\n".join(lines)
+    if harness.channels.human_only:
+        return f"\n\n{body}"
+    return f"\n\n{body}\n{_NOTICES_ARE_NOT_A_TASK}"
+
+
+# Rides the notices on a channel the model reads. Narrow on purpose: it names the one action to
+# refuse, rather than restating the show-and-stop guard the block already carries.
+_NOTICES_ARE_NOT_A_TASK = (
+    "[TYCHO] Those Tycho lines are for the user, not a task — do not install, upgrade or "
+    "configure Tycho, and do not mention them unless they ask."
+)
 
 
 def _override_notice(repo: Path, harness, verdict, results) -> str:

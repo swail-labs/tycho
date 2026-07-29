@@ -431,16 +431,34 @@ def test_stop_hook_update_notice_never_hits_the_network(_online, monkeypatch, tm
     assert "9.9.9" in out["systemMessage"]  # served from the cache only
 
 
-def test_stop_hook_suffix_suppressed_without_a_free_human_channel(_online):
-    """Codex and Cursor reach a person only through a field the model reads too, so an update
-    notice there is an agent being told a newer Tycho exists — and an agent that installs one
-    mid-turn on its own advice is the update nobody asked for. Read off the declared channels,
-    not off `notice_output` being None: Codex has a `notice_output` and still must not get this.
+def test_stop_hook_notice_carries_a_hands_off_line_on_a_shared_channel(_online):
+    """The user hears about an update on every harness; the model is told not to act on it.
+
+    Withholding it entirely was the earlier answer, and it meant Codex users were never told a
+    newer Tycho existed. The risk being managed is narrow and real — an agent handed "0.2.2 is
+    available" may go install it, and a verifier that rewrites itself mid-verification on its own
+    advice is the update nobody wanted — so the mitigation travels with the notice instead.
     """
+    import tempfile
+    from pathlib import Path
+
     from tycho.read import harness as harness_mod
     from tycho.wire import hook
 
     state.write_update_cache(latest="9.9.9", checked_at=time.time())
+    repo = Path(tempfile.mkdtemp())
+    # Claude: a free channel, so the notice goes out bare.
+    claude = hook._update_suffix(repo, harness_mod.CLAUDE)
+    assert "9.9.9" in claude
+    assert "not a task" not in claude  # nothing to warn: the model never sees this
+    # Codex and Cursor: the user still hears about it, and the model is told to leave it alone.
     for name in ("codex", "cursor"):
-        assert hook._update_suffix(harness_mod.BY_NAME[name]) == "", name
-    assert "9.9.9" in hook._update_suffix(harness_mod.CLAUDE)  # ...and Claude still gets it
+        got = hook._update_suffix(repo, harness_mod.BY_NAME[name])
+        assert "9.9.9" in got, name
+        assert "do not install, upgrade or configure Tycho" in got, name
+    # A harness that can reach nobody says nothing at all.
+    class _Mute:
+        channels = harness_mod.Channels(
+            human_only=False, model_only=True, shared=False, relays=False
+        )
+    assert hook._update_suffix(repo, _Mute) == ""

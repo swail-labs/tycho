@@ -1,0 +1,9 @@
+{
+  "session_id": "019fb02a-d6be-7c93-82ad-e27bb7c03511",
+  "transcript_path": "/Users/me/.codex/sessions/2026/07/29/rollout-2026-07-29T19-17-05-019fb02a-d6be-7c93-82ad-e27bb7c03511.jsonl",
+  "cwd": "/Users/me/Desktop/Swail/tycho",
+  "hook_event_name": "SessionStart",
+  "model": "gpt-5.4-mini",
+  "permission_mode": "bypassPermissions",
+  "source": "startup"
+}

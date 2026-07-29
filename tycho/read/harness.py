@@ -456,14 +456,40 @@ VERIFIED_AGAINST = {
 
 
 def detect(payload: dict) -> Harness:
-    """Pick the harness from the Stop payload shape; default Claude."""
+    """Pick the harness from a hook payload's shape; default Claude.
+
+    Not only Stop payloads. Codex's Stop carries a `turn_id` and nothing else here does, but its
+    *SessionStart* carries `session_id`, `transcript_path`, `cwd`, `hook_event_name`,
+    `permission_mode` and `source` — every one of which Claude's SessionStart also carries. So
+    for a while a Codex bootup was read as Claude and answered on Claude's channel, which is a
+    field Codex drops: the notice reached nobody and the code said it was "harmless, both emit
+    `systemMessage`".
+
+    The transcript's own location is what settles it, since each harness writes under its own
+    home and `home()` already honours the overrides. Checked after the `turn_id` row so a Stop
+    still resolves without touching the environment.
+    """
     if payload.get("harness") == "opencode" or payload.get("sessionID"):
         return OPENCODE
     if payload.get("workspace_roots") is not None or payload.get("cursor_version"):
         return CURSOR
     if payload.get("hook_event_name") == "Stop" and payload.get("turn_id"):
         return CODEX
+    if _transcript_under(payload, home("codex")):
+        return CODEX
     return CLAUDE
+
+
+def _transcript_under(payload: dict, root: Path) -> bool:
+    """Does this payload's transcript live under ``root``? False on anything unreadable — a
+    detection heuristic must never raise inside a hook."""
+    path = payload.get("transcript_path")
+    if not isinstance(path, str) or not path:
+        return False
+    try:
+        return Path(path).expanduser().is_relative_to(root.expanduser())
+    except (OSError, ValueError):
+        return False
 
 
 def discover(cwd: Path, only: str | None = None) -> tuple[Path | None, Harness | None]:

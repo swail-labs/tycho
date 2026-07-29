@@ -81,10 +81,23 @@ def _install_codex(repo: Path, scope: str = spelling.REPO) -> str:
     # Writing the file is only half an install on Codex — it shows the hooks to a human once
     # and runs nothing until they approve. Said here because this is the moment the user is
     # looking; `tycho doctor` re-reports it for anyone who scrolled past.
-    trust_line = (
-        f"{label}: approve the hooks when Codex next starts — it won't run them until you do"
-        if spelling.codex_untrusted(repo, scope) else ""
-    )
+    #
+    # The second case is the quiet one. Codex pins its approval to a hash of the hook, so
+    # rewriting the command invalidates it — Tycho moving from a `.venv` to a global install is
+    # enough — and from then on the entry is still *there*, which is all `codex_untrusted` can
+    # read. `doctor` would go on saying trusted while nothing ran. The write we just did is the
+    # event that stales it, so this is the one place that knows.
+    if spelling.codex_untrusted(repo, scope):
+        trust_line = (
+            f"{label}: approve the hooks when Codex next starts — it won't run them until you do"
+        )
+    elif changed:
+        trust_line = (
+            f"{label}: the hook command changed, so Codex's approval of it no longer matches — "
+            "approve the hooks again when it next starts"
+        )
+    else:
+        trust_line = ""
     return "\n".join(filter(None, (hook_line, ss_line, trust_line)))
 
 

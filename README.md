@@ -28,10 +28,12 @@ that against the artifacts: git, the filesystem, exit codes, the harness event s
 second model sees a diff. Tycho was there when the agent ran `pytest`, got exit 1, and then said
 tests pass.
 
-Instant, free, silent, always-on — no API key, no second session, no tokens, no context burned.
-Nothing leaves the machine (no LLM anywhere in the trust path). Stdlib only, Python ≥ 3.11.
-Claude Code and Codex. Linux, macOS, Windows — WSL2 counts as Linux,
-install inside the distro.
+Instant, free, silent, always-on — no API key, no second session, no LLM. Nothing leaves the
+machine (no LLM anywhere in the trust path). Stdlib only, Python ≥ 3.11. Claude Code and Codex.
+Linux, macOS, Windows — WSL2 counts as Linux, install inside the distro.
+
+On Claude Code, Tycho costs you no tokens and no context: it has a channel that reaches you and
+not the model. **On Codex it costs a little of both** — see [Per-harness notes](#per-harness-notes).
 
 ## Install
 
@@ -73,11 +75,26 @@ TYCHO_AUTO=0            # only verify repos where you ran `tycho init`
 
 **Claude Code** — nothing to do.
 
-**Codex** (the CLI and the ChatGPT desktop app alike) — approve Tycho's hooks the first time
-Codex asks. Codex will not run a hook it hasn't shown you: the first session after one appears
-says *"hooks need review before they can run"*, and until you approve, the config is read and
-nothing runs. `tycho doctor` reports it if you skipped it. After `tycho install` that approval
-is once for the machine; after `tycho init` it's once per repo.
+**Codex** (the CLI and the ChatGPT desktop app alike) — two things to know.
+
+*Approve Tycho's hooks the first time Codex asks.* Codex will not run a hook it hasn't shown
+you: the first session after one appears says *"hooks need review before they can run"*, and
+until you approve, the config is read and nothing runs. `tycho doctor` reports it if you skipped
+it. After `tycho install` that approval is once for the machine; after `tycho init` it's once
+per repo.
+
+*Tycho uses a little of your context and usage here.* Claude Code gives a hook two separate
+channels — one the human reads, one the model reads — so a verdict reaches you for free. Codex
+has one field, and both of you read it. So whenever Tycho has something to say on Codex, it ends
+the agent's turn and hands it the text to show you, which spends a small amount of context and
+one model turn. That is the cost of being told at all: the alternative, and what Tycho did before
+0.2.1, is silence.
+
+It stays small and it stays bounded. Verdicts are capped to a handful of lines with `tycho show`
+for the rest; a routine turn says nothing; the relay is opt-in and limited to three re-checks per
+turn; and anything sent this way carries an instruction telling the agent to relay it and stop,
+not to act on it. Nothing about the verification itself changes — the checks, the record and the
+verdict are the same offline, stdlib-only code on every harness.
 
 ### Adopting a repo
 

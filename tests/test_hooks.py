@@ -42,6 +42,33 @@ def test_detect_codex_by_stop_payload():
     assert harness.detect(payload).name == "codex"
 
 
+def test_detect_codex_on_a_session_start_payload(monkeypatch):
+    """A real captured Codex SessionStart, which carries no `turn_id`.
+
+    Every field in it — `session_id`, `transcript_path`, `cwd`, `hook_event_name`,
+    `permission_mode`, `source` — is one Claude's SessionStart carries too, so the Stop-shaped
+    row misses it and it used to fall through to Claude. Tycho then answered a Codex bootup on
+    Claude's channel, a field Codex drops, and the notice reached nobody. The transcript's own
+    location is what settles it.
+    """
+    payload = json.loads((FIXTURES / "harness" / "codex" / "session_start_payload.json").read_text())
+    monkeypatch.setattr(harness, "home", lambda name: Path("/Users/me") / f".{name}")
+    assert harness.detect(payload).name == "codex"
+
+
+def test_a_claude_session_start_is_not_mistaken_for_codex(monkeypatch):
+    """The off-diagonal of the same row: same shape, transcript under Claude's home."""
+    monkeypatch.setattr(harness, "home", lambda name: Path("/Users/me") / f".{name}")
+    payload = {
+        "session_id": "3f2b7c81",
+        "transcript_path": "/Users/me/.claude/projects/-Users-me-projects-tycho/3f2b7c81.jsonl",
+        "cwd": "/Users/me/projects/tycho",
+        "hook_event_name": "SessionStart",
+        "source": "startup",
+    }
+    assert harness.detect(payload).name == "claude"
+
+
 def test_repo_root_from_cwd_vs_workspace_roots():
     assert harness.CLAUDE.repo_root({"cwd": "/a"}) == Path("/a")
     assert harness.CURSOR.repo_root({"workspace_roots": ["/b"]}) == Path("/b")
