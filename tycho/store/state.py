@@ -423,6 +423,12 @@ def ledger(repo: Path) -> dict:
         verdict = row.get("verdict")
         if not isinstance(verdict, str):
             continue  # not a turn record we can read
+        if row.get("backfilled"):
+            # A turn replayed from a transcript was never checked, so it is neither a catch
+            # nor a blindness — counting it as a turn alone would drag every rate here toward
+            # zero in proportion to how much history the user happened to have. The ledger is
+            # the seed of a published series (strategy §7); it holds only turns Tycho ran on.
+            continue
         turns += 1
         is_caught = verdict in _RUN_CAUGHT
         is_blind = verdict in _BLIND

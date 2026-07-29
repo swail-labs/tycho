@@ -86,6 +86,7 @@ tycho show                       # the full receipt for the last turn (or `show 
 tycho log                        # what agents did here, newest first (--verdict, --since, -n)
 tycho blame src/app.py           # which turns touched this file, what they claimed, what backed it
 tycho review                     # which changed hunks no test covered and no command exercised
+tycho backfill                   # record what agents did here before Tycho was installed
 tycho verify                     # re-run the engine over a session on demand
 tycho count --ledger             # catch and blind rates, per model and per check
 tycho exec -- pytest -q          # run it and put the real exit status on the record
@@ -118,6 +119,17 @@ than you might expect:
   `--verify` can answer *cannot tell*, and a pruned record must never read as a forged one.
 - **`tool_call_provenance` is advisory.** Two claim families (web, issue trackers), matched on
   family presence only. Tuned to never emit a false FAIL, at the cost of recall.
+- **A backfilled turn has no verdict, and never will.** `tycho backfill` replays transcripts
+  written before Tycho was here, but most checks are functions of state that no longer exists —
+  whether an edited file is on disk *now*, an mtime *now* against a run three weeks ago. So those
+  rows record what the transcript proves (files, commands, claims, when) and read `UNVERIFIED`.
+  They're excluded from every rate in `count --ledger`. Tycho will not tell you what it "would
+  have caught".
+- **`verifier_integrity` raises the cost of tampering; it doesn't make it impossible.** It reports
+  a turn that edits `.tycho/`, `.tycho.toml`, a harness hook config or a git hook — via the edit
+  tools, a shell redirect, or a mutating command. It cannot see a write smuggled through an
+  interpreter (`python -c "open('.tycho.toml','w')"`), and a process running as you can always
+  reach the file. It is the check `[checks].disable` may not switch off.
 - **A piped runner's exit status is gone before Tycho can read it.** `pytest | tail -20` hands the
   harness tail's status, so the verdict falls back to reading pytest's summary line — inference,
   and only as good as the vocabulary in `engine/runlog.py`. `tycho exec -- pytest | tail -20`
