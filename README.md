@@ -30,7 +30,7 @@ tests pass.
 
 Instant, free, silent, always-on — no API key, no second session, no tokens, no context burned.
 Nothing leaves the machine (no LLM anywhere in the trust path). Stdlib only, Python ≥ 3.11.
-Claude Code today; Codex and other harnesses in development. Linux, macOS, Windows — WSL2 counts as Linux,
+Claude Code and Codex. Linux, macOS, Windows — WSL2 counts as Linux,
 install inside the distro.
 
 ## Install
@@ -68,6 +68,15 @@ tycho off               # stop verifying this repo   (tycho on to resume)
 tycho uninstall         # remove it from this machine
 TYCHO_AUTO=0            # only verify repos where you ran `tycho init`
 ```
+
+### Per-harness notes
+
+**Claude Code** — nothing to do.
+
+**Codex** (the CLI and the ChatGPT desktop app alike) — approve Tycho's hooks the first time
+Codex asks. Codex will not run a hook it hasn't shown you: the first session after one appears
+says *"hooks need review before they can run"*, and until you approve, the config is read and
+nothing runs. `tycho doctor` reports it if you skipped it.
 
 ### Adopting a repo
 

@@ -61,6 +61,7 @@ from .spelling import (
     _LOCAL_DIR,
     attest_command as attest_command,
     claude_dir,
+    codex_untrusted as codex_untrusted,
     config_path as config_path,
     hook_argv as hook_argv,
     hook_command as hook_command,

@@ -366,18 +366,18 @@ def test_codex_readers_hold_against_the_pinned_version(tmp_path: Path):
     """
     evs = events.parse_codex(CODEX_PIN_FIXTURE)
     runs = [e for e in evs if e.tool == "Bash"]
-    assert [e.input["command"] for e in runs] == ["pytest -q"]
+    assert [e.input["command"] for e in runs] == ["pytest -q ."]
     # The exit status is what `command_execution` reads; it going missing is the silent
     # failure this pin exists to catch.
     assert runs[0].is_error is False
     assert "77 passed" in (runs[0].result.get("stdout") or "")
     assert {e.path for e in events.file_edits(evs)} == {"/repo/app.py"}
-    assert events.turn_start_codex(CODEX_PIN_FIXTURE) == events._epoch("2026-07-23T22:09:59.000Z")
+    assert events.turn_start_codex(CODEX_PIN_FIXTURE) == events._epoch("2026-07-29T19:05:32.898Z")
     assert [m.text for m in events.assistant_messages_codex(CODEX_PIN_FIXTURE)] == [
         "Added the helper and ran the suite."
     ]
     got = events.attribution_codex(CODEX_PIN_FIXTURE)
-    assert (got.model, got.agent_version) == ("gpt-5.6-sol", "0.145.0")
+    assert (got.model, got.agent_version) == ("gpt-5.4-mini", "0.146.0")
     assert got.session_id
 
 

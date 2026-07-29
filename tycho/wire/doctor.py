@@ -164,6 +164,16 @@ def _is_wired(repo: Path, name: str, recorded: dict, findings: list[Finding]) ->
         ))
         return True  # wired (the entry exists), just not working
 
+    if name == "codex" and init_mod.codex_untrusted(repo):
+        findings.append(Finding(
+            BROKEN,
+            "codex: the Stop hook is installed but Codex hasn't been told to trust it — "
+            "until then it reads the config and runs nothing",
+            "open Codex (CLI or the desktop app) in this repo and approve the hooks review "
+            "it shows at startup",
+        ))
+        return True  # wired (the entry exists), just not running
+
     # Not compared against `init.hook_command()`: that answer depends on whether the venv is
     # on PATH right now, so one healthy install would read as two different "current"s.
     findings.append(Finding(OK, f"{name}: hook installed and runnable — {command}"))

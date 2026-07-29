@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 import shlex
 import shutil
+import tomllib
 import sys
 from pathlib import Path
 
@@ -172,6 +173,31 @@ def config_path(repo: Path, name: str) -> Path:
         "codex": ".codex/hooks.json",
         "opencode": ".opencode/plugins/tycho.js",
     }[name]
+
+
+def codex_untrusted(repo: Path) -> bool:
+    """Does Codex still owe this repo's Stop hook an approval?
+
+    Codex (checked against 0.146.0, CLI and the desktop app) will not run a project hook it
+    hasn't been shown to a human: the first session after one appears prints "N hooks need
+    review before they can run" and runs nothing until approved. `.codex/hooks.json` on its
+    own therefore verifies nothing, and every other signal doctor has — the file is there, the
+    command resolves — says it's fine. The approval is persisted only as a
+    `[hooks.state."<config path>:<event>:<group>:<hook>"]` entry in CODEX_HOME/config.toml,
+    so its absence is the one readable trace of "installed but never armed".
+
+    False on anything unreadable: a missing config.toml means Codex hasn't run at all yet, and
+    a doctor that cries wolf gets ignored. Presence is all this can check — a *stale* approval
+    (the entry pins a hash of the command we'd have to recompute) still reads as trusted.
+    """
+    config = harness_mod.home("codex") / "config.toml"
+    prefix = f"{config_path(repo, 'codex')}:stop:"
+    try:
+        table = tomllib.loads(config.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    trusted = ((table.get("hooks") or {}).get("state") or {})
+    return not any(key.startswith(prefix) for key in trusted)
 
 
 # Two `exit 0`s: outside a git repo we do nothing (else a user-level hook sprinkles `.tycho/`

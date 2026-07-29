@@ -268,7 +268,11 @@ ENABLED = tuple(h for h in ALL if h.name in ENABLED_NAMES)
 VERIFIED_AGAINST = {
     "claude": {"version": "2.1.220", "probe": ("claude", "--version")},
     "cursor": {"version": "2026.07.09-a3815c0", "probe": ("cursor-agent", "--version")},
-    "codex": {"version": "0.145.0", "probe": ("codex", "--version")},
+    # One pin covers both front ends: the CLI and the ChatGPT desktop app run the same core
+    # against the same CODEX_HOME. Re-checked 2026-07-29 against a desktop-app turn
+    # (`originator: "Codex Desktop"`, `cli_version: "0.146.0-alpha.3.1"`) and a CLI turn —
+    # same rollout directory, same Stop payload, same event shapes.
+    "codex": {"version": "0.146.0", "probe": ("codex", "--version")},
 }
 
 

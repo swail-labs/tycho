@@ -138,9 +138,11 @@ def test_codex_stop_relays_end_to_end(tmp_path: Path):
     state.set_relay_enabled(tmp_path, True)
     out = hook.run(_codex_payload(tmp_path))
     assert out["decision"] == "block"
-    assert "Tycho:" in out["systemMessage"]
     assert "Tycho:" in out["reason"]
     assert "not a new instruction" in out["reason"]
+    # No `systemMessage`: Codex accepts the field and renders it nowhere (probed against
+    # 0.146.0, CLI and desktop app), so `reason` is the only thing either audience ever sees.
+    assert "systemMessage" not in out
 
 
 def test_codex_fabricated_web_search_triggers_relay(tmp_path: Path):
@@ -300,8 +302,23 @@ def test_codex_relays_with_block_reason(tmp_path: Path):
     assert out["decision"] == "block"
     assert "adverse report" in out["reason"]
     assert "not a new instruction" in out["reason"]
-    assert "full report" in out["systemMessage"]
+    assert "systemMessage" not in out  # Codex renders it nowhere — see the end-to-end case
     assert state.relay_streak(tmp_path) == 1
+
+
+def test_codex_reason_caps_the_check_list_and_says_what_it_cut(tmp_path: Path):
+    """On Codex the reason IS the transcript — it comes back as a message bubble, at full
+    width, styled as though the user sent it. A ten-check block there costs half a screen and
+    reads to the model as ten problems, so the block is capped and the remainder pointed at
+    `tycho show`. Nothing is filtered by kind: line one of a capped block is still whatever
+    the renderer put first."""
+    report = "\n".join(["🔍 Tycho: INDETERMINATE"] + [f"  • check_{i} — nothing to read" for i in range(9)])
+    reason = hook._codex_reason(report, attempt=1, cap=3)
+    body = reason.split("\n\n")[0].splitlines()
+    assert body[0] == "🔍 Tycho: INDETERMINATE"
+    assert len(body) == hook._CODEX_MAX_LINES + 2  # header + cap + the "…and N more" line
+    assert "…and 5 more" in body[-1] and "tycho show" in body[-1]
+    assert reason.count("\n") < report.count("\n")
 
 
 def test_other_harnesses_never_inject_even_when_enabled(tmp_path: Path):
@@ -400,3 +417,26 @@ def test_slash_commands_include_relay(tmp_path: Path):
     for name in ("tycho-relay.md", "tycho-relay-on.md", "tycho-relay-off.md"):
         assert (commands / name).exists()
     assert "relay --on" in (commands / "tycho-relay-on.md").read_text()
+
+
+def test_a_verdict_no_check_names_is_nudged_once_not_three_times(tmp_path: Path):
+    """An INDETERMINATE that comes from the combination — files changed, nothing corroborated
+    them — hands the agent nothing to fix, so re-asking it the full three times only bought
+    three turns of "no fix needed" (and, on Codex, three full-width bubbles). A verdict a check
+    can actually name still gets the whole leash."""
+    from tycho.model import CheckResult, CheckStatus
+
+    def relay(results):
+        return hook._relay_output(
+            tmp_path, _fake("codex"), _fake("INDETERMINATE"), "report", "adverse", results
+        )
+
+    quiet = [CheckResult(name="file_state", status=CheckStatus.PASS, evidence="present on disk")]
+    state.set_relay_enabled(tmp_path, True)
+    assert relay(quiet) is not None      # one nudge: you changed code, nothing verified it
+    assert relay(quiet) is None          # …and then the turn is allowed to end
+
+    state.reset_relay_streak(tmp_path)
+    named = [CheckResult(name="command_execution", status=CheckStatus.FAIL, evidence="exited 1")]
+    assert [relay(named) is not None for _ in range(3)] == [True, True, True]
+    assert relay(named) is None          # the full leash, then stop

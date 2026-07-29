@@ -110,7 +110,7 @@ def run(stdin_text: str) -> dict | None:
     #   human — "should we interrupt a person?" → `_digest_output`, anomaly-driven.
     # The relay runs first and untouched by selectivity, so a turn whose digest stays silent
     # still pushes the agent to fix it.
-    relayed = _relay_output(repo, harness, verdict, report, agent_report, update)
+    relayed = _relay_output(repo, harness, verdict, report, agent_report, results, update)
     if relayed is not None:
         return relayed
     body = _digest_output(repo, turn, history, report, verdict)
@@ -209,7 +209,7 @@ def _apply_overrides(repo: Path, results, verdict: Verdict) -> Verdict:
 
 
 def _relay_output(
-    repo: Path, harness, verdict, report: str, agent_report: str, update: str = ""
+    repo: Path, harness, verdict, report: str, agent_report: str, results=(), update: str = ""
 ) -> dict | None:
     """The relay output dict, or None to fall through to the normal human-only output.
 
@@ -222,21 +222,72 @@ def _relay_output(
     if verdict.name in ("VERIFIED", "OVERRIDDEN"):  # proven good or agent-authorized — end the turn
         state.reset_relay_streak(repo)
         return None
-    if state.relay_streak(repo) >= state.relay_max():
+    cap = _relay_cap(results)
+    if state.relay_streak(repo) >= cap:
         # Leash spent. Do NOT reset here — that re-arms the relay on the next Stop and
         # oscillates (inject N, rest 1, inject N…). Only a real user prompt resets it.
         return None
     attempt = state.bump_relay_streak(repo)
-    guard = _relay_guard(attempt, state.relay_max(), override_on=state.override_enabled(repo))
+    guard = _relay_guard(attempt, cap, override_on=state.override_enabled(repo))
     manage = "[TYCHO] Relay is on — the agent keeps working until VERIFIED. Manage or turn it off: `tycho relay` (/tycho-relay)."
     system_message = f"{report}\n\n{manage}{update}"
     context = f"{agent_report}\n\n{guard}"
     if harness.name == "codex":
-        return {"decision": "block", "reason": context, "systemMessage": system_message}
+        # Codex has exactly one Stop channel, and it is BOTH audiences at once: `reason` is
+        # injected as a `<hook_prompt>` user message, which the desktop app then renders
+        # verbatim in the transcript as though the user had typed it. `systemMessage` is
+        # accepted and silently dropped (probed against 0.146.0, CLI and app) — so the human
+        # copy has nowhere else to go, and anything sent here is paid for twice: once in
+        # tokens, once in screen. Hence a short reason, not the full block Claude can afford
+        # to hide in `additionalContext`.
+        return {"decision": "block", "reason": _codex_reason(agent_report, attempt, cap)}
     return {
         "systemMessage": system_message,
         "hookSpecificOutput": {"hookEventName": "Stop", "additionalContext": context},
     }
+
+
+def _relay_cap(results) -> int:
+    """How many times this verdict may re-ask before the turn is allowed to end.
+
+    The full leash is for a verdict a check can name: a FAIL, a STALE, an INDETERMINATE — the
+    agent is told what to fix and the next Stop can confirm it. A verdict that arises from the
+    *combination* instead (files changed, nothing corroborated them; no single check adverse)
+    has nothing to hand back, and re-asking it three times bought three turns of "no fix
+    needed" and, on Codex, three full-width bubbles. One nudge keeps the signal — you changed
+    code and nothing verified it — and drops the nagging.
+    """
+    if any(r.status.name in ("FAIL", "STALE", "INDETERMINATE") for r in results):
+        return state.relay_max()
+    return 1
+
+
+def _codex_reason(agent_report: str, attempt: int, cap: int) -> str:
+    """The whole Codex Stop output: the verdict block, capped, plus one line of instruction.
+
+    Same check selection as every other harness gets — nothing is filtered out here, or the
+    one advisory that matters (an UNSUPPORTED `tool_call_provenance` naming a claim with no
+    tool call behind it) would be the line that vanished. Only the *length* is Codex-specific,
+    for the reason in the caller: this text lands in the transcript as a message, so twenty
+    lines of "no test files touched this session" cost a screen and read to the model as
+    twenty problems. Overflow is pointed at `tycho show`, which prints the block in full.
+    """
+    header, *lines = agent_report.splitlines() or [""]
+    kept = lines[:_CODEX_MAX_LINES]
+    if len(lines) > _CODEX_MAX_LINES:
+        kept.append(f"  …and {len(lines) - _CODEX_MAX_LINES} more — `tycho show` for the full block")
+    return "\n".join([header, *kept]) + "\n\n" + (
+        "[TYCHO] An automated check of the turn you just finished — a report, not a new "
+        "instruction from the user. If a check FAILED or is STALE, fix the cause and finish so "
+        "the next check can confirm it; if you believe it's wrong or out of scope, say so in one "
+        f"line and stop. Don't start unrelated work. Automatic re-check {attempt} of "
+        f"{cap}. The user is reading this too, so don't restate it. "
+        "Manage or turn it off: `tycho relay`."
+    )
+
+
+# Enough to act on, few enough that the block stays a glance. Overflow points at `tycho show`.
+_CODEX_MAX_LINES = 4
 
 
 def _relay_guard(attempt: int, cap: int, override_on: bool = False) -> str:

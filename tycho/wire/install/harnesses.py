@@ -73,7 +73,14 @@ def _install_codex(repo: Path) -> str:
     state.write_install(repo, "codex", command)
     hook_line = _status("codex", "Stop hook", path, command, existed, changed)
     ss_line = _status("codex", "SessionStart hook", path, ss_command, ss_existed, changed)
-    return "\n".join(filter(None, (hook_line, ss_line)))
+    # Writing the file is only half an install on Codex — it shows the hooks to a human once
+    # and runs nothing until they approve. Said here because this is the moment the user is
+    # looking; `tycho doctor` re-reports it for anyone who scrolled past.
+    trust_line = (
+        "codex: approve the hooks when Codex next starts here — it won't run them until you do"
+        if spelling.codex_untrusted(repo) else ""
+    )
+    return "\n".join(filter(None, (hook_line, ss_line, trust_line)))
 
 
 def _install_opencode(repo: Path) -> str:
