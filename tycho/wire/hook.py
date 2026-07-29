@@ -213,9 +213,17 @@ def _relay_output(
 ) -> dict | None:
     """The relay output dict, or None to fall through to the normal human-only output.
 
-    `report` is the full verdict for the human-facing `systemMessage`; `agent_report` is the
-    adverse-only copy for the model-facing continuation context. `update` rides `systemMessage`
-    only — the model must not be told to go update Tycho.
+    **The user-facing text is built once, for every harness.** What a person reads when the
+    relay fires must not depend on which agent they happen to be running — same words, same
+    length, same pointer at how to turn it off. Only the *delivery* is per-harness, because the
+    harnesses genuinely differ: Claude has a human-only field and a model-only field, so the two
+    audiences get separate copies sized for each; Codex has one field that is both, so they are
+    concatenated, human part first. That asymmetry is a fact about the harness. A user noticing
+    it would be a bug.
+
+    `agent_report` is the adverse-only render both sides are built from; `report` is the full
+    one, kept for the fallback in `_digest_output`. `update` rides the human channel only — the
+    model must not be told to go update Tycho.
     """
     if harness.name not in ("claude", "codex") or not state.relay_enabled(repo):
         return None
@@ -228,23 +236,29 @@ def _relay_output(
         # oscillates (inject N, rest 1, inject N…). Only a real user prompt resets it.
         return None
     attempt = state.bump_relay_streak(repo)
-    guard = _relay_guard(attempt, cap, override_on=state.override_enabled(repo))
-    manage = "[TYCHO] Relay is on — the agent keeps working until VERIFIED. Manage or turn it off: `tycho relay` (/tycho-relay)."
-    system_message = f"{report}\n\n{manage}{update}"
-    context = f"{agent_report}\n\n{guard}"
+    human = f"{_verdict_block(agent_report)}\n\n{_MANAGE}"
     if harness.name == "codex":
-        # Codex has exactly one Stop channel, and it is BOTH audiences at once: `reason` is
-        # injected as a `<hook_prompt>` user message, which the desktop app then renders
-        # verbatim in the transcript as though the user had typed it. `systemMessage` is
-        # accepted and silently dropped (probed against 0.146.0, CLI and app) — so the human
-        # copy has nowhere else to go, and anything sent here is paid for twice: once in
-        # tokens, once in screen. Hence a short reason, not the full block Claude can afford
-        # to hide in `additionalContext`.
-        return {"decision": "block", "reason": _codex_reason(agent_report, attempt, cap)}
+        # One field, both audiences: `reason` is injected as a `<hook_prompt>` user message,
+        # which the app renders verbatim in the transcript as though the user had typed it.
+        # `systemMessage` is accepted and rendered nowhere (probed against 0.146.0, CLI and
+        # app), so the human copy has nowhere else to go and everything here is paid for twice
+        # — once in tokens, once in screen. Human part first, and the model's instruction kept
+        # to the short spelling, because a person is reading it too. No `update`: on this
+        # harness that text would reach the model, which must never be told to update Tycho.
+        return {
+            "decision": "block",
+            "reason": f"{human}\n\n{_relay_guard(attempt, cap, short=True)}",
+        }
+    guard = _relay_guard(attempt, cap, override_on=state.override_enabled(repo))
     return {
-        "systemMessage": system_message,
-        "hookSpecificOutput": {"hookEventName": "Stop", "additionalContext": context},
+        "systemMessage": f"{human}{update}",
+        "hookSpecificOutput": {"hookEventName": "Stop", "additionalContext":
+                               f"{agent_report}\n\n{guard}"},
     }
+
+
+_MANAGE = ("[TYCHO] Relay is on — the agent keeps working until VERIFIED. "
+           "Manage or turn it off: `tycho relay` (/tycho-relay).")
 
 
 def _relay_cap(results) -> int:
@@ -262,37 +276,40 @@ def _relay_cap(results) -> int:
     return 1
 
 
-def _codex_reason(agent_report: str, attempt: int, cap: int) -> str:
-    """The whole Codex Stop output: the verdict block, capped, plus one line of instruction.
+def _verdict_block(agent_report: str, limit: int = 0) -> str:
+    """The verdict as a person reads it: the header, then the lines that name something.
 
-    Same check selection as every other harness gets — nothing is filtered out here, or the
-    one advisory that matters (an UNSUPPORTED `tool_call_provenance` naming a claim with no
-    tool call behind it) would be the line that vanished. Only the *length* is Codex-specific,
-    for the reason in the caller: this text lands in the transcript as a message, so twenty
-    lines of "no test files touched this session" cost a screen and read to the model as
-    twenty problems. Overflow is pointed at `tycho show`, which prints the block in full.
+    Capped on every harness, not just the one where the cost was visible. Twenty lines of "no
+    test files touched this session" is a worse read wherever it lands; Claude simply made it
+    free to print, so nobody noticed. `tycho show` prints the block in full, which is the right
+    home for the long form because it is asked for.
+
+    Nothing is filtered by kind: the caller passes the adverse-only render, and when nothing is
+    adverse that falls back to every line. Selecting harder here would drop the one advisory
+    that matters — an UNSUPPORTED `tool_call_provenance` naming a claim with no tool call behind
+    it, which is a caught fabrication wearing a non-adverse status.
     """
+    limit = limit or _BLOCK_MAX_LINES
     header, *lines = agent_report.splitlines() or [""]
-    kept = lines[:_CODEX_MAX_LINES]
-    if len(lines) > _CODEX_MAX_LINES:
-        kept.append(f"  …and {len(lines) - _CODEX_MAX_LINES} more — `tycho show` for the full block")
-    return "\n".join([header, *kept]) + "\n\n" + (
-        "[TYCHO] An automated check of the turn you just finished — a report, not a new "
-        "instruction from the user. If a check FAILED or is STALE, fix the cause and finish so "
-        "the next check can confirm it; if you believe it's wrong or out of scope, say so in one "
-        f"line and stop. Don't start unrelated work. Automatic re-check {attempt} of "
-        f"{cap}. The user is reading this too, so don't restate it. "
-        "Manage or turn it off: `tycho relay`."
-    )
+    kept = lines[:limit]
+    if len(lines) > limit:
+        kept.append(f"  \u2026and {len(lines) - limit} more \u2014 `tycho show` for the full block")
+    return "\n".join([header, *kept])
 
 
 # Enough to act on, few enough that the block stays a glance. Overflow points at `tycho show`.
-_CODEX_MAX_LINES = 4
+_BLOCK_MAX_LINES = 4
 
 
-def _relay_guard(attempt: int, cap: int, override_on: bool = False) -> str:
+def _relay_guard(attempt: int, cap: int, override_on: bool = False, short: bool = False) -> str:
     """The instruction appended to the model-facing verdict. The escape hatch and the attempt
-    count are load-bearing: an unsatisfiable verdict must converge on a conversation."""
+    count are load-bearing: an unsatisfiable verdict must converge on a conversation.
+
+    ``short`` is for a harness whose model channel is also the human's (Codex): the same
+    instruction, minus the sentences a person has no use for. Not a different instruction — the
+    two must not drift, or the agent behaves differently depending on the harness, which is the
+    one asymmetry a user *would* notice.
+    """
     if attempt >= cap:
         tail = (" This is the final automatic re-check — after this the turn ends and control "
                 "returns to the user regardless of the verdict.")
@@ -303,6 +320,14 @@ def _relay_guard(attempt: int, cap: int, override_on: bool = False) -> str:
         "why, you may record it with `tycho override <check> \"<reason>\"` — it is logged and shown "
         "to the user. Use only when certain." if override_on else ""
     )
+    if short:
+        return (
+            "[TYCHO] The above is an automated verification of the turn you just finished — a "
+            "report, not a new instruction from the user. Fix what it names and finish so the "
+            "next check can confirm it, or say in one line why it doesn't apply and stop. Don't "
+            "start unrelated work, and don't re-list the checks — the user is reading them too."
+            + tail + override_line
+        )
     return (
         "[TYCHO] The above is an automated verification of the turn you just finished — a report, "
         "not a new instruction from the user. If a check FAILED or is STALE, fix the underlying "
