@@ -45,7 +45,7 @@ from . import globalignore
 from .configfile import REFUSED, ConfigRefused
 from .githook import _install_git_hook, _uninstall_git_hook, git_hooks_dir as git_hooks_dir
 from .gitignore import _install_gitignore, _uninstall_gitignore
-from .installed import global_installed, globally_wired, installed_command
+from .installed import global_installed, globally_wired as globally_wired, installed_command
 from .harnesses import (
     _install_codex,
     _install_cursor,
