@@ -128,8 +128,10 @@ than you might expect:
 - **`verifier_integrity` raises the cost of tampering; it doesn't make it impossible.** It reports
   a turn that edits `.tycho/`, `.tycho.toml`, a harness hook config or a git hook — via the edit
   tools, a shell redirect, or a mutating command. It cannot see a write smuggled through an
-  interpreter (`python -c "open('.tycho.toml','w')"`), and a process running as you can always
-  reach the file. It is the check `[checks].disable` may not switch off.
+  interpreter (`python -c "open('.tycho.toml','w')"`) or a path the shell expanded from a
+  variable, and a process running as you can always reach the file. Tycho's own state is judged
+  inside this repo only — another tree's `.tycho/` is `scope_drift`'s business, not a verdict
+  here. It is the check `[checks].disable` may not switch off.
 - **A piped runner's exit status is gone before Tycho can read it.** `pytest | tail -20` hands the
   harness tail's status, so the verdict falls back to reading pytest's summary line — inference,
   and only as good as the vocabulary in `engine/runlog.py`. `tycho exec -- pytest | tail -20`

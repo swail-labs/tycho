@@ -38,8 +38,10 @@ def edit(path: str) -> FileEdit:
     ".tycho.toml",
     ".tycho/turns.jsonl",
     ".tycho/catches.json",
-    "/Users/dev/proj/.tycho/turns.jsonl",  # absolute, as an out-of-repo edit arrives
+    "nested/.tycho/turns.jsonl",
     ".claude/settings.json",
+    # `tycho init --global` writes this one outside the repo; it still makes Tycho run.
+    "/Users/dev/.claude/settings.json",
     ".claude/settings.local.json",
     ".cursor/hooks.json",
     ".codex/hooks.json",
@@ -127,6 +129,30 @@ def test_a_mutating_verb_elsewhere_in_the_line_does_not_convict():
     different commands. Reading the record is not an attack on it."""
     result = verifier_integrity(session(events=[bash("cat .tycho/turns.jsonl && rm scratch.txt")]))
     assert result.status is CheckStatus.PASS
+
+
+@pytest.mark.parametrize("path", [
+    "/private/tmp/scratch/repo/.tycho/turns.jsonl",
+    "/Users/dev/some-other-project/.tycho.toml",
+    "/tmp/fixture/.git/hooks/prepare-commit-msg",
+])
+def test_another_trees_tycho_is_not_this_repos_business(path):
+    """Out-of-repo state belongs to `scope_drift`, not here. Caught on Tycho's own turn: a
+    smoke test made a scratch `.tycho/` under /tmp and the check called it tampering."""
+    assert verifier_integrity(session(edits=[edit(path)])).status is CheckStatus.PASS
+
+
+def test_an_unexpanded_variable_is_not_a_path():
+    """`mkdir -p "$SCRATCH/repo/.tycho"` reaches the record as a literal `$SCRATCH/…`. Only
+    the shell knows where that pointed; a checker that guesses convicts on a name."""
+    result = verifier_integrity(session(events=[bash('mkdir -p "$SCRATCH/repo/.tycho"')]))
+    assert result.status is CheckStatus.PASS
+
+
+def test_the_repo_bound_does_not_let_a_relative_escape_through():
+    """The bound is about *other trees*, not about spelling. A path that walks out and back
+    is still this repo's file, and `_relpath` normalizes it before a check ever sees it."""
+    assert verifier_integrity(session(edits=[edit(".tycho/turns.jsonl")])).status is CheckStatus.FAIL
 
 
 def test_paths_that_merely_look_like_tycho_are_clean():

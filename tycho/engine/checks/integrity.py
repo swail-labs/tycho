@@ -28,24 +28,28 @@ import shlex
 
 from ...model import CheckResult, CheckStatus, Session
 from .cmdread import _MAX_CMD_LEN, _SEGMENT_SEP, _SHELL_TOOLS, _strip_heredocs, written_paths
-from .common import _r, _scope
+from .common import _is_in_repo, _r, _scope
 
 NAME = "verifier_integrity"
 
-# A path segment that is Tycho's own state, wherever the tree it sits in — matched by segment,
-# not prefix, so an absolute path out of the transcript is caught the same as a relative one.
-_STATE_DIR = ".tycho"
-
-# Files whose *tail* makes them Tycho's or a harness's hook wiring. Suffix-matched for the
-# same reason: `/Users/x/proj/.claude/settings.json` and `.claude/settings.json` are one file.
-_PROTECTED_TAILS = (
-    ".tycho.toml",
+# Hook wiring, protected wherever it lives — including outside the repo. `tycho init --global`
+# writes the user-level `~/.claude/settings.json`, so the file that makes Tycho run for this
+# turn may legitimately sit in `$HOME`, and bounding these to the repo would leave the global
+# install undefended. Suffix-matched: `/Users/x/.claude/settings.json` is that file.
+_HOOK_CONFIG_TAILS = (
     ".claude/settings.json",
     ".claude/settings.local.json",
     ".cursor/hooks.json",
     ".codex/hooks.json",
     ".opencode/plugins/tycho.js",
 )
+
+# Tycho's own state and config. Repo-bounded, unlike the above: `.tycho/` under some other
+# tree is another project's ledger or a scratch directory, and neither is this verdict's
+# business. Reported on this repo's own turn, an out-of-repo write is `scope_drift`'s to
+# flag — the same bound `_is_source_path` draws, and for the same reason it had to.
+_STATE_DIR = ".tycho"
+_CONFIG_NAME = ".tycho.toml"
 
 # Where the `prepare-commit-msg` trailer hook lives. A directory rather than a filename: a
 # `core.hooksPath` inside the repo puts it somewhere else entirely, and every git hook in a
@@ -68,15 +72,27 @@ def _normalize(path: str) -> str:
 
 
 def _is_protected(path: str) -> bool:
-    """True for a file that is Tycho, or the wiring that makes Tycho run."""
+    """True for a file that is Tycho, or the wiring that makes Tycho run.
+
+    Hook configs count wherever they are (`--global` puts one in `$HOME`); Tycho's own state
+    and the git hooks count only inside this repo. Caught on Tycho's own turn: a smoke test
+    ran `mkdir -p "$SCRATCH/repo/.tycho"` against a throwaway tree under `/tmp`, and a check
+    that matched `.tycho` in any path called that tampering with the record it was writing.
+    """
     p = _normalize(path)
     if not p:
         return False
-    if _STATE_DIR in p.split("/"):
+    # An unexpanded variable is not a path. `written_paths` already drops `> $OUT` for this
+    # reason; a token like `$SCRATCH/repo/.tycho` names a directory only the shell knows.
+    if "$" in p:
+        return False
+    if any(p == tail or p.endswith("/" + tail) for tail in _HOOK_CONFIG_TAILS):
         return True
-    if any(p == tail or p.endswith("/" + tail) for tail in _PROTECTED_TAILS):
+    if not _is_in_repo(p):
+        return False  # another tree's Tycho, or a scratch dir — not this verdict's business
+    if _STATE_DIR in p.split("/") or p == _CONFIG_NAME or p.endswith("/" + _CONFIG_NAME):
         return True
-    return any(d in p or p.startswith(d.lstrip("./")) for d in _HOOK_DIRS)
+    return any(p.startswith(d) or f"/{d}" in p for d in _HOOK_DIRS)
 
 
 def _tokens(cmd: str) -> list[str]:
