@@ -53,32 +53,37 @@ def _install_cursor(repo: Path) -> str:
     return _status("cursor", "stop hook", path, command, existed, changed)
 
 
-def _install_codex(repo: Path) -> str:
+def _install_codex(repo: Path, scope: str = spelling.REPO) -> str:
     """Codex shares Claude's hooks shape: `hooks.<Event>` is a list of matcher-groups, and
     its output wire schema clones Claude's. One write, so the
     .bak doesn't churn — same reason `_install_claude` batches its keys.
+
+    Both scopes go through here: CODEX_HOME/hooks.json takes the same schema as the repo-local
+    file, and the only difference is the stand-down guard on the command.
     """
-    path = config_path(repo, "codex")
+    path = config_path(repo, "codex", scope)
     data = _load(path)
     hooks = _hooks_of(data, path)
-    command = spelling.hook_command()
+    command = spelling._command_for_scope("hook", scope, "codex")
     groups, existed = _strip_claude_tycho(_groups_of(hooks, "Stop", path))
     groups.append({"hooks": [{"type": "command", "command": command}]})
     hooks["Stop"] = groups
-    ss_command = _command_for("session-start")
+    ss_command = spelling._command_for_scope("session-start", scope, "codex")
     ss_groups, ss_existed = _strip_claude_tycho(_groups_of(hooks, "SessionStart", path))
     ss_groups.append({"hooks": [{"type": "command", "command": ss_command}]})
     hooks["SessionStart"] = ss_groups
     changed = _write(path, {**data, "hooks": hooks})
-    state.write_install(repo, "codex", command)
-    hook_line = _status("codex", "Stop hook", path, command, existed, changed)
-    ss_line = _status("codex", "SessionStart hook", path, ss_command, ss_existed, changed)
+    if scope == spelling.REPO:
+        state.write_install(repo, "codex", command)
+    label = "codex" if scope == spelling.REPO else "codex (global)"
+    hook_line = _status(label, "Stop hook", path, command, existed, changed)
+    ss_line = _status(label, "SessionStart hook", path, ss_command, ss_existed, changed)
     # Writing the file is only half an install on Codex — it shows the hooks to a human once
     # and runs nothing until they approve. Said here because this is the moment the user is
     # looking; `tycho doctor` re-reports it for anyone who scrolled past.
     trust_line = (
-        "codex: approve the hooks when Codex next starts here — it won't run them until you do"
-        if spelling.codex_untrusted(repo) else ""
+        f"{label}: approve the hooks when Codex next starts — it won't run them until you do"
+        if spelling.codex_untrusted(repo, scope) else ""
     )
     return "\n".join(filter(None, (hook_line, ss_line, trust_line)))
 
@@ -132,25 +137,26 @@ export const TychoPlugin = async ({{ client, directory }}) => {{
     return _status("opencode", "session.idle + session.created plugin", path, shlex.join(command), existed, changed)
 
 
-def _uninstall_codex(repo: Path) -> str:
+def _uninstall_codex(repo: Path, scope: str = spelling.REPO) -> str:
     """Remove the Stop and SessionStart hooks — only ours, in one write."""
-    path = repo / ".codex" / "hooks.json"
+    path = config_path(repo, "codex", scope)
+    label = "codex" if scope == spelling.REPO else "codex (global)"
     if not path.exists():
-        return "codex: nothing to remove (no config)"
+        return f"{label}: nothing to remove (no config)"
     data = _load(path)
     hooks = _hooks_of(data, path)
     groups, had_hook = _strip_claude_tycho(_groups_of(hooks, "Stop", path))
     ss_groups, had_ss = _strip_claude_tycho(_groups_of(hooks, "SessionStart", path))
     if not had_hook and not had_ss:
-        return "codex: nothing to remove"
+        return f"{label}: nothing to remove"
     _prune(data, hooks, "Stop", groups)  # mutates `hooks` in place…
     merged = _prune(data, hooks, "SessionStart", ss_groups)  # …then the second key
     _write(path, merged)
     lines = []
     if had_hook:
-        lines.append(f"codex: removed Stop hook → {path}")
+        lines.append(f"{label}: removed Stop hook → {path}")
     if had_ss:
-        lines.append(f"codex: removed SessionStart hook → {path}")
+        lines.append(f"{label}: removed SessionStart hook → {path}")
     return "\n".join(lines)
 
 

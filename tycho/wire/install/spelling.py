@@ -163,10 +163,19 @@ def _is_tycho_owned(command: object) -> bool:
     )
 
 
-def config_path(repo: Path, name: str) -> Path:
-    """Where `name`'s repo-local config lives. Resolved from the same root as `.tycho/`, or
-    `doctor` run from a subdirectory would find the root's install record but look for the
-    harness config beside itself."""
+def config_path(repo: Path, name: str, scope: str = REPO) -> Path:
+    """Where `name`'s config lives for this scope. Repo scope resolves from the same root as
+    `.tycho/`, or `doctor` run from a subdirectory would find the root's install record but
+    look for the harness config beside itself.
+
+    Codex reads a user-level `hooks.json` in CODEX_HOME under the same schema as the repo-local
+    one — confirmed by asking Codex itself (`hooks/list` over the app-server reports it as
+    `source: "user"` next to the `source: "project"` entries), which is also the only way to
+    tell "not read" from "read but not yet trusted"."""
+    if scope == GLOBAL:
+        if name != "codex":
+            raise ValueError(f"no user-level config path for {name}")  # claude has claude_dir
+        return harness_mod.home("codex") / "hooks.json"
     return state.root_for(repo) / {
         "claude": ".claude/settings.json",
         "cursor": ".cursor/hooks.json",
@@ -175,14 +184,14 @@ def config_path(repo: Path, name: str) -> Path:
     }[name]
 
 
-def codex_untrusted(repo: Path) -> bool:
-    """Does Codex still owe this repo's Stop hook an approval?
+def codex_untrusted(repo: Path, scope: str = REPO) -> bool:
+    """Does Codex still owe this Stop hook an approval?
 
-    Codex (checked against 0.146.0, CLI and the desktop app) will not run a project hook it
-    hasn't been shown to a human: the first session after one appears prints "N hooks need
-    review before they can run" and runs nothing until approved. `.codex/hooks.json` on its
-    own therefore verifies nothing, and every other signal doctor has — the file is there, the
-    command resolves — says it's fine. The approval is persisted only as a
+    Codex (checked against 0.146.0, CLI and the desktop app) will not run a hook it hasn't
+    been shown to a human: the first session after one appears prints "N hooks need review
+    before they can run" and runs nothing until approved. A `hooks.json` on its own therefore
+    verifies nothing, and every other signal doctor has — the file is there, the command
+    resolves — says it's fine. The approval is persisted only as a
     `[hooks.state."<config path>:<event>:<group>:<hook>"]` entry in CODEX_HOME/config.toml,
     so its absence is the one readable trace of "installed but never armed".
 
@@ -191,7 +200,7 @@ def codex_untrusted(repo: Path) -> bool:
     (the entry pins a hash of the command we'd have to recompute) still reads as trusted.
     """
     config = harness_mod.home("codex") / "config.toml"
-    prefix = f"{config_path(repo, 'codex')}:stop:"
+    prefix = f"{config_path(repo, 'codex', scope)}:stop:"
     try:
         table = tomllib.loads(config.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -206,20 +215,32 @@ def codex_untrusted(repo: Path) -> bool:
 # bashisms: that's what Claude Code runs hook commands with.
 # ponytail: grepping for our own hook spelling is a cheap proxy for "repo-local owns this";
 # a false match only makes global stay quiet where repo-local is already wired.
-_GLOBAL_GUARD = (
-    'git rev-parse --show-toplevel >/dev/null 2>&1 || exit 0; '
-    'grep -qsE "tycho(\\.exe)? hook|tycho\\.cli hook" '
-    '"$(git rev-parse --show-toplevel)/.claude/settings.json" && exit 0; '
-)
+def _global_guard(name: str = "claude") -> str:
+    """The stand-down prefix for a user-level hook: no-op outside a git repo, and defer to a
+    repo that wired *this harness* itself — otherwise `tycho init` in a repo makes both the
+    repo hook and the machine-wide one fire, and the turn is verified (and relayed) twice.
+
+    Per harness because the repo-local config differs: a repo with `.claude/settings.json`
+    wired says nothing about whether its `.codex/hooks.json` is.
+    """
+    local = {"claude": ".claude/settings.json", "codex": ".codex/hooks.json"}[name]
+    return (
+        'git rev-parse --show-toplevel >/dev/null 2>&1 || exit 0; '
+        'grep -qsE "tycho(\\.exe)? hook|tycho\\.cli hook" '
+        f'"$(git rev-parse --show-toplevel)/{local}" && exit 0; '
+    )
 
 
-def _command_for_scope(subcommand: str, scope: str) -> str:
+_GLOBAL_GUARD = _global_guard("claude")
+
+
+def _command_for_scope(subcommand: str, scope: str, name: str = "claude") -> str:
     """The hook command for `subcommand`, guarded when going into the user-level config.
     Must still end in `" <subcommand>"` so `_is_ours` recognizes a guarded entry like a bare
     one. Routes Stop through `hook_command()`: that is the seam doctor's tests substitute,
     so it must stay the one source of the Stop command."""
     command = hook_command() if subcommand == "hook" else _command_for(subcommand)
-    return _GLOBAL_GUARD + command if scope == GLOBAL else command
+    return _global_guard(name) + command if scope == GLOBAL else command
 
 
 def claude_dir(repo: Path, scope: str = REPO) -> Path:

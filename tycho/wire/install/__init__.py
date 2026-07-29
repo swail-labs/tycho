@@ -45,7 +45,7 @@ from . import globalignore
 from .configfile import REFUSED, ConfigRefused
 from .githook import _install_git_hook, _uninstall_git_hook, git_hooks_dir as git_hooks_dir
 from .gitignore import _install_gitignore, _uninstall_gitignore
-from .installed import global_installed, installed_command
+from .installed import global_installed, globally_wired, installed_command
 from .harnesses import (
     _install_codex,
     _install_cursor,
@@ -357,8 +357,16 @@ def _present_for_user() -> list[str]:
 
 
 def _global_targets() -> list[Path]:
-    home = claude_dir(Path.cwd(), GLOBAL)
-    return [home / "settings.json", home / "commands", globalignore.path()]
+    """Every path `install` may write, for the consent prompt — only for harnesses this user
+    actually has, so a Claude-only machine is never asked to agree to a Codex path."""
+    present = _present_for_user()
+    paths = []
+    if "claude" in present:
+        home = claude_dir(Path.cwd(), GLOBAL)
+        paths += [home / "settings.json", home / "commands"]
+    if "codex" in present:
+        paths.append(config_path(Path.cwd(), "codex", GLOBAL))
+    return paths + [globalignore.path()]
 
 
 def _ask_install() -> bool:
@@ -399,10 +407,20 @@ def install(assume_yes: bool = False, confirm=None, ignore_confirm=None) -> list
                     "non-interactively"]
         if not ask():
             return ["tycho: setup skipped — nothing written."]
-    try:
-        lines = [_install_claude(repo, GLOBAL)]
-    except ConfigRefused as exc:
-        return [f"claude (global){REFUSED}{exc}"]
+    present = _present_for_user()
+    lines, wired = [], 0
+    for name, installer in (("claude", _install_claude), ("codex", _install_codex)):
+        if name not in present:
+            continue
+        try:
+            lines.append(installer(repo, GLOBAL))
+            wired += 1
+        except ConfigRefused as exc:
+            # One harness refusing must not cost the other its install: separate files,
+            # separate decisions. Only a clean sweep of refusals aborts.
+            lines.append(f"{name} (global){REFUSED}{exc}")
+    if not wired:
+        return lines
     want_ignore = ignore_confirm() if ignore_confirm is not None else True
     if want_ignore:
         try:
@@ -431,10 +449,11 @@ def uninstall_global() -> list[str]:
     line. Idempotent. Repo-local installs are deliberately untouched: separate decisions, and
     `tycho off` is the one that speaks about a repo."""
     lines = []
-    try:
-        lines.append(_uninstall_claude(Path.cwd(), GLOBAL))
-    except ConfigRefused as exc:
-        lines.append(f"claude (global){REFUSED}{exc}")
+    for name, remover in (("claude", _uninstall_claude), ("codex", _uninstall_codex)):
+        try:
+            lines.append(remover(Path.cwd(), GLOBAL))
+        except ConfigRefused as exc:
+            lines.append(f"{name} (global){REFUSED}{exc}")
     try:
         if (line := globalignore.uninstall()) is not None:
             lines.append(line)

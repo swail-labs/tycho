@@ -96,7 +96,18 @@ def diagnose(repo: Path) -> list[Finding]:
             "covered by the machine-wide install — no per-repo hook needed",
             "`tycho init` also adds the commit trailer and a shareable .tycho.toml",
         ))
-        wired = ["claude"]
+        # What the machine-wide install actually covers, read back from the configs — not a
+        # hardcoded "claude", or a Codex-only machine reports the wrong harness and skips the
+        # drift and trust checks that only apply to the one it really has.
+        wired = init_mod.globally_wired()
+        if "codex" in wired and init_mod.codex_untrusted(repo, init_mod.GLOBAL):
+            findings.append(Finding(
+                BROKEN,
+                "codex: the machine-wide Stop hook is installed but Codex hasn't been told to "
+                "trust it — until then it reads the config and runs nothing",
+                "open Codex (CLI or the desktop app) and approve the hooks review it shows "
+                "at startup — once, for every repo",
+            ))
     elif not wired:
         findings.append(Finding(
             INFO, "Tycho is not set up on this machine", "run `tycho install` (once, for every repo)"

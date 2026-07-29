@@ -76,7 +76,8 @@ TYCHO_AUTO=0            # only verify repos where you ran `tycho init`
 **Codex** (the CLI and the ChatGPT desktop app alike) — approve Tycho's hooks the first time
 Codex asks. Codex will not run a hook it hasn't shown you: the first session after one appears
 says *"hooks need review before they can run"*, and until you approve, the config is read and
-nothing runs. `tycho doctor` reports it if you skipped it.
+nothing runs. `tycho doctor` reports it if you skipped it. After `tycho install` that approval
+is once for the machine; after `tycho init` it's once per repo.
 
 ### Adopting a repo
 
