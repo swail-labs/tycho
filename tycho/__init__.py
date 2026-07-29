@@ -7,4 +7,4 @@ trust path. Free, open source (Apache 2.0), offline, no account needed.
 
 # The single source of truth for the version: Hatchling reads it, the release workflow asserts
 # the tag matches it, and the npm wrapper and Homebrew formula are stamped from that tag.
-__version__ = "0.2.0"
+__version__ = "0.2.0-rc.1"
