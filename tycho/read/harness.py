@@ -246,7 +246,7 @@ ENABLED = tuple(h for h in ALL if h.name in ENABLED_NAMES)
 VERIFIED_AGAINST = {
     "claude": {"version": "2.1.220", "probe": ("claude", "--version")},
     "cursor": {"version": "2026.07.09-a3815c0", "probe": ("cursor-agent", "--version")},
-    "codex": {"version": "0.144.4", "probe": ("codex", "--version")},
+    "codex": {"version": "0.145.0", "probe": ("codex", "--version")},
 }
 
 

@@ -22,6 +22,7 @@ FIXTURES = Path(__file__).parent / "fixtures"
 CLAUDE_FIXTURE = FIXTURES / "transcript_sample.jsonl"
 CURSOR_FIXTURE = FIXTURES / "cursor_transcript_sample.jsonl"
 CODEX_FIXTURE = FIXTURES / "codex_transcript_sample.jsonl"
+CODEX_PIN_FIXTURE = FIXTURES / "codex_attribution.jsonl"
 OPENCODE_FIXTURE = FIXTURES / "opencode_transcript_sample.json"
 CURSOR_STOP_PAYLOAD = FIXTURES / "cursor_stop_payload.json"
 
@@ -328,6 +329,28 @@ def test_codex_command_ignores_a_non_exec_tool_whose_payload_mentions_cmd():
     # that a run happened.
     patch = _exec_call('*** Begin Patch\n+run({cmd:"pytest -q"})\n*** End Patch', name="apply_patch")
     assert events._codex_command_of(patch) is None
+
+
+def test_codex_readers_hold_against_the_pinned_version(tmp_path: Path):
+    """The whole adapter contract against a transcript in the pinned version's shape — the
+    claim `VERIFIED_AGAINST["codex"]` makes. Reading one field is what the pin is for; this
+    reads every field the hook depends on, so the pin can only move when data moves with it.
+    """
+    evs = events.parse_codex(CODEX_PIN_FIXTURE)
+    runs = [e for e in evs if e.tool == "Bash"]
+    assert [e.input["command"] for e in runs] == ["pytest -q"]
+    # The exit status is what `command_execution` reads; it going missing is the silent
+    # failure this pin exists to catch.
+    assert runs[0].is_error is False
+    assert "77 passed" in (runs[0].result.get("stdout") or "")
+    assert {e.path for e in events.file_edits(evs)} == {"/repo/app.py"}
+    assert events.turn_start_codex(CODEX_PIN_FIXTURE) == events._epoch("2026-07-23T22:09:59.000Z")
+    assert [m.text for m in events.assistant_messages_codex(CODEX_PIN_FIXTURE)] == [
+        "Added the helper and ran the suite."
+    ]
+    got = events.attribution_codex(CODEX_PIN_FIXTURE)
+    assert (got.model, got.agent_version) == ("gpt-5.6-sol", "0.145.0")
+    assert got.session_id
 
 
 def test_codex_attribution_reads_model_version_and_session(tmp_path: Path):
