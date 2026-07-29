@@ -207,35 +207,76 @@ def brief(record: dict, signal: Signal | None = None) -> str:
     return "\n".join(lines)
 
 
-def render(record: dict, now: float | None = None) -> str:
+def render(record: dict, now: float | None = None, share: bool = False) -> str:
     """The full digest for one turn record (`tycho show`), ordered the way a developer
     reconstructs a turn: how far it got, what it changed, ran, said, what is still unproven.
 
     The age is in the header because `tycho show` falls back to the newest record there is,
     and an undated receipt reads as this turn's.
+
+    `share=True` is the paste-able variant (`tycho show --share`). A catch is the one thing
+    anyone screenshots, and the two jobs pull against each other: the claim beside the
+    evidence that contradicts it *is* the story, so it stays; the turn id, the age and the
+    directory tree are this machine's, not the story's, so they go. The footer is there
+    because the receipt lands where nobody has heard of an acceptance ladder.
     """
     turn = _text(record.get("id")) or "?"
     verdict = _text(record.get("verdict")) or "?"
     age = _ago(record.get("ended_at"), time.time() if now is None else now)
-    lines = [f"🔍 Tycho: turn {turn} · {verdict} · {age}", f"   ladder   {_ladder(record)}"]
+    header = f"🔍 Tycho: {verdict}" if share else f"🔍 Tycho: turn {turn} · {verdict} · {age}"
+    lines = [header, f"   ladder   {_ladder(record)}"]
     files = _files(record)
     if files:
-        shown = ", ".join(f"{f['path']}{'*' if f['kind'] == 'create' else ''}" for f in files[:12])
+        shown = ", ".join(
+            f"{_path(f['path'], share)}{'*' if f['kind'] == 'create' else ''}" for f in files[:12]
+        )
         extra = f" (+{len(files) - 12} more)" if len(files) > 12 else ""
         lines.append(_wrap("changed", f"{_count(len(files), 'file')}: {shown}{extra}"))
     shown_cmds, dropped = _shown_commands(_commands(record))
     for i, cmd in enumerate(shown_cmds):
-        lines.append(_wrap("ran" if i == 0 else "", f"{_trunc(cmd['cmd'], 96)} → {cmd['outcome']}"))
+        ran = f"{_trunc(_shared(cmd['cmd'], share), 96)} → {cmd['outcome']}"
+        lines.append(_wrap("ran" if i == 0 else "", ran))
     if dropped:
         lines.append(_wrap("", f"(+{dropped} more)"))
     for i, claim in enumerate(_claims(record)[:4]):
-        lines.append(_wrap("claimed" if i == 0 else "", f'"{_trunc(claim, 100)}"'))
+        lines.append(_wrap("claimed" if i == 0 else "", f'"{_trunc(_shared(claim, share), 100)}"'))
     unproven = _unproven_checks(record)
     for i, (name, _, evidence) in enumerate(unproven):
-        lines.append(_wrap("open" if i == 0 else "", f"{name} — {evidence}"))
+        lines.append(_wrap("open" if i == 0 else "", f"{name} — {_shared(evidence, share)}"))
     if not unproven and verdict == Verdict.VERIFIED.name:
         lines.append(_wrap("open", "nothing — every check that applied passed"))
+    if share:
+        lines.append(f"   {_TAGLINE}")
     return "\n".join(lines)
+
+
+# One line, so a stranger reading a screenshot knows what they're looking at and that no
+# model graded it. The "no LLM" half is the claim nobody else in this space can make.
+_TAGLINE = "tycho — deterministic, offline check of what the agent actually did. No LLM."
+
+
+def _path(path: str, share: bool) -> str:
+    """A path as the receipt should carry it. `tycho show` gives the whole thing, because its
+    reader is the person who has to go and fix it. A shared receipt gives the basename:
+    `pricing.py` tells the same story as `src/billing/internal/pricing.py` without publishing
+    a private tree to a timeline."""
+    return path.rsplit("/", 1)[-1] if share else path
+
+
+# Every path-shaped run, so `src/billing/pricing.py` in a check's own evidence collapses the
+# same way the `changed` line does. Without this the receipt shortened the path on one line
+# and published it in full two lines down — the promise on the flag, broken inside one screen.
+#
+# ponytail: one regex over the whole line, not a path parser. It also shortens the path part
+# of a URL, which on a receipt meant for a timeline is the same trade, not a bug.
+_PATHY = re.compile(r"[A-Za-z0-9_.\-]*(?:/[A-Za-z0-9_.\-]+)+")
+
+
+def _shared(text: str, share: bool) -> str:
+    """Free text as a shared receipt should carry it: paths down to their last segment."""
+    if not share:
+        return text
+    return _PATHY.sub(lambda m: m.group(0).rsplit("/", 1)[-1], text)
 
 
 def _ladder(record: dict) -> str:

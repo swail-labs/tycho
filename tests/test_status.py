@@ -156,6 +156,60 @@ def test_a_run_that_verified_nothing_is_not_green(tmp_path: Path, monkeypatch):
     assert status.line(tmp_path).startswith(colour._GREY)       # grey — nothing to report
 
 
+# --- the running catch count -------------------------------------------------
+#
+# The badge is the one Tycho surface that is on screen all day, and until now it only ever
+# said "still running". The count is what makes it say "still worth running" — but it is
+# read off the same tally `tycho count` prints, and it must not become a second, drifting
+# opinion about what a catch is.
+
+def test_the_badge_carries_the_running_catch_count(tmp_path: Path):
+    _install(tmp_path)
+    state.record_run(tmp_path, "claude", verdict="FAILED")
+    state.record_catch(tmp_path, "claude", "FAILED", [])
+
+    assert status.line(tmp_path) == "[TYCHO ✗ · 1 caught]"
+
+
+def test_a_repo_that_has_caught_nothing_shows_no_count(tmp_path: Path):
+    """"0 caught" is not an advertisement — it reads as a tool that has never worked, and
+    it is the state every new install starts in."""
+    _install(tmp_path)
+    state.record_run(tmp_path, "claude", verdict="VERIFIED")
+    state.record_catch(tmp_path, "claude", "VERIFIED", [])
+
+    assert status.line(tmp_path) == "[TYCHO ✓]"
+
+
+def test_the_count_agrees_with_tycho_count(tmp_path: Path):
+    """The badge and `tycho count` must never disagree about how many were caught: both are
+    FAILED + STALE, and an INDETERMINATE is a blind spot, not a save."""
+    _install(tmp_path)
+    for verdict in ("FAILED", "STALE", "INDETERMINATE", "VERIFIED"):
+        state.record_catch(tmp_path, "claude", verdict, [])
+    state.record_run(tmp_path, "claude", verdict="VERIFIED")
+
+    counts = state.counts(tmp_path)
+    assert counts["FAILED"] + counts["STALE"] == 2
+    assert status.line(tmp_path) == "[TYCHO ✓ · 2 caught]"
+
+
+def test_the_count_survives_a_badge_with_no_verdict_yet(tmp_path: Path):
+    # Installed, caught things before, this session hasn't verified anything yet.
+    _install(tmp_path)
+    state.record_catch(tmp_path, "claude", "FAILED", [])
+
+    assert status.line(tmp_path) == "[TYCHO · 1 caught]"
+
+
+def test_an_unreadable_tally_costs_the_count_not_the_badge(tmp_path: Path, monkeypatch):
+    _install(tmp_path)
+    state.record_run(tmp_path, "claude", verdict="VERIFIED")
+    monkeypatch.setattr(state, "counts", _boom)
+
+    assert status.line(tmp_path) == "[TYCHO ✓]"
+
+
 # --- refresh cadence so the badge settles on the verdict ----------
 
 def test_install_sets_a_status_refresh_interval(tmp_path: Path):

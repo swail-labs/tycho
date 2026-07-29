@@ -110,6 +110,8 @@ def build() -> argparse.ArgumentParser:
     sh = sub.add_parser("show", help=_COMMANDS["show"])
     sh.add_argument("turn", nargs="?", metavar="TURN",
                     help="a turn id from `tycho log` (default: the most recent turn)")
+    sh.add_argument("--share", action="store_true",
+                    help="a paste-able receipt: same evidence, without the turn id or your paths")
     bl = sub.add_parser("blame", help=_COMMANDS["blame"])
     bl.add_argument("target", metavar="PATH[:LINE]", help="the file (optionally :line) to blame")
     bl.add_argument("-n", "--limit", type=_count_arg, default=10, help="how many turns to show (default 10)")

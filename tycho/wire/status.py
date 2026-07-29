@@ -42,20 +42,40 @@ def line(repo: Path) -> str:
         return ""  # global override
     if not state.status_enabled(repo):
         return ""  # hidden in this repo — the hook still runs, only the badge hides
+    caught = _caught(repo)
     beat = state.last_run(repo) or {}
     if not isinstance(beat.get("at"), (int, float)):
-        return _badge(_GREY, "")  # installed, never fired here
+        return _badge(_GREY, "", caught)  # installed, never fired here
     verdict = beat.get("verdict")
     if verdict is None:
         # Mid-run is frost "verifying"; a completed run with nothing to verify is grey —
         # not a false "working forever".
-        return _badge(_FROST, _PENDING_MARK) if beat.get("pending") else _badge(_GREY, "")
+        return (_badge(_FROST, _PENDING_MARK, caught) if beat.get("pending")
+                else _badge(_GREY, "", caught))
     # An unrecognized verdict is no signal, and says so both ways rather than guessing a mark.
-    return _badge(_VERDICT_COLOUR.get(verdict, _GREY), _VERDICT_MARK.get(verdict, ""))
+    return _badge(_VERDICT_COLOUR.get(verdict, _GREY), _VERDICT_MARK.get(verdict, ""), caught)
 
 
-def _badge(colour: str, mark: str) -> str:
-    return _paint(colour, f"[TYCHO {mark}]" if mark else "[TYCHO]")
+def _caught(repo: Path) -> int:
+    """How many turns Tycho caught in this repo — the same FAILED + STALE that `tycho count`
+    calls caught, read off the same tally so the badge can't grow a second opinion. An
+    INDETERMINATE is a blind spot, not a save, and is deliberately not counted.
+
+    The badge is the one surface on screen all day, so it is also the only permanent answer
+    to "is this worth running". A tally we can't read costs the count, never the badge — the
+    liveness signal is the part that must never go missing.
+    """
+    try:
+        counts = state.counts(repo)
+        return counts["FAILED"] + counts["STALE"]
+    except Exception:
+        return 0
+
+
+def _badge(colour: str, mark: str, caught: int = 0) -> str:
+    # No "0 caught": on every fresh install it would read as a tool that has never worked.
+    head = f"TYCHO {mark}" if mark else "TYCHO"
+    return _paint(colour, f"[{head}{f' · {caught} caught' if caught > 0 else ''}]")
 
 
 def _paint(colour: str, text: str) -> str:

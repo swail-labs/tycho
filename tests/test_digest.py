@@ -292,6 +292,81 @@ def test_the_full_digest_says_so_when_nothing_is_outstanding():
     assert "nothing" in digest.render(rec()).splitlines()[-1]
 
 
+# --- the shareable receipt ----------------------------------------------------
+#
+# A catch is the one artefact anyone screenshots, so `--share` has two jobs at once, and
+# they pull against each other: keep the story legible to a stranger, and take the user's
+# repo out of it. Neither may quietly win.
+
+
+def test_a_shared_receipt_keeps_the_story():
+    """Claim beside the evidence that contradicts it — that *is* the screenshot. A share
+    view that redacted its way down to a verdict word would be safe and pointless."""
+    text = digest.render(
+        rec(verdict="FAILED",
+            stage=Stage.EXECUTED.value,
+            checks=[check("file_state", "FAIL", "the file it claimed to add is not on disk")],
+            claims=["Added the helper."]),
+        share=True,
+    )
+    assert "Added the helper." in text
+    assert "file_state — the file it claimed to add is not on disk" in text
+    assert "FAILED" in text
+
+
+def test_a_shared_receipt_drops_the_repo_layout():
+    """`src/billing/internal/pricing.py` names a private tree; `pricing.py` tells the same
+    story about the same turn without publishing where it lives."""
+    record_ = rec(files=0)
+    record_["files"] = [{"path": "src/billing/internal/pricing.py", "kind": "edit", "ts": 1.0}]
+
+    text = digest.render(record_, share=True)
+
+    assert "pricing.py" in text
+    assert "src/billing/internal" not in text
+
+
+def test_a_shared_receipt_drops_the_layout_from_the_evidence_too():
+    """The leak this closes: the `changed` line shortened the path, and the check's own
+    evidence published it in full two lines below — the flag's promise broken inside one
+    screen. Whatever names a path has to be collapsed everywhere it appears."""
+    text = digest.render(
+        rec(verdict="FAILED",
+            checks=[check("test_freshness", "STALE",
+                          "src/billing/internal/pricing.py edited after the last passing run")],
+            claims=["Rewrote src/billing/internal/pricing.py and it passes."],
+            commands=[{"cmd": ".venv/bin/python -m pytest tests/billing/test_pricing.py",
+                       "runner": True, "outcome": "failed"}]),
+        share=True,
+    )
+    assert "src/billing/internal" not in text
+    assert "tests/billing" not in text
+    assert ".venv/bin" not in text
+    # …and the evidence still says what happened.
+    assert "pricing.py edited after the last passing run" in text
+    assert "test_pricing.py → failed" in text
+
+
+def test_the_ordinary_receipt_still_carries_the_full_path():
+    """`tycho show` is for the person who has to go fix it — a basename would make them grep."""
+    record_ = rec(files=0)
+    record_["files"] = [{"path": "src/billing/internal/pricing.py", "kind": "edit", "ts": 1.0}]
+
+    assert "src/billing/internal/pricing.py" in digest.render(record_)
+
+
+def test_a_shared_receipt_drops_the_turn_id():
+    # A turn id means nothing off this machine and is the only per-session handle on the line.
+    assert "abc123" not in digest.render(rec(turn_id="abc123"), share=True)
+    assert "abc123" in digest.render(rec(turn_id="abc123"))
+
+
+def test_a_shared_receipt_says_what_tycho_is():
+    """Self-explanatory is the requirement: it goes on a timeline where nobody has heard of
+    the acceptance ladder, so the receipt has to introduce itself."""
+    assert "tycho" in digest.render(rec(verdict="FAILED"), share=True).lower().splitlines()[-1]
+
+
 # --- malformed records --------------------------------------------------------
 
 
