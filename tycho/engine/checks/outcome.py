@@ -24,6 +24,7 @@ from .cmdread import (
     _is_runner,
     _normalize_segment,
     _runner_segment,
+    _selects_whole_suite,
     _unwrap,
 )
 
@@ -182,6 +183,35 @@ def _captured_output(event) -> str:
     return "\n".join(text.splitlines()[-_SUMMARY_TAIL_LINES:]) if text else ""
 
 
+def _ran_less_than_claimed(event) -> bool:
+    """True when the command line claimed the whole suite and the run's own output says it
+    covered less than that.
+
+    Scope was read from argv alone, and argv is not where scope is decided — the real selection
+    is argv ∪ config ∪ env ∪ plugins ∪ conftest hooks. `pytest` with `addopts = -m "not slow"`
+    in `pytest.ini` reads as the whole suite, exits 0, and prints `1 passed, 1 deselected` over
+    the failing test the config muted. Reproduced exactly: a fabricated green out of a run whose
+    own output said what it had skipped, because nothing was reading that part of the output.
+
+    So take the census from the runner rather than inferring it from the command. Config is only
+    the most common route in; an env var, a plugin or a CI wrapper narrows the same way, and all
+    of them have to pass through the runner's own accounting to matter.
+
+    Only the *contradiction* counts. `pytest -m "not slow"` typed by hand is already narrowed in
+    argv, `_selection` already returns `_OPAQUE` for it, and flagging it here would cry wolf on
+    an ordinary honest choice.
+
+    ponytail: catches the runners that report a census (pytest, cargo, go). A runner that prints
+    only `OK (5 tests)` — phpunit with `<exclude>`, say — can still narrow invisibly. Comparing
+    collected counts between two identical commands in one session would cover those too; it
+    needs a baseline run in the session, so it is strictly more code for strictly less often.
+    """
+    segment = _runner_segment(event.input.get("command") or "")
+    if segment is None or _selects_whole_suite(segment) is not True:
+        return False
+    return runlog.narrowed(_captured_output(event))
+
+
 def _was_refused(event) -> bool:
     """True when the harness never let this command reach the shell.
 
@@ -245,6 +275,7 @@ def _unresolved_reds(events, commands) -> list:
             later.ts > e.ts
             and _outcome(later, commands) is False
             and _covers(_runner_segment(later.input.get("command") or ""), red_cmd)
+            and not _ran_less_than_claimed(later)
             for later in runs
         ):
             continue

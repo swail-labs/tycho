@@ -120,6 +120,51 @@ def test_command_execution_matches_windows_venv_python_exe():
     assert checks.command_execution(s).status == CheckStatus.PASS
 
 
+def test_command_execution_whole_suite_that_deselected_is_not_a_green():
+    # `addopts = -m "not slow"` in pytest.ini mutes the failing test, `pytest` exits 0, and argv
+    # still reads as the whole suite. Captured from a real run of exactly that setup.
+    s = make_session(events=[bash(
+        "pytest -q", 100.0, is_error=False,
+        result={"stdout": "1 passed, 1 deselected, 1 warning in 0.01s\n"},
+    )])
+    r = checks.command_execution(s)
+    assert r.status == CheckStatus.UNSUPPORTED and r.blocking
+    assert "part of it was excluded" in r.evidence
+
+
+def test_command_execution_narrowing_named_on_the_command_line_is_honest():
+    # The contradiction is the finding, not the narrowing. `-m` is visible in argv, so this is
+    # an ordinary honest run and must not be flagged.
+    s = make_session(events=[bash(
+        'pytest -q -m "not slow"', 100.0, is_error=False,
+        result={"stdout": "1 passed, 1 deselected in 0.01s\n"},
+    )])
+    assert checks.command_execution(s).status == CheckStatus.PASS
+
+
+def test_command_execution_cargo_zero_filtered_out_is_a_clean_green():
+    # cargo prints `0 filtered out` on every green whole-suite run — reading `\d` there would
+    # call every cargo run narrowed.
+    s = make_session(events=[bash(
+        "cargo test", 100.0, is_error=False,
+        result={"stdout": "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured;"
+                          " 0 filtered out; finished in 0.00s\n"},
+    )])
+    assert checks.command_execution(s).status == CheckStatus.PASS
+
+
+def test_narrowed_green_does_not_supersede_an_earlier_red():
+    # Run the suite, see red, add a config exclusion, re-run: same argv, green, and the red
+    # is still unresolved because the second run covered less than the first.
+    s = make_session(events=[
+        bash("pytest -q", 100.0, is_error=True),
+        bash("pytest -q", 200.0, is_error=False,
+             result={"stdout": "1 passed, 1 deselected in 0.01s\n"}),
+    ])
+    assert checks._unresolved_reds(s.events, s.commands)
+    assert checks._last_green_run_ts(s) is None
+
+
 def test_command_execution_masked_by_pipe_is_unsupported():
     # `pytest | tail` exits with tail's status, so is_error=False is a phantom green. No
     # output was captured, so there's nothing to fall back to: UNSUPPORTED, never PASS.

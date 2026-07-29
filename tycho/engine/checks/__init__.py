@@ -96,6 +96,7 @@ from .outcome import (  # noqa: E402
     _exec_run_for as _exec_run_for,
     _last_green_run_ts as _last_green_run_ts,
     _outcome as _outcome,
+    _ran_less_than_claimed as _ran_less_than_claimed,
     _runner_events as _runner_events,
     _status_is_masked as _status_is_masked,
     _unresolved_reds as _unresolved_reds,

@@ -6,7 +6,8 @@ from ...model import CheckResult, CheckStatus, Session
 from .cmdread import _runner_segment
 from .common import _r, _scope, _short
 from .outcome import (
-    _exec_run_for, _outcome, _runner_events, _status_is_masked, _unresolved_reds, _was_refused,
+    _exec_run_for, _outcome, _ran_less_than_claimed, _runner_events, _status_is_masked,
+    _unresolved_reds, _was_refused,
 )
 
 
@@ -59,5 +60,14 @@ def command_execution(session: Session) -> CheckResult:
             CheckStatus.UNSUPPORTED,
             f"`{red}` reported an error earlier this {_scope(session)} and was never re-run —"
             f" `{cmd}` passed but is a different command, so it can't stand in for it",
+        )
+    if _ran_less_than_claimed(last):
+        return _r(
+            "command_execution",
+            CheckStatus.UNSUPPORTED,
+            f"`{cmd}` reads as the whole suite but its own output says part of it was excluded"
+            " — the selection came from config or the environment rather than the command, so"
+            " Tycho can't say this green covers the suite",
+            blocking=True,
         )
     return _r("command_execution", CheckStatus.PASS, f"`{cmd}` ran without error{via}")

@@ -79,6 +79,36 @@ _SUCCESS = re.compile(
 )
 
 
+# The runner's own census of what it did *not* run. `[1-9]` again, and for the same reason
+# inverted: cargo prints `0 filtered out` on every green whole-suite run, so `\d` here would
+# call every cargo run narrowed.
+#
+# Pinned to captured output like everything else in this file:
+#   pytest   `1 passed, 1 deselected, 1 warning in 0.01s`
+#   cargo    `test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out;`
+#   go       `ok  \tprobe\t0.144s [no tests to run]`
+_NARROWED = re.compile(
+    r"""
+      \b[1-9]\d*\ deselected\b              # pytest: markers or keywords excluded tests
+    | \b[1-9]\d*\ filtered\ out\b           # cargo
+    | \[no\ tests\ to\ run\]                # go
+    | \bno\ tests\ ran\b                    # pytest, when the filter excluded everything
+    | \bcollected\ 0\ items\b               # pytest, when nothing matched at all
+    """,
+    re.MULTILINE | re.VERBOSE,
+)
+
+
+def narrowed(text: str) -> bool:
+    """True when the runner's own output says it ran less than everything it collected.
+
+    Read alongside the command line, never on its own — see `_ran_less_than_claimed`. On its
+    own this says nothing wrong: a narrowed run is a perfectly honest thing to do, and most
+    of them are narrowed on the command line where argv already shows it.
+    """
+    return bool(text) and bool(_NARROWED.search(_ANSI.sub("", text)))
+
+
 def outcome(text: str) -> bool | None:
     """True = runner reported failures, False = success, None = no recognized summary.
 
