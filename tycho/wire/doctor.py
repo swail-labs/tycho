@@ -288,7 +288,11 @@ def _harness_drift(wired: list[str]) -> list[Finding]:
     findings: list[Finding] = []
     for name in wired:
         pinned = harness_mod.VERIFIED_AGAINST.get(name)
-        if not pinned:
+        if not pinned or not pinned["probe"]:
+            # A pin with `probe: None` is a harness that ships no version to ask for
+            # (OpenCode). Its contract is still pinned and still re-verified by hand; there is
+            # just nothing to compare against here, which is the same "can't tell" silence
+            # `_probe_version` returns for a missing binary.
             continue
         installed = _probe_version(pinned["probe"])
         if installed is None or pinned["version"] in installed:
