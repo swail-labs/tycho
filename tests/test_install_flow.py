@@ -255,6 +255,42 @@ def test_the_old_global_flag_still_works(tmp_path, monkeypatch, user_home, git_h
     assert init_mod.global_installed() is False
 
 
+def test_init_upgrades_the_repo_hooks_a_machine_wide_install_stands_down_for(
+    tmp_path: Path, user_home, git_home
+):
+    """The 0.1.x upgrade path. A repo wired under the old schema, then `install.sh` runs the
+    machine-wide `tycho install` — but the global hook defers to any repo that carries its own
+    (`_GLOBAL_GUARD`), so the stale local hooks are still what fires. `init` has to rewire and
+    restamp them; adopting the repo and leaving them alone left doctor reporting HOOK OUTDATED
+    forever, with a remedy that cleared nothing.
+    """
+    repo = repo_at(tmp_path)
+    init_mod.init(repo, only="claude", assume_yes=True)
+    stamp = repo / ".tycho" / "install.json"
+    stamp.write_text(json.dumps({**json.loads(stamp.read_text()), "schema": state.SCHEMA - 1}))
+    init_mod.install(confirm=lambda: True)
+    assert state.installed_schema(repo) != state.SCHEMA, "the stale stamp is the premise"
+
+    lines = init_mod.init(repo, assume_yes=True)
+
+    assert state.installed_schema(repo) == state.SCHEMA
+    assert any("claude" in ln for ln in lines), "must say it rewired the harness, not just adopt"
+
+
+def test_init_still_only_adopts_a_repo_with_no_hooks_of_its_own(
+    tmp_path: Path, user_home, git_home
+):
+    """The other half: nothing local to upgrade means global is the only thing running here,
+    and a second set of repo hooks would fire twice per turn."""
+    init_mod.install(confirm=lambda: True)
+    repo = repo_at(tmp_path)
+
+    lines = init_mod.init(repo, assume_yes=True)
+
+    assert "tycho" not in (repo / CLAUDE).read_text() if (repo / CLAUDE).exists() else True
+    assert any("machine-wide install" in ln for ln in lines)
+
+
 def test_init_global_is_still_accepted_as_the_old_spelling(user_home: Path, git_home: Path):
     init_mod.init_global(confirm=lambda: True)
     assert init_mod.global_installed() is True
