@@ -741,7 +741,7 @@ def test_command_execution_sees_venv_interpreter_run():
         events=(_bash(".venv/bin/python -m pytest -q"),),
         edits=(),
         repo=Path("/repo"),
-        config=None,
+        config=Config(),
         files={},
         git=GitSnapshot(is_repo=False, head_sha=None, changed_paths=()),
     )
@@ -792,7 +792,7 @@ def test_git_state_counts_uncommitted_with_relative_paths():
         events=(),
         edits=(FileEdit(path="docs/x.md", ts=1.0, original=None, kind="edit"),),
         repo=Path("/repo"),
-        config=None,
+        config=Config(),
         files={"docs/x.md": FileState(path="docs/x.md", exists=True, mtime=1.0, current_text="hi")},
         git=GitSnapshot(is_repo=True, head_sha="abc", changed_paths=("docs/x.md",)),
     )

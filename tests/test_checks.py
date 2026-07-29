@@ -2,6 +2,7 @@
 
 
 import pytest
+import shlex
 from dataclasses import replace
 from pathlib import Path
 
@@ -1021,18 +1022,123 @@ def test_redirects_are_plumbing_not_arguments(cmd, expected):
 
 
 @pytest.mark.parametrize("cmd,expected", [
-    ("pytest -q", frozenset()),                       # empty selection is the whole suite
-    ("pytest -q tests/ tests/x.py", frozenset({"tests/", "tests/x.py"})),
-    ("pytest -n 4 tests/x.py", frozenset({"tests/x.py"})),   # `4` is xdist's, not a target
-    ("go test ./...", frozenset()),
-    ("pytest -k auth", checks._OPAQUE),               # narrowed, but not by a path
-    ("pytest --weirdflag value", None),               # unreadable stays unreadable
-    ("make test", None),                              # unmodelled family
+    ('pytest -q -m "not e2e"', ["pytest", "-q", "-m", "not e2e"]),
+    ("pytest -q -m 'not e2e'", ["pytest", "-q", "-m", "not e2e"]),
+    ('.venv/bin/python -m pytest -m "not e2e"', ["python", "-m", "pytest", "-m", "not e2e"]),
+    ('pytest --ignore "tests/dir with space" tests/x.py',
+     ["pytest", "--ignore", "tests/dir with space", "tests/x.py"]),
+    ("pytest -q tests/x.py", ["pytest", "-q", "tests/x.py"]),   # unquoted argv is unchanged
 ])
-def test_selection_reads_targets_not_just_breadth(cmd, expected):
-    """`_covers` needs *what* a run selected, not merely whether it was everything — the
-    tri-state above is the lossy view of this one."""
-    assert checks._selection(cmd) == expected, cmd
+def test_normalization_keeps_quoted_argument_boundaries(cmd, expected):
+    """A quoted value is one token, and normalization has to hand it on as one token.
+
+    Flattened, `-m "not e2e"` becomes `-m not e2e`: `-m` swallows `not` and `e2e` is left
+    looking like a positional, which is to say a test path that was never on the command line.
+    Every reader downstream — family, breadth, selection, `tycho exec` argv matching — reads
+    this string, so a boundary lost here is a phantom target invented for all of them.
+    """
+    assert shlex.split(checks._runner_segment(cmd)) == expected, cmd
+
+
+@pytest.mark.parametrize("cmd,paths,filters", [
+    ("pytest -q", frozenset(), frozenset()),          # empty selection is the whole suite
+    ("pytest -q tests/ tests/x.py", frozenset({"tests/", "tests/x.py"}), frozenset()),
+    ("pytest -n 4 tests/x.py", frozenset({"tests/x.py"}), frozenset()),  # `4` is xdist's
+    ("go test ./...", frozenset(), frozenset()),
+    ("pytest -k auth", frozenset(), frozenset({"-k auth"})),   # narrowed, but not by a path
+    ('pytest -m "not e2e"', frozenset(), frozenset({"-m not e2e"})),
+    ("pytest -m='not e2e'", frozenset(), frozenset({"-m not e2e"})),    # same filter, `=` form
+    ("pytest -k auth tests/x.py", frozenset({"tests/x.py"}), frozenset({"-k auth"})),
+    ("cargo test --lib", frozenset(), frozenset({"--lib"})),   # narrowing, but takes no value
+    ("pytest --lf", frozenset(), frozenset({"--lf"})),
+])
+def test_selection_reads_paths_and_filters_apart(cmd, paths, filters):
+    """`_covers` needs *what* a run selected, and the two halves narrow in opposite directions:
+    a path is the set a run was restricted *to*, a filter is a restriction *applied* to it.
+    Collapsing both into one opaque "narrowed" answer is what left every red undischargeable."""
+    assert checks._selection(cmd) == (paths, filters), cmd
+
+
+def test_identical_filters_cancel_so_a_full_rerun_discharges_a_red():
+    """The frozen-anchor bug. A project whose every run carries the same standing exclusion
+    could never discharge anything: both sides read as opaque, so the last green stayed pinned
+    to the session's first and the reported staleness was a constant."""
+    s = make_session(events=[
+        bash('pytest -m "not e2e" tests/x.py', 100.0, is_error=True),
+        bash('pytest -q -m "not e2e"', 200.0, is_error=False),
+    ])
+    assert checks._last_green_run_ts(s) == 200.0
+
+
+def test_a_standing_exclusion_declared_in_config_drops_out_of_both_sides():
+    """A project can mandate a marker exclusion on every run, so it narrows nothing *relative to
+    that project* — but only once it is declared. Undeclared it is an ordinary narrowing and has
+    to reject, or any run carrying a marker would launder itself into a whole-suite green."""
+    events = [
+        bash("pytest tests/x.py -k foo", 100.0, is_error=True),
+        bash('pytest -q -m "not e2e"', 200.0, is_error=False),
+    ]
+    assert checks._last_green_run_ts(make_session(events=events)) is None
+    declared = make_session(events=events, config=Config(standing_filters=('-m "not e2e"',)))
+    assert checks._last_green_run_ts(declared) == 200.0
+
+
+@pytest.mark.parametrize("declared", ['-m "not e2e"', "-m not e2e", '-m="not e2e"'])
+def test_a_standing_filter_is_matched_however_it_is_spelled(declared):
+    """The declaration is shell text and so is the command; `-m "not e2e"` and `-m=not e2e` are
+    the same filter, and a config that only matched one spelling would silently not apply."""
+    s = make_session(
+        events=[
+            bash("pytest tests/x.py -k foo", 100.0, is_error=True),
+            bash('pytest -q -m "not e2e"', 200.0, is_error=False),
+        ],
+        config=Config(standing_filters=(declared,)),
+    )
+    assert checks._last_green_run_ts(s) == 200.0
+
+
+def test_the_anchor_moves_as_later_greens_land():
+    """The reported bug in one assertion. The anchor pinned to the session's first green, so the
+    staleness delta the checks reported was a constant and re-running the suite could never
+    clear the verdict. It has to track the newest green that still covers the tree."""
+    config = Config(standing_filters=('-m "not e2e"',))
+    events = [
+        bash("pytest tests/x.py -k foo", 100.0, is_error=True),
+        bash('pytest -q -m "not e2e"', 200.0, is_error=False),
+    ]
+    assert checks._last_green_run_ts(make_session(events=events, config=config)) == 200.0
+    events.append(bash('pytest -q -m "not e2e"', 300.0, is_error=False))
+    assert checks._last_green_run_ts(make_session(events=events, config=config)) == 300.0
+
+
+def test_a_standing_declaration_never_launders_a_stateful_selector():
+    """Declaring `--lf` standing does not make it mean a fixed set. The green side stays strict
+    no matter what the config says, because config cannot make last run's failures knowable."""
+    s = make_session(
+        events=[
+            bash("pytest tests/x.py", 100.0, is_error=True),
+            bash("pytest -q --lf", 200.0, is_error=False),
+        ],
+        config=Config(standing_filters=("--lf",)),
+    )
+    assert checks._last_green_run_ts(s) is None
+
+
+@pytest.mark.parametrize("red,green", [
+    ("pytest --lf tests/x.py", "pytest -q --lf"),    # same spelling, different set each run
+    ("pytest tests/x.py", "pytest -q --lf"),
+    ("pytest --sw tests/x.py", "pytest -q --sw"),
+    ("pytest tests/x.py", "pytest -q --stepwise"),
+])
+def test_a_stateful_selector_on_the_green_never_cancels(red, green):
+    """`--lf` names last run's failures, not a fixed set, so two runs spelling it identically
+    did not run the same tests. Cancelling it would read a green over a shrinking subset as a
+    green over the suite — a fabricated pass, which is the one thing this must never do."""
+    s = make_session(events=[
+        bash(red, 100.0, is_error=True),
+        bash(green, 200.0, is_error=False),
+    ])
+    assert checks._last_green_run_ts(s) is None, f"{green!r} must not supersede {red!r}"
 
 
 @pytest.mark.parametrize("cmd", [

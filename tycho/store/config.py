@@ -25,6 +25,9 @@ class Config:
     relay_enabled: bool = False
     override_enabled: bool = False
     rewrite_enabled: bool = False
+    # Filters every run in this project carries, so they narrow nothing relative to it. Shell
+    # text as typed on the command line, e.g. `-m "not e2e"`.
+    standing_filters: tuple[str, ...] = ()
 
 
 def path(repo: Path) -> Path:
@@ -44,6 +47,7 @@ def load(repo: Path) -> Config:
     relay = data.get("relay", {}).get("enabled", False)
     override = data.get("override", {}).get("enabled", False)
     rewrite = data.get("rewrite", {}).get("enabled", False)
+    standing = data.get("tests", {}).get("standing", [])
     return Config(
         scope_include=tuple(scope.get("include", [])),
         disabled_checks=tuple(disabled),
@@ -51,6 +55,7 @@ def load(repo: Path) -> Config:
         relay_enabled=bool(relay),
         override_enabled=bool(override),
         rewrite_enabled=bool(rewrite),
+        standing_filters=tuple(standing),
     )
 
 
@@ -73,6 +78,7 @@ def render(
     relay_enabled: bool = False,
     override_enabled: bool = False,
     rewrite_enabled: bool = False,
+    standing_filters: tuple[str, ...] = (),
 ) -> str:
     """The canonical `.tycho.toml`, with the current values filled in."""
     return (
@@ -95,6 +101,15 @@ def render(
         "[checks]\n"
         "# Check names to disable entirely (rarely needed), e.g. \"command_execution\".\n"
         f"disable = {_toml_array(disabled)}\n"
+        "\n"
+        "[tests]\n"
+        "# Runner filters this project puts on every test run, as you'd type them, e.g.\n"
+        '# standing = ["-m \\"not e2e\\""]. A filter narrows a run, so a green carrying one\n'
+        "# normally can't stand in for a red that ran without it. Declared here it is dropped\n"
+        "# from both sides before they're compared, because it restricts both alike. Declare\n"
+        "# ONLY what genuinely runs every time — anything else here hides a real narrowing.\n"
+        "# Selectors naming last run's failures (--lf, --sw) are never cancelled even if listed.\n"
+        f"standing = {_toml_array(standing_filters)}\n"
         "\n"
         "[relay]\n"
         "# Feed a non-VERIFIED verdict back to the agent so it keeps working until VERIFIED\n"
@@ -148,6 +163,7 @@ def _rewrite_with(repo: Path, **changed) -> None:
         "relay_enabled": cur.relay_enabled,
         "override_enabled": cur.override_enabled,
         "rewrite_enabled": cur.rewrite_enabled,
+        "standing_filters": cur.standing_filters,
     }
     _write(repo, render(**{**fields, **changed}))
 
