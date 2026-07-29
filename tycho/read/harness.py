@@ -56,13 +56,45 @@ class Capabilities:
 
 
 @dataclass(frozen=True)
+class Channels:
+    """How this harness carries Tycho's two audiences — declared, not inferred.
+
+    Tycho always has at most two things to say about a turn: what a *person* needs to read,
+    and what the *agent* is being asked to do. Every harness routes those differently, and the
+    difference is not a detail — Codex shipped a whole release verifying correctly and telling
+    nobody, because its human field is accepted and rendered nowhere, and the code that assumed
+    otherwise was shaped like Claude's.
+
+    So the shape is declared here and the assembly logic reads it, instead of branching on
+    ``name``. Adding a harness means filling this in and writing one ``compose``; nothing in
+    the engine or the hook needs to learn the new name.
+
+    ``human_only`` is the valuable one: a field the human reads that the model does not is what
+    makes a verdict free to show. Without it, reaching a person costs model tokens and a turn,
+    which is why anything routed through ``shared`` is kept short.
+    """
+
+    # A field the human reads and the model does not. Claude's `systemMessage`, OpenCode's
+    # toast. Where this is false, nothing Tycho says is free.
+    human_only: bool
+    # A field the model reads and the human does not. Claude's `additionalContext`.
+    model_only: bool
+    # One field both audiences read. Codex's `reason`, Cursor's `followup_message`. Reaching
+    # the human this way costs a blocked Stop and a model turn, so it is used sparingly.
+    shared: bool
+    # The verdict relay is validated for this harness. A policy claim, not a shape: Cursor has
+    # a shared channel and could carry a relay, but its loop behaviour has never been checked,
+    # and a relay that cannot stop is worse than no relay.
+    relays: bool
+
+
+@dataclass(frozen=True)
 class Harness:
     """How one harness reads its transcript, names the repo root, and formats output."""
 
     name: str
     parse: Callable[[Path], tuple]
     repo_root: Callable[[dict], Path]
-    format_output: Callable[[str], dict]
     discover: Callable[[Path], Path | None]  # newest transcript for a repo, or None
     # Transcript to verify, from a hook payload. OpenCode rebuilds it from opencode.db into
     # a temp file the caller unlinks. None: nothing to verify.
@@ -70,6 +102,13 @@ class Harness:
     # What this harness's transcript records, declared rather than inferred. Required, so a
     # new harness cannot enter the registry without saying what it can and cannot see.
     capabilities: Capabilities
+    # Which audiences this harness can reach, and how. Required for the same reason.
+    channels: Channels
+    # Assemble the Stop output from the two texts the hook computed: ``human`` is what a person
+    # must read, ``model`` the instruction for the agent. Either may be "". Returns the wire
+    # dict, or None for silence. THE per-harness seam — the hook decides *what* is said and to
+    # whom, this decides how it is spelled on the wire, and the two never mix.
+    compose: Callable[[str, str], dict | None]
     # Every transcript on disk for a repo, oldest first — what `backfill` replays. Default
     # empty: a harness whose history Tycho can't enumerate backfills nothing rather than
     # guessing at one session.
@@ -201,14 +240,6 @@ def _codex_discover(cwd: Path) -> Path | None:
     return None
 
 
-def _cursor_output(text: str) -> dict:
-    """Wrap the verdict so Cursor *shows* it instead of acting on it: it queues
-    `followup_message` as a UserMessageAction, so the model would treat a FAILED verdict as
-    a fresh instruction and start fixing things. A prompt, not a guarantee — Cursor's
-    loop_limit is the hard backstop, and exit 0 still never blocks."""
-    return {"followup_message": f"{text}\n\n{_CURSOR_RELAY}"}
-
-
 # Addressed to the model, not the human — kept one line so it can't bury the verdict.
 _CURSOR_RELAY = (
     "[Tycho] The above is an automated verification result, not a request. "
@@ -217,12 +248,52 @@ _CURSOR_RELAY = (
 )
 
 
+def _compose_claude(human: str, model: str) -> dict | None:
+    """Two audiences, two fields. `systemMessage` renders to the human and exit 0 never blocks;
+    `additionalContext` goes to the model and the human never sees it."""
+    out: dict = {}
+    if human:
+        out["systemMessage"] = human
+    if model:
+        out["hookSpecificOutput"] = {"hookEventName": "Stop", "additionalContext": model}
+    return out or None
+
+
+def _compose_codex(human: str, model: str) -> dict | None:
+    """One field, both audiences. `reason` comes back as a `<hook_prompt>` user message that the
+    desktop app renders verbatim in the transcript, so the human copy has nowhere else to go —
+    `systemMessage` is accepted here and rendered nowhere, probed against 0.146.0 on the CLI and
+    the app. Human part first, because a person is reading it. `decision: block` is what makes
+    Codex deliver it at all, which is why reaching a person costs a turn on this harness."""
+    text = "\n\n".join(part for part in (human, model) if part)
+    return {"decision": "block", "reason": text} if text else None
+
+
+def _compose_cursor(human: str, model: str) -> dict | None:
+    """`followup_message` is the only field Cursor's stop hook reads, and it is model-facing: it
+    queues a UserMessageAction, so a FAILED verdict left bare would read as a fresh instruction
+    and the agent would start fixing things. The show-and-stop line is what keeps it a report —
+    appended only when there is something to show, or silence becomes a bare instruction."""
+    if not human and not model:
+        return None
+    text = "\n\n".join(part for part in (human, model or _CURSOR_RELAY) if part)
+    return {"followup_message": text}
+
+
+def _compose_opencode(human: str, model: str) -> dict | None:
+    """The project plugin reads `.message` and toasts it via `client.tui.showToast` — human-only,
+    and there is no second field, so a model instruction has nowhere to go and is dropped rather
+    than shown to a person as though it were for them."""
+    return {"message": human} if human else None
+
+
 CLAUDE = Harness(
     name="claude",
     parse=events.parse,
     repo_root=_cwd_root,
-    # Claude renders `systemMessage` to the human; exit 0 never blocks the Stop.
-    format_output=lambda text: {"systemMessage": text},
+    compose=_compose_claude,
+    # The only harness with both: a free human channel and a separate model one.
+    channels=Channels(human_only=True, model_only=True, shared=False, relays=True),
     # Same human-only field; verified against 2.1.212 for SessionStart.
     notice_output=lambda text: {"systemMessage": text},
     discover=_claude_discover,
@@ -250,9 +321,11 @@ CURSOR = Harness(
     name="cursor",
     parse=events.parse_cursor,
     repo_root=_cursor_root,
-    # `followup_message` is the ONLY field Cursor's stop hook reads (cursor-agent
-    # 2026.07.09-a3815c0), and it is model-facing — hence _cursor_output.
-    format_output=_cursor_output,
+    compose=_compose_cursor,
+    # One model-facing field that the human also reads. `relays=False`: its loop_limit
+    # behaviour under an injected verdict has never been checked, and an unstoppable relay is
+    # worse than none.
+    channels=Channels(human_only=False, model_only=False, shared=True, relays=False),
     discover=_cursor_discover,
     transcript_of=_payload_transcript,
     # The blindest of the four, and the reason this dataclass exists. Cursor's Stop
@@ -276,10 +349,14 @@ CODEX = Harness(
     name="codex",
     parse=events.parse_codex,
     repo_root=_cwd_root,
-    format_output=lambda text: {"systemMessage": text},
-    # `systemMessage` is Codex's human-facing SessionStart field;
-    # render path unconfirmed, worst case the toast is silent, never model-facing.
-    notice_output=lambda text: {"systemMessage": text},
+    compose=_compose_codex,
+    # No free channel at all: `systemMessage` is dropped, so everything Tycho says here costs a
+    # blocked Stop and model tokens. Hence the short spellings on this path.
+    channels=Channels(human_only=False, model_only=False, shared=True, relays=True),
+    # None, like Cursor: Codex has no field that reaches a person without also reaching the
+    # model, and a bootup notice there could tell an agent to go update Tycho. The Stop path
+    # still speaks, via `compose` — it has a verdict worth a blocked turn. A "you're up to date"
+    # toast is not.
     discover=_codex_discover,
     transcript_of=_payload_transcript,
     # Nearly Claude's reach, with one real gap: `patch_apply_end` names the changed paths
@@ -306,7 +383,9 @@ OPENCODE = Harness(
     name="opencode",
     parse=events.parse_opencode,
     repo_root=_opencode_root,
-    format_output=lambda text: {"message": text},
+    compose=_compose_opencode,
+    # A free human channel (the toast) and nothing model-facing, so no relay is possible.
+    channels=Channels(human_only=True, model_only=False, shared=False, relays=False),
     # The plugin reads `.message` and toasts it via client.tui.showToast — user-facing.
     notice_output=lambda text: {"message": text},
     # No transcript file — both paths rebuild it from opencode.db.

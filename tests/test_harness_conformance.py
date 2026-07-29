@@ -94,30 +94,79 @@ def test_transcript_of_reads_the_payload(name: str):
 # One renamed key here and verdicts stop reaching humans while the hook still exits 0 — the
 # exact silent failure this file exists for.
 
-_OUTPUT_KEYS = {
+# The field on each harness's wire format that actually reaches a person. Codex's was
+# `systemMessage` for a release — a field it accepts and renders nowhere — which is why this
+# table is asserted against `compose` output rather than trusted as documentation.
+_HUMAN_KEYS = {
     "claude": "systemMessage",
-    "codex": "systemMessage",
+    "codex": "reason",
     "cursor": "followup_message",
     "opencode": "message",
 }
 
 
-def test_format_output_carries_the_verdict_under_the_documented_key(name: str):
-    out = harness_mod.BY_NAME[name].format_output("Tycho: FAILED")
-    assert list(out) == [_OUTPUT_KEYS[name]], f"{name}: unexpected output keys {list(out)}"
-    assert "Tycho: FAILED" in out[_OUTPUT_KEYS[name]]
+def test_compose_puts_the_verdict_where_a_person_will_see_it(name: str):
+    out = harness_mod.BY_NAME[name].compose("Tycho: FAILED", "")
+    assert out, f"{name}: composed nothing from a verdict"
+    key = _HUMAN_KEYS[name]
+    assert key in out, f"{name}: no {key} in {list(out)}"
+    assert "Tycho: FAILED" in out[key]
 
 
-def test_notice_output_when_present_uses_the_same_channel(name: str):
+def test_compose_is_silent_when_there_is_nothing_to_say(name: str):
+    """Silence is a real outcome — a routine turn must produce no output at all, not an empty
+    field the harness then renders as a blank message."""
+    assert harness_mod.BY_NAME[name].compose("", "") is None
+
+
+def test_compose_routes_the_model_text_by_the_declared_channels(name: str):
+    """Where the model's copy lands, and — more importantly — where it must not.
+
+    A harness with a model-only field keeps the two audiences apart. One with only a shared
+    field puts them in the same string, which is allowed; what is never allowed is model-facing
+    instructions appearing on a harness that had somewhere private to put them.
+    """
     harness = harness_mod.BY_NAME[name]
-    if harness.notice_output is None:
-        # Cursor suppresses notices deliberately: its only output field is model-facing, and
-        # a notice reaching the model could commission a self-update.
-        assert name == "cursor"
+    out = harness.compose("HUMAN", "MODEL")
+    assert out is not None
+    human_field = out[_HUMAN_KEYS[name]]
+    if harness.channels.model_only:
+        assert "MODEL" not in human_field, f"{name}: model text leaked into the human's field"
+        assert "MODEL" in json.dumps(out), f"{name}: model text went nowhere"
+    elif harness.channels.shared:
+        assert "MODEL" in human_field, f"{name}: shared channel dropped the model text"
+    else:
+        # No model channel at all (OpenCode): the instruction is dropped rather than shown to a
+        # person as though it were addressed to them.
+        assert "MODEL" not in json.dumps(out)
+
+
+def test_every_enabled_harness_can_reach_a_human(name: str):
+    """The promise a verifier lives or dies by. Codex passed every other test in this file while
+    reaching nobody: it read transcripts correctly, produced correct verdicts, recorded them, and
+    emitted them into a field that harness drops. Enabled means someone is relying on it."""
+    harness = harness_mod.BY_NAME[name]
+    if name not in harness_mod.ENABLED_NAMES:
+        return
+    assert harness.channels.human_only or harness.channels.shared, (
+        f"{name} is enabled but declares no channel that reaches a person"
+    )
+
+
+def test_notice_output_only_where_the_human_channel_is_free(name: str):
+    """A bootup notice may only go somewhere the model cannot read it.
+
+    Codex and Cursor reach a person solely through a field the model also reads, and an agent
+    told a newer Tycho exists may go install it — a verifier rewriting itself mid-turn on its own
+    advice. A verdict is worth that channel's cost; "you're up to date" is not.
+    """
+    harness = harness_mod.BY_NAME[name]
+    if not harness.channels.human_only:
+        assert harness.notice_output is None, f"{name}: notice would reach the model"
         return
     out = harness.notice_output("Tycho is watching")
-    assert list(out) == [_OUTPUT_KEYS[name]]
-    assert "Tycho is watching" in out[_OUTPUT_KEYS[name]]
+    assert list(out) == [_HUMAN_KEYS[name]]
+    assert "Tycho is watching" in out[_HUMAN_KEYS[name]]
 
 
 # --- golden parse -----------------------------------------------------------

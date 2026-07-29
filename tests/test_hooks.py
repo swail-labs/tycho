@@ -48,8 +48,8 @@ def test_repo_root_from_cwd_vs_workspace_roots():
 
 
 def test_output_channels_differ():
-    assert "systemMessage" in harness.CLAUDE.format_output("x")
-    assert "followup_message" in harness.CURSOR.format_output("x")
+    assert "systemMessage" in harness.CLAUDE.compose("x", "")
+    assert "followup_message" in harness.CURSOR.compose("x", "")
 
 
 # --- cursor Stop payload (pinned to cursor-agent 2026.07.09-a3815c0) ---------
@@ -72,7 +72,7 @@ def test_cursor_stop_payload_yields_repo_root_and_transcript():
 def test_cursor_stop_output_carries_only_followup_message():
     # Cursor's stop validator reads `followup_message` and nothing else — any other
     # key is silently dropped, which is how the old `user_message` reached nobody.
-    out = harness.CURSOR.format_output("Tycho: PASSED")
+    out = harness.CURSOR.compose("Tycho: PASSED", "")
     assert list(out) == ["followup_message"]
     assert isinstance(out["followup_message"], str)  # validator: must be a string
 
@@ -80,7 +80,7 @@ def test_cursor_stop_output_carries_only_followup_message():
 def test_cursor_followup_leads_with_verdict_then_tells_model_to_stop():
     # Cursor replays the verdict into the model loop, so it has to carry its own stop
     # condition — otherwise a FAILED verdict reads as "go fix this" and the agent works on.
-    out = harness.CURSOR.format_output("Tycho: FAILED — tests did not run")["followup_message"]
+    out = harness.CURSOR.compose("Tycho: FAILED — tests did not run", "")["followup_message"]
     assert out.startswith("Tycho: FAILED — tests did not run")  # verdict first, never buried
     assert "end your turn now" in out and "verbatim" in out
 
@@ -631,7 +631,13 @@ def test_hook_run_cursor_produces_followup_message(tmp_path: Path):
     assert out is not None and "Tycho:" in out["followup_message"]
 
 
-def test_hook_run_codex_produces_system_message(tmp_path: Path):
+def test_hook_run_codex_reaches_the_user_with_the_relay_off(tmp_path: Path):
+    """The default configuration, and the one that was broken for a whole release.
+
+    This asserted `systemMessage` before, which Codex accepts and renders nowhere — so it passed
+    while every Codex user with the relay off (the default) saw nothing at all, on every turn.
+    Reaching a person there means blocking, because `reason` is the only field that arrives.
+    """
     payload = json.dumps({
         "hook_event_name": "Stop",
         "turn_id": "turn-current",
@@ -639,7 +645,12 @@ def test_hook_run_codex_produces_system_message(tmp_path: Path):
         "transcript_path": str(CODEX_FIXTURE),
     })
     out = hook.run(payload)
-    assert out is not None and "Tycho:" in out["systemMessage"]
+    assert out is not None, "codex turn produced no output at all"
+    assert "systemMessage" not in out, "systemMessage reaches nobody on codex"
+    assert out["decision"] == "block"
+    assert "Tycho:" in out["reason"]
+    # And the model is told this is a report, or a status line becomes unrequested work.
+    assert "end your turn now" in out["reason"]
 
 
 def test_hook_run_fails_open_on_bad_input():

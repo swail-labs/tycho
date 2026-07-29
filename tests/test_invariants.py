@@ -235,6 +235,55 @@ def test_the_layers_only_import_downward():
     assert not upward, f"a layer imported sideways or upward: {sorted(upward)}"
 
 
+def test_behaviour_never_branches_on_a_harness_name(tmp_path):
+    """Per-harness behaviour reads a declaration, never a name.
+
+    A name check is invisible to the next harness added: it silently takes the else-branch,
+    which is how Codex shipped a release verifying every turn correctly and telling nobody —
+    the human channel it was handed was Claude-shaped, and nothing in the suite could tell.
+    A `Capabilities` / `Channels` field is a required constructor argument, so adding a harness
+    forces an answer instead of inheriting someone else's.
+
+    Two places are exempt because naming harnesses *is* their job. `read/harness.py` is the
+    registry. `wire/install/` is the other one: each harness keeps its hooks in a different file
+    under a different schema, and there is no declaration that would make `.claude/settings.json`
+    and `.codex/hooks.json` the same write. What this guards is the path where a name check
+    actually cost us — reading a transcript and getting a verdict in front of a person.
+    """
+    import ast
+
+    import tycho
+    from tycho.read import harness as harness_mod
+
+    root = Path(tycho.__file__).parent
+    # Codex is the only harness with a hook-trust handshake, and `doctor` is where a
+    # not-yet-approved hook is reported. There is nothing to declare until a second harness
+    # has the concept — at which point this becomes a capability instead of an entry here.
+    allowed = {("doctor.py", "codex")}
+    offenders = []
+    for source in sorted(root.rglob("*.py")):
+        parts = source.relative_to(root).parts
+        if parts[-2:] == ("read", "harness.py") or "install" in parts:
+            continue
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Compare):
+                continue
+            names = {
+                n.value for n in ast.walk(node)
+                if isinstance(n, ast.Constant) and isinstance(n.value, str)
+                and n.value in harness_mod.BY_NAME
+            }
+            for name in names:
+                if (source.name, name) in allowed:
+                    continue
+                offenders.append(f"{source.name}:{node.lineno} compares against {name!r}")
+    assert not offenders, (
+        "behaviour branched on a harness name instead of a declared capability or channel: "
+        f"{offenders}"
+    )
+
+
 def test_checks_are_pure_functions_of_the_session(tmp_path, no_network):
     """The seam that lets Pro/Enterprise swap the evidence source without touching a check.
 

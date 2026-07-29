@@ -74,6 +74,10 @@ source be swapped without touching a check.
 - **Harness-agnostic engine.** Checks run on a frozen, normalized `Session` and never learn
   which harness produced it. All harness-specific code lives in `read/harness.py` (the
   adapter) plus one `parse_*` reader in `read/events.py`.
+- **No `harness.name` branches outside the registry.** Behaviour that varies by harness reads a
+  declared `Capabilities` or `Channels` field instead. A name check is invisible to the next
+  harness added, which is how one of them ended up verifying correctly and telling nobody;
+  a declaration is a required constructor argument, so it gets answered.
 - **Immutable.** `Session` / `Event` / `FileEdit` are frozen; `read.session.gather()` is the
   only inbound I/O — everything downstream is pure.
 
@@ -95,20 +99,32 @@ tycho harness eval
 
 The steps, each enforced by a test in `tests/test_harness_conformance.py`:
 
-1. Add an adapter in `read/harness.py` (detect, repo root, transcript location, output
-   format) and a `Capabilities` declaration — the honest list of what the harness records.
-   It is a required field, so it cannot be skipped.
-2. Add a `parse_*` reader in `read/events.py`.
-3. Add a Stop payload at `tests/fixtures/harness/<name>/stop_payload.json`, and name the
-   transcript in `tests/harness_assets.py`.
-4. Capture a real session — run the harness in a scratch repo, then
+1. Add an adapter in `read/harness.py` (detect, repo root, transcript location) plus two
+   required declarations, so neither can be skipped:
+   - `Capabilities` — the honest list of what the harness *records*.
+   - `Channels` — which audiences it can *reach*: a field only the human reads, a field only
+     the model reads, or one shared by both. This is the one people get wrong. Codex shipped a
+     release verifying every turn correctly and telling nobody, because its human-facing field
+     is accepted and rendered nowhere, and the code assumed Claude's shape. **Confirm where
+     your output actually lands before declaring it** — send a unique string through each field
+     and go look.
+2. Write `compose(human, model)` — the only per-harness output code. The hook decides *what*
+   is said and to whom; `compose` decides how it is spelled on that harness's wire, and returns
+   None for silence. Nothing else in the engine or the hook learns the new name: `_speak` and
+   the relay read the declarations, so a harness with only a shared channel automatically gets
+   the short spellings, the show-and-stop instruction, and no update notice.
+3. Add a `parse_*` reader in `read/events.py`.
+4. Add a Stop payload at `tests/fixtures/harness/<name>/stop_payload.json`, and name the
+   transcript in `tests/harness_assets.py`. Capture that payload too — an authored one is
+   missing whatever its author didn't know about.
+5. Capture a real session — run the harness in a scratch repo, then
    `python scripts/capture_harness.py <name> --repo /path/to/scratch`. Authored fixtures only
    prove what their author already believed; every reader bug found so far was a shape nobody
    would have invented. Entering `ENABLED_NAMES` requires a captured corpus.
-5. `pytest tests/test_harness_conformance.py --update-goldens`, then **read the diff** — that
+6. `pytest tests/test_harness_conformance.py --update-goldens`, then **read the diff** — that
    diff is the re-verification, and it is how a version bump is done from then on.
-6. Add a `VERIFIED_AGAINST` entry (`probe: None` is fine if the harness ships no version).
-7. `python scripts/harness_eval.py --update` to pin the initial floors.
+7. Add a `VERIFIED_AGAINST` entry (`probe: None` is fine if the harness ships no version).
+8. `python scripts/harness_eval.py --update` to pin the initial floors.
 
 `reach` is how much the harness records, not how well Tycho works: Cursor's 1/8 is a fact
 about Cursor, and no amount of work here moves it. It stays printed rather than hidden,

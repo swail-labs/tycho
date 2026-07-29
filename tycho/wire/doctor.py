@@ -297,8 +297,10 @@ def _transcript_finding(repo: Path) -> Finding:
     try:
         return Finding(OK, f"most recent session: {harness.name} ({path})")
     finally:
-        if harness.name == "opencode":
-            path.unlink(missing_ok=True)  # a rebuilt temp file — discovery hands it over
+        # A rebuilt temp file — discovery hands it over. Declared, not named, so the next
+        # harness Tycho rebuilds for lands on the right side of this without editing it.
+        if not harness.capabilities.transcript_is_file:
+            path.unlink(missing_ok=True)
 
 
 def _harness_drift(wired: list[str]) -> list[Finding]:

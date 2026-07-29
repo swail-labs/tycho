@@ -96,8 +96,10 @@ def run(stdin_text: str) -> dict | None:
         state.record_run(repo, harness.name)
         return None
     finally:
-        # OpenCode's transcript is a rebuilt temp file.
-        if harness.name == "opencode":
+        # A harness whose transcript Tycho rebuilds handed us a temp file to clean up; one that
+        # maintains its own must never have it deleted. `transcript_is_file` is that distinction,
+        # declared, so a new harness lands on the right side without editing this line.
+        if not harness.capabilities.transcript_is_file:
             Path(transcript).unlink(missing_ok=True)
     report = render(verdict, results)
     # Adverse only: `additionalContext` renders verbatim, so a full copy would reshow the
@@ -117,7 +119,50 @@ def run(stdin_text: str) -> dict | None:
     if not body and not update:
         return None  # routine turn — say nothing at all
     # `lstrip`: the suffixes lead with blank lines, and on a silent turn there is no body.
-    return harness.format_output((body + override_notice + update).lstrip("\n"))
+    return _speak(harness, (body + override_notice + update).lstrip("\n"),
+                  continuation=bool(payload.get("stop_hook_active")))
+
+
+def _reaches_a_human(harness) -> bool:
+    """Can anything Tycho says get in front of a person on this harness?"""
+    return harness.channels.human_only or harness.channels.shared
+
+
+def _speak(harness, human: str, continuation: bool = False) -> dict | None:
+    """Say ``human`` to the user, however this harness lets us.
+
+    The decision to speak was already made, harness-independently, by `digest.speaks` and its
+    novelty decay — so a routine turn is silent everywhere and a notable one is delivered
+    everywhere. This only spells it out on the wire.
+
+    On a harness with a free human channel that costs nothing. On one where the only field is
+    shared with the model (Codex, Cursor) it costs a blocked Stop and a model turn, so the model
+    is told plainly that this is a report to relay and not work to do — the same trick Cursor has
+    always used, for the same reason. Without this, Codex verified every turn and told nobody:
+    the digest went out on a field that harness accepts and renders nowhere.
+    """
+    if not human or not _reaches_a_human(harness):
+        return None
+    if harness.channels.human_only:
+        return harness.compose(human, "")
+    # Shared channel: saying anything blocks the Stop, and the agent's reply then produces
+    # another one. `stop_hook_active` is the harness telling us this Stop *is* that reply — say
+    # it once and let the turn end. Novelty decay would usually go quiet on the second pass
+    # anyway, but "usually" is not a leash, and a verifier that can bounce a turn indefinitely
+    # is worse than one that says something once. Observed: two identical blocks for one user
+    # turn, two model replies, on a Codex turn that only had one thing to report.
+    if continuation:
+        return None
+    return harness.compose(human, _SHOW_AND_STOP)
+
+
+# Addressed to the model on a shared channel: the verdict is a report, not an instruction, and
+# acting on it would turn a status line into unrequested work.
+_SHOW_AND_STOP = (
+    "[TYCHO] The above is an automated verification result, not a request from the user. Show it "
+    "to them verbatim and end your turn now — do not edit files, run commands, or act on it "
+    "unless they ask."
+)
 
 
 def _digest_output(
@@ -140,10 +185,13 @@ def _digest_output(
 
 
 def _update_suffix(harness) -> str:
-    """The update notice as a human-only suffix, or "". Gated on `notice_output`: where it is
-    None (Cursor) `format_output` is model-facing and a notice there could commission a
-    self-update. Cache-only — the Stop path never hits the network."""
-    if harness.notice_output is None:
+    """The update notice as a human-only suffix, or "".
+
+    Gated on a *free* human channel. Where the only way to reach a person also reaches the model
+    (Codex, Cursor), this stays empty: an agent told a newer Tycho exists may go install it, and
+    a verifier that rewrites itself mid-turn on its own advice is the one update nobody asked
+    for. Cache-only — the Stop path never hits the network."""
+    if not harness.channels.human_only:
         return ""
     try:
         from . import version as version_mod
@@ -158,7 +206,7 @@ def _override_notice(repo: Path, harness, verdict, results) -> str:
     """Human-only line on an OVERRIDDEN verdict: the checks set aside, and how to veto. Names
     only the ones *actually* applied (the same intersection `_apply_overrides` uses), so an
     override against a check that happened to PASS isn't listed as though it mattered."""
-    if verdict is not Verdict.OVERRIDDEN or harness.notice_output is None:
+    if verdict is not Verdict.OVERRIDDEN or not _reaches_a_human(harness):
         return ""
     try:
         disputed = {m.get("check") for m in state.overrides(repo)} - set(state.vetoed(repo))
@@ -225,7 +273,7 @@ def _relay_output(
     one, kept for the fallback in `_digest_output`. `update` rides the human channel only — the
     model must not be told to go update Tycho.
     """
-    if harness.name not in ("claude", "codex") or not state.relay_enabled(repo):
+    if not harness.channels.relays or not state.relay_enabled(repo):
         return None
     if verdict.name in ("VERIFIED", "OVERRIDDEN"):  # proven good or agent-authorized — end the turn
         state.reset_relay_streak(repo)
@@ -236,25 +284,20 @@ def _relay_output(
         # oscillates (inject N, rest 1, inject N…). Only a real user prompt resets it.
         return None
     attempt = state.bump_relay_streak(repo)
-    human = f"{_verdict_block(agent_report)}\n\n{_MANAGE}"
-    if harness.name == "codex":
-        # One field, both audiences: `reason` is injected as a `<hook_prompt>` user message,
-        # which the app renders verbatim in the transcript as though the user had typed it.
-        # `systemMessage` is accepted and rendered nowhere (probed against 0.146.0, CLI and
-        # app), so the human copy has nowhere else to go and everything here is paid for twice
-        # — once in tokens, once in screen. Human part first, and the model's instruction kept
-        # to the short spelling, because a person is reading it too. No `update`: on this
-        # harness that text would reach the model, which must never be told to update Tycho.
-        return {
-            "decision": "block",
-            "reason": f"{human}\n\n{_relay_guard(attempt, cap, short=True)}",
-        }
-    guard = _relay_guard(attempt, cap, override_on=state.override_enabled(repo))
-    return {
-        "systemMessage": f"{human}{update}",
-        "hookSpecificOutput": {"hookEventName": "Stop", "additionalContext":
-                               f"{agent_report}\n\n{guard}"},
-    }
+    human = f"{_verdict_block(report)}\n\n{_MANAGE}"
+    override_on = state.override_enabled(repo)
+    if harness.channels.human_only:
+        # A free human channel: the person gets the verdict at no cost to the turn, and the
+        # model gets its own copy — every adverse line, uncapped, since nothing competes for
+        # that space. `update` rides the human side only.
+        return harness.compose(
+            f"{human}{update}",
+            f"{agent_report}\n\n{_relay_guard(attempt, cap, override_on=override_on)}",
+        )
+    # One field for both. The model's instruction goes in its short spelling because a person is
+    # reading it too, and `update` is left out entirely: it would reach the model, which must
+    # never be told to go update Tycho.
+    return harness.compose(human, _relay_guard(attempt, cap, override_on=override_on, short=True))
 
 
 _MANAGE = ("[TYCHO] Relay is on — the agent keeps working until VERIFIED. "
@@ -276,29 +319,47 @@ def _relay_cap(results) -> int:
     return 1
 
 
-def _verdict_block(agent_report: str, limit: int = 0) -> str:
-    """The verdict as a person reads it: the header, then the lines that name something.
+def _verdict_block(report: str, limit: int = 0) -> str:
+    """The verdict as a person reads it: the header, every finding, and as much context as fits.
 
-    Capped on every harness, not just the one where the cost was visible. Twenty lines of "no
-    test files touched this session" is a worse read wherever it lands; Claude simply made it
-    free to print, so nobody noticed. `tycho show` prints the block in full, which is the right
-    home for the long form because it is asked for.
+    Built from the *full* render, not the adverse-only one, because the lines that found nothing
+    are still context a reader wants — "not a git repository" explains a check that would
+    otherwise look skipped. Two rules on top:
 
-    Nothing is filtered by kind: the caller passes the adverse-only render, and when nothing is
-    adverse that falls back to every line. Selecting harder here would drop the one advisory
-    that matters — an UNSUPPORTED `tool_call_provenance` naming a claim with no tool call behind
-    it, which is a caught fabrication wearing a non-adverse status.
+    * **A finding is never dropped.** However many there are, they all appear. Truncating one to
+      save space would hide a failure, which is the single trade this must never make.
+    * **The tail is capped.** A verdict no check could name renders ten variants of "nothing here
+      to read", and the tenth is worth no more than the fourth. Overflow points at `tycho show`,
+      which prints the block in full because there it was asked for.
+
+    Same block on every harness. Codex is where the length was visible — it comes back as a
+    full-width message bubble in the transcript — but it was never *free* on Claude either, and
+    a person switching between them must not get a different read of the same turn.
     """
     limit = limit or _BLOCK_MAX_LINES
-    header, *lines = agent_report.splitlines() or [""]
-    kept = lines[:limit]
-    if len(lines) > limit:
-        kept.append(f"  \u2026and {len(lines) - limit} more \u2014 `tycho show` for the full block")
+    header, *lines = report.splitlines() or [""]
+    findings = {i for i, ln in enumerate(lines) if ln.lstrip().startswith(_FINDING_MARKS)}
+    budget = max(0, limit - len(findings))
+    kept = []
+    for i, line in enumerate(lines):
+        if i in findings:
+            kept.append(line)
+        elif budget:
+            kept.append(line)
+            budget -= 1
+    dropped = len(lines) - len(kept)
+    if dropped:
+        kept.append(f"  \u2026and {dropped} more \u2014 `tycho show` for the full block")
     return "\n".join([header, *kept])
 
 
-# Enough to act on, few enough that the block stays a glance. Overflow points at `tycho show`.
-_BLOCK_MAX_LINES = 4
+# Enough that a real turn is never truncated — there are ten checks and a turn with more than
+# six lines worth reading is one to open `tycho show` for anyway.
+_BLOCK_MAX_LINES = 6
+
+
+# `render`'s marks for FAIL/STALE and INDETERMINATE — a check that found something.
+_FINDING_MARKS = ("\u2717", "?")
 
 
 def _relay_guard(attempt: int, cap: int, override_on: bool = False, short: bool = False) -> str:
