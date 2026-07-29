@@ -264,6 +264,7 @@ def test_init_global_is_still_accepted_as_the_old_spelling(user_home: Path, git_
 
 
 def test_a_repo_is_told_once_that_tycho_is_verifying_it(tmp_path: Path, user_home, git_home):
+    init_mod.install(confirm=lambda: True)
     repo = repo_at(tmp_path)
     first = hook_mod._first_seen(repo)
     assert first and "verifying this repo" in first[0]
@@ -284,9 +285,17 @@ def test_nothing_offers_to_set_up_a_repo_it_is_already_verifying(tmp_path, user_
 
 def test_a_repo_that_ran_init_is_not_told(tmp_path: Path, user_home, git_home):
     """They set it up themselves — announcing it is noise."""
+    init_mod.install(confirm=lambda: True)
     repo = repo_at(tmp_path)
     init_mod.init(repo, only="claude", assume_yes=True)
     assert hook_mod._first_seen(repo) == []
+
+
+def test_nothing_is_announced_without_a_machine_wide_install(tmp_path: Path, user_home, git_home):
+    """The sentence names a machine-wide install, so it must not be said where there is none.
+    Caught by CI, not locally: this repo has a real install, so `repo_root` resolving to it
+    suppressed the notice and the whole class of case went untested."""
+    assert hook_mod._first_seen(repo_at(tmp_path)) == []
 
 
 # --- the repo-root fallback -------------------------------------------------

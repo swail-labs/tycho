@@ -307,8 +307,14 @@ def _first_seen(repo: Path) -> list[str]:
     and it carries the way out as well as the way in.
 
     Skipped where the user already knows: a repo with its own install was a deliberate act.
+
+    Gated on a machine-wide install actually existing, because the sentence *names* one. The
+    hook only runs when something wired it, so this is nearly always true — but "nearly
+    always" is how a verifier ends up asserting something it never checked.
     """
-    if state.read_install(repo) or state.announced(repo):
+    from .install import global_installed
+
+    if state.read_install(repo) or state.announced(repo) or not global_installed():
         return []
     state.mark_announced(repo)
     return [
