@@ -680,7 +680,7 @@ def test_run_checks_omits_test_checks_when_repo_has_no_tests():
     session = replace(session, has_tests=False)
     # tool_call_provenance is not a test check, so it still runs with no test suite.
     assert {r.name for r in engine.run_checks(session)} == {
-        "file_state", "git_state", "scope_drift", "tool_call_provenance"
+        "file_state", "git_state", "scope_drift", "tool_call_provenance", "verifier_integrity"
     }
 
 
