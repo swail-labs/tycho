@@ -198,8 +198,8 @@ def _ran_less_than_claimed(event) -> bool:
     of them have to pass through the runner's own accounting to matter.
 
     Only the *contradiction* counts. `pytest -m "not slow"` typed by hand is already narrowed in
-    argv, `_selection` already returns `_OPAQUE` for it, and flagging it here would cry wolf on
-    an ordinary honest choice.
+    argv, `_selection` already reports it as a filter and `_selects_whole_suite` is False, so
+    flagging it here would cry wolf on an ordinary honest choice.
 
     ponytail: catches the runners that report a census (pytest, cargo, go). A runner that prints
     only `OK (5 tests)` — phpunit with `<exclude>`, say — can still narrow invisibly. Comparing

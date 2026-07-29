@@ -10,6 +10,8 @@ from __future__ import annotations
 import re
 import shlex
 
+from typing import NamedTuple
+
 from .common import _is_test_path
 
 
@@ -569,9 +571,16 @@ def _covers(green: str | None, red: str | None) -> bool:
     work, reported as "a different command, so it can't stand in for it". That is the
     cried-wolf failure: a red nobody can discharge without starting a new session.
 
-    It still only ever loosens where containment is *provable*. An unreadable command, an
-    opaque selector (`-k`, `--lf`), a red that ran the whole suite, or a different runner
-    family all supersede nothing — the honest answer, not a fallback.
+    It still only ever loosens where containment is *provable*. An unreadable command, a
+    stateful selector (`--lf`) on the green, a filter the red did not carry, a red that ran the
+    whole suite, or a different runner family all supersede nothing — the honest answer, not a
+    fallback.
+
+    The two halves of a selection compare in opposite directions. Green has to have run over at
+    least the red's paths, and under no more than the red's filters: a filter the green added is
+    a slice of the suite it skipped, and a filter both carry restricts both alike, so it cancels.
+    That cancelling is what unfreezes a project whose every run carries a standing exclusion —
+    with both sides simply "narrowed", no green could ever discharge any red.
     """
     if green is None or red is None:
         return False
@@ -580,15 +589,21 @@ def _covers(green: str | None, red: str | None) -> bool:
     # Different runners are different suites: a green `pytest` says nothing about a red `npm test`.
     if _runner_family(green) is None or _runner_family(green) != _runner_family(red):
         return False
-    picked = _selection(green)
-    if picked is None or picked is _OPAQUE:
+    picked, covered = _selection(green), _selection(red)
+    if picked is None or covered is None:
         return False
-    if not picked:
-        return True  # green selected nothing in particular, which is everything
-    covered = _selection(red)
-    if covered is None or covered is _OPAQUE or not covered:
-        return False  # unreadable, opaque, or red *was* the whole suite — the narrowed-rerun lie
-    return all(any(_target_covers(p, c) for p in picked) for c in covered)
+    # `--lf` on the green names last run's failures, a set that shrinks as they get fixed. It
+    # cancels against nothing, not even the same spelling on the red. On the red it is fine:
+    # whatever subset it ran, a less filtered green still ran at least it.
+    if any(_is_stateful(f) for f in picked.filters):
+        return False
+    if not picked.filters <= covered.filters:
+        return False
+    if not picked.paths:
+        return True  # green restricted to no path in particular, which is the whole tree
+    if not covered.paths:
+        return False  # red was the whole tree and green was not — the narrowed-rerun lie
+    return all(any(_target_covers(p, c) for p in picked.paths) for c in covered.paths)
 
 
 def _target_covers(outer: str, inner: str) -> bool:
@@ -700,14 +715,35 @@ def _runner_family(segment: str) -> str | None:
     return None
 
 
-# Narrowed by something that is not a path: `-k auth` runs an unknown subset, so nothing but an
-# identical command or a whole-suite run can be shown to have covered it.
-_OPAQUE = object()
+# Selectors naming a set that is different on every run. `--lf` means "whatever failed last
+# time", so two runs spelling it identically did not run the same tests, and letting them
+# cancel would read a green over a shrinking subset as a green over the suite. Compared by
+# option name, so the ones carrying a value are caught too.
+_STATEFUL_OPTIONS = frozenset({
+    "--last-failed", "--lf", "--failed-first", "--ff", "--stepwise", "--sw",
+    "--onlyFailures", "--onlyChanged", "--changedSince",
+})
 
 
-def _selection(segment: str) -> frozenset[str] | object | None:
-    """What this run selected: a set of targets, empty for the whole suite, `_OPAQUE` when
-    narrowed by a non-path selector, None when the arguments can't be read.
+class Selection(NamedTuple):
+    """What a run selected, split by how the two halves narrow.
+
+    `paths` is the set the run was restricted *to* — empty means the whole tree. `filters` are
+    restrictions *applied* to whatever that is, as normalized `name value` tokens. They compare
+    in opposite directions, which is the whole point of keeping them apart: a green covers a red
+    when it ran over at least the red's paths and under no more than the red's filters.
+    """
+
+    paths: frozenset[str]
+    filters: frozenset[str]
+
+
+def _is_stateful(filt: str) -> bool:
+    return filt.split(" ", 1)[0] in _STATEFUL_OPTIONS
+
+
+def _selection(segment: str) -> Selection | None:
+    """What this run selected, or None when the arguments can't be read.
 
     None is an answer, not a failure mode: an unrecognized option followed by a bare word could
     be that option's value or a test selector. Callers treat None as "does not supersede".
@@ -724,6 +760,7 @@ def _selection(segment: str) -> frozenset[str] | object | None:
     whole = _WHOLE_SUITE_POSITIONALS[family]
 
     targets: set[str] = set()
+    filters: set[str] = set()
     tokens = _tokens(segment)[span[1]:]
     i = 0
     while i < len(tokens):
@@ -738,7 +775,20 @@ def _selection(segment: str) -> frozenset[str] | object | None:
             continue
         name = token.split("=", 1)[0]
         if name in narrowing:
-            return _OPAQUE
+            # Normalized to one spelling so `-m="not e2e"` and `-m "not e2e"` are one filter.
+            # A value-taking selector with nothing after it is malformed, and guessing what it
+            # selected is exactly the invention this reader refuses to make.
+            if "=" in token:
+                filters.add(f"{name} {token.split('=', 1)[1]}")
+            elif name in value_opts:
+                if i + 1 >= len(tokens):
+                    return None
+                filters.add(f"{name} {tokens[i + 1]}")
+                i += 1
+            else:
+                filters.add(name)  # narrows on its own, e.g. `cargo test --lib`
+            i += 1
+            continue
         if "=" in token or name in flag_opts:  # self-contained, never consumes the next token
             i += 1
             continue
@@ -750,7 +800,7 @@ def _selection(segment: str) -> frozenset[str] | object | None:
         if i + 1 < len(tokens) and not tokens[i + 1].startswith("-"):
             return None
         i += 1
-    return frozenset(targets)
+    return Selection(frozenset(targets), frozenset(filters))
 
 
 def _selects_whole_suite(segment: str) -> bool | None:
@@ -758,4 +808,4 @@ def _selects_whole_suite(segment: str) -> bool | None:
     picked = _selection(segment)
     if picked is None:
         return None
-    return picked is not _OPAQUE and not picked
+    return not picked.paths and not picked.filters
