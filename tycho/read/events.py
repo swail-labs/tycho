@@ -441,6 +441,16 @@ def _codex_output_text(value: object) -> str:
     return ""
 
 
+# A real exit status, in the two places a Codex rollout records one. `Process exited with
+# code N` is Codex's own framing on a structured tool result — line-anchored and taken
+# first-match, because the header precedes the `Output:` block and a command that prints the
+# same phrase (grepping a log, echoing a transcript) must not overwrite the recorded status.
+_CODEX_EXIT_PATTERNS = (
+    re.compile(r'"exit_code"\s*:\s*(\d+)'),
+    re.compile(r"^Process exited with code (\d+)$", re.MULTILINE),
+)
+
+
 def _codex_is_error(value: object) -> bool | None:
     if isinstance(value, dict):
         if isinstance(value.get("exit_code"), int):
@@ -449,11 +459,11 @@ def _codex_is_error(value: object) -> bool | None:
     if isinstance(value, list):
         return next((r for item in value if (r := _codex_is_error(item)) is not None), None)
     if isinstance(value, str):
-        match = re.search(r'"exit_code"\s*:\s*(\d+)', value)
-        if match:
-            return int(match.group(1)) != 0
-        # Codex rollouts omit the exec exit code, so fall back to the runner's own summary.
-        # ("Script completed" is not success — it appears for failed commands too.)
+        for pattern in _CODEX_EXIT_PATTERNS:
+            if match := pattern.search(value):
+                return int(match.group(1)) != 0
+        # The freeform shape records no status at all, so fall back to the runner's own
+        # summary. ("Script completed" is not success — it appears for failed commands too.)
         return runlog.outcome(value)
     return None
 

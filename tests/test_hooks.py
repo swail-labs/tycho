@@ -335,6 +335,35 @@ def test_codex_reader_distinguishes_current_pytest_completion_output():
     assert events._codex_is_error("Script completed\n1 failed, 76 passed in 1.07s") is True
 
 
+def test_codex_reads_the_exit_status_the_structured_result_records():
+    """Codex frames a structured tool result with its own `Process exited with code N`. It is
+    a real exit status — the only one a Codex rollout carries — and it was being ignored in
+    favour of guessing the outcome from the runner's prose."""
+    passed = "Wall time: 1.1 seconds\nProcess exited with code 0\nOutput:\n77 passed in 1.07s\n"
+    failed = "Wall time: 1.1 seconds\nProcess exited with code 1\nOutput:\n1 failed, 76 passed\n"
+    assert events._codex_is_error(passed) is False
+    assert events._codex_is_error(failed) is True
+    # Where it actually buys something: output no runner summary can classify. The prose
+    # fallback returns None here — "can't tell" — while the status is right there.
+    assert events._codex_is_error("Process exited with code 2\nOutput:\nruff: not found\n") is True
+    assert events._codex_is_error("Process exited with code 0\nOutput:\nAll checks passed!\n") is False
+
+
+def test_codex_exit_status_comes_from_the_header_not_the_command_output():
+    # The header precedes `Output:`, so a command that prints this phrase itself — grepping a
+    # log, echoing a transcript — must not overwrite the status Codex recorded.
+    text = (
+        "Process exited with code 0\nOutput:\n"
+        "$ grep -r 'exited' build.log\nProcess exited with code 1\n"
+    )
+    assert events._codex_is_error(text) is False
+
+
+def test_codex_falls_back_to_the_runner_summary_without_an_exit_status():
+    # The freeform shape records no status at all; the prose is all there is.
+    assert events._codex_is_error("Script completed\n1 failed, 76 passed in 1.07s") is True
+
+
 def test_codex_reader_keeps_the_runner_output_not_just_its_verdict():
     # The rollout carries the text; the reader used to distil is_error from it and drop it.
     # is_error is worthless once the shell masks the status — the engine must re-read output.
