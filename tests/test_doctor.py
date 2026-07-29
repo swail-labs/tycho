@@ -533,3 +533,23 @@ def test_the_claude_pin_has_real_transcript_data_behind_it():
         f"claude is pinned to {pinned} but {fixture.name} carries {sorted(v for v in versions if v)} "
         "— capture a transcript from the pinned version before moving the pin"
     )
+
+
+def test_the_codex_pin_has_real_transcript_data_behind_it():
+    """Same rule for Codex, and it is the harness that proved why the rule is needed: the pin
+    sat at 0.144.4 across the release where Codex moved its shell tool to a shape the reader
+    couldn't see, and a bare string held nobody to noticing.
+
+    Codex spells its version `session_meta.payload.cli_version`, not a top-level `version`.
+    """
+    import json
+    from pathlib import Path
+
+    pinned = doctor.harness_mod.VERIFIED_AGAINST["codex"]["version"]
+    fixture = Path(__file__).parent / "fixtures" / "codex_attribution.jsonl"
+    versions = {(json.loads(ln).get("payload") or {}).get("cli_version")
+                for ln in fixture.read_text(encoding="utf-8").splitlines() if ln.strip()}
+    assert pinned in versions, (
+        f"codex is pinned to {pinned} but {fixture.name} carries {sorted(v for v in versions if v)} "
+        "— capture a transcript from the pinned version before moving the pin"
+    )

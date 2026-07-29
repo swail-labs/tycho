@@ -22,6 +22,7 @@ FIXTURES = Path(__file__).parent / "fixtures"
 CLAUDE_FIXTURE = FIXTURES / "transcript_sample.jsonl"
 CURSOR_FIXTURE = FIXTURES / "cursor_transcript_sample.jsonl"
 CODEX_FIXTURE = FIXTURES / "codex_transcript_sample.jsonl"
+CODEX_PIN_FIXTURE = FIXTURES / "codex_attribution.jsonl"
 OPENCODE_FIXTURE = FIXTURES / "opencode_transcript_sample.json"
 CURSOR_STOP_PAYLOAD = FIXTURES / "cursor_stop_payload.json"
 
@@ -215,8 +216,255 @@ def test_codex_session_scope_catches_a_source_uncovered_since_an_earlier_green_r
     assert checks.test_freshness(session).status is CheckStatus.STALE
 
 
+def _codex_function_call_rows() -> list[dict]:
+    """A turn in Codex's structured shell shape: `function_call`, not `custom_tool_call`."""
+    return [
+        {
+            "timestamp": "2026-07-23T21:22:31.000Z",
+            "type": "event_msg",
+            "payload": {"type": "task_started", "turn_id": "turn-1"},
+        },
+        {
+            "timestamp": "2026-07-23T21:22:32.000Z",
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "exec_command",
+                "call_id": "call_a",
+                "arguments": json.dumps({
+                    "cmd": "pytest -q",
+                    "workdir": "/repo",
+                    "yield_time_ms": 10000,
+                }),
+                "internal_chat_message_metadata_passthrough": {"turn_id": "turn-1"},
+            },
+        },
+        {
+            "timestamp": "2026-07-23T21:22:34.000Z",
+            "type": "response_item",
+            "payload": {
+                "type": "function_call_output",
+                "call_id": "call_a",
+                "output": "Wall time: 1.1 seconds\nProcess exited with code 0\nOutput:\n77 passed in 1.07s\n",
+            },
+        },
+        # Session plumbing, not a command: no `cmd`, so nothing to attribute a run to.
+        {
+            "timestamp": "2026-07-23T21:22:35.000Z",
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "write_stdin",
+                "call_id": "call_b",
+                "arguments": json.dumps({"session_id": 50408, "chars": "y\n"}),
+            },
+        },
+        {
+            "timestamp": "2026-07-23T21:22:36.000Z",
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "wait",
+                "call_id": "call_c",
+                "arguments": json.dumps({"cell_id": "30", "yield_time_ms": 10000}),
+            },
+        },
+    ]
+
+
+def _write_rows(path: Path, rows: list[dict]) -> Path:
+    path.write_text("\n".join(json.dumps(row) for row in rows), encoding="utf-8")
+    return path
+
+
+def test_codex_reader_extracts_commands_from_the_structured_shell_shape(tmp_path: Path):
+    """Codex runs the shell through `function_call name:"exec_command"` as well as the
+    freeform `custom_tool_call name:"exec"`. Reading only the latter made Tycho blind to
+    entire sessions — every command invisible, so the Stop found no verifiable activity
+    and said nothing at all."""
+    transcript = _write_rows(tmp_path / "rollout.jsonl", _codex_function_call_rows())
+    evs = events.parse_codex(transcript)
+    assert [e.input["command"] for e in evs if e.tool == "Bash"] == ["pytest -q"]
+
+
+def test_codex_reader_ignores_function_calls_that_carry_no_command(tmp_path: Path):
+    # `wait` and `write_stdin` drive an already-running session; counting them as commands
+    # would invent runs that never happened.
+    transcript = _write_rows(tmp_path / "rollout.jsonl", _codex_function_call_rows())
+    assert len([e for e in events.parse_codex(transcript) if e.tool == "Bash"]) == 1
+
+
+def test_codex_turn_start_anchors_on_a_structured_shell_turn(tmp_path: Path):
+    # The turn is only "real" if the reader can see its events; before exec_command was
+    # read, this turn looked empty and the boundary fell back to 0.0.
+    transcript = _write_rows(tmp_path / "rollout.jsonl", _codex_function_call_rows())
+    assert events.turn_start_codex(transcript) == events._epoch("2026-07-23T21:22:31.000Z")
+
+
+def _exec_call(input_text: str, name: str = "exec") -> dict:
+    return {"type": "custom_tool_call", "call_id": "c", "name": name, "input": input_text}
+
+
+def test_codex_command_reads_both_spellings_of_the_cmd_key():
+    # Codex emits the JS object literal either way; scanning for one of them dropped 49 of
+    # the exec calls in a single real session.
+    unquoted = _exec_call('const r = await tools.exec_command({cmd:"pytest -q",workdir:"/repo"})')
+    quoted = _exec_call('const r = await tools.exec_command({"cmd":"pytest -q","workdir":"/repo"})')
+    assert events._codex_command_of(unquoted) == "pytest -q"
+    assert events._codex_command_of(quoted) == "pytest -q"
+
+
+def test_codex_command_survives_an_escaped_quote_inside_the_command():
+    # Guessing the closing delimiter truncated the command at the first inner quote, so a
+    # `python3 -c "..."` run reached the checks as a fragment of itself.
+    call = _exec_call(
+        r'const r = await tools.exec_command({"cmd":"python3 -c \"import sys; print(1)\" && pytest -q","workdir":"/repo"})'
+    )
+    assert events._codex_command_of(call) == 'python3 -c "import sys; print(1)" && pytest -q'
+
+
+def test_codex_command_ignores_a_non_exec_tool_whose_payload_mentions_cmd():
+    # `apply_patch` carries patch text, which can contain anything — including the literal
+    # this scanner keys on. A patch is not a command, and inventing one fabricates evidence
+    # that a run happened.
+    patch = _exec_call('*** Begin Patch\n+run({cmd:"pytest -q"})\n*** End Patch', name="apply_patch")
+    assert events._codex_command_of(patch) is None
+
+
+def test_codex_is_exposed_in_normal_usage(tmp_path: Path):
+    """The gate that kept Codex out of `discover`, `init` and the CLI choices. Everything
+    behind it — reader, installer, relay — was already built and tested."""
+    assert "codex" in harness.ENABLED_NAMES
+    assert harness.CODEX in harness.ENABLED
+    (tmp_path / ".codex").mkdir()
+    assert "codex" in init_mod.detect(tmp_path)
+
+
+def test_discover_finds_a_codex_session_for_this_repo(tmp_path, monkeypatch):
+    # Discovery is what `tycho verify` with no arguments and `doctor` both run on.
+    root = tmp_path / "sessions" / "2026" / "07" / "23"
+    root.mkdir(parents=True)
+    rollout = root / "rollout-2026-07-23T22-09-51.jsonl"
+    rollout.write_text(
+        json.dumps({
+            "timestamp": "2026-07-23T22:09:57.512Z",
+            "type": "session_meta",
+            "payload": {"session_id": "s-1", "cwd": str(tmp_path), "cli_version": "0.145.0"},
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TYCHO_CODEX_HOME", str(tmp_path))
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    path, found = harness.discover(tmp_path, only="codex")
+    assert path == rollout and found.name == "codex"
+
+
+def test_codex_readers_hold_against_the_pinned_version(tmp_path: Path):
+    """The whole adapter contract against a transcript in the pinned version's shape — the
+    claim `VERIFIED_AGAINST["codex"]` makes. Reading one field is what the pin is for; this
+    reads every field the hook depends on, so the pin can only move when data moves with it.
+    """
+    evs = events.parse_codex(CODEX_PIN_FIXTURE)
+    runs = [e for e in evs if e.tool == "Bash"]
+    assert [e.input["command"] for e in runs] == ["pytest -q"]
+    # The exit status is what `command_execution` reads; it going missing is the silent
+    # failure this pin exists to catch.
+    assert runs[0].is_error is False
+    assert "77 passed" in (runs[0].result.get("stdout") or "")
+    assert {e.path for e in events.file_edits(evs)} == {"/repo/app.py"}
+    assert events.turn_start_codex(CODEX_PIN_FIXTURE) == events._epoch("2026-07-23T22:09:59.000Z")
+    assert [m.text for m in events.assistant_messages_codex(CODEX_PIN_FIXTURE)] == [
+        "Added the helper and ran the suite."
+    ]
+    got = events.attribution_codex(CODEX_PIN_FIXTURE)
+    assert (got.model, got.agent_version) == ("gpt-5.6-sol", "0.145.0")
+    assert got.session_id
+
+
+def test_codex_attribution_reads_model_version_and_session(tmp_path: Path):
+    """Codex records all three, in two places: `session_meta` carries the session id and the
+    CLI version, `turn_context` carries the model. Storing nulls made every Codex turn
+    "unknown (codex)" in the decay ledger, which slices catch rate by model."""
+    rows = [
+        {
+            "timestamp": "2026-07-23T22:09:57.512Z",
+            "type": "session_meta",
+            "payload": {
+                "session_id": "019f9107-2220-75c2-9089-1fc7b6755746",
+                "cwd": "/repo",
+                "cli_version": "0.145.0",
+            },
+        },
+        {
+            "timestamp": "2026-07-23T22:10:00.000Z",
+            "type": "turn_context",
+            "payload": {"turn_id": "turn-1", "cwd": "/repo", "model": "gpt-5.6-sol"},
+        },
+    ]
+    got = events.attribution_codex(_write_rows(tmp_path / "rollout.jsonl", rows))
+    assert got.session_id == "019f9107-2220-75c2-9089-1fc7b6755746"
+    assert got.agent_version == "0.145.0"
+    assert got.model == "gpt-5.6-sol"
+
+
+def test_codex_attribution_takes_the_last_model_of_a_resumed_session(tmp_path: Path):
+    # A session can be resumed under a different model; the turn being verified ran under the
+    # latest one. Same rule as the Claude reader.
+    rows = [
+        {"timestamp": "2026-07-23T22:09:57.512Z", "type": "session_meta",
+         "payload": {"session_id": "s-1", "cli_version": "0.145.0"}},
+        {"timestamp": "2026-07-23T22:10:00.000Z", "type": "turn_context",
+         "payload": {"model": "gpt-5.6-sol"}},
+        {"timestamp": "2026-07-23T22:20:00.000Z", "type": "turn_context",
+         "payload": {"model": "gpt-5.6-sol-high"}},
+    ]
+    assert events.attribution_codex(_write_rows(tmp_path / "r.jsonl", rows)).model == "gpt-5.6-sol-high"
+
+
+def test_codex_attribution_never_guesses_a_missing_field(tmp_path: Path):
+    # A build that writes no model must yield None, not a plausible default — the ledger is
+    # only worth anything if attribution was genuinely observed.
+    rows = [{"timestamp": "2026-07-23T22:09:57.512Z", "type": "session_meta",
+             "payload": {"session_id": "s-1"}}]
+    got = events.attribution_codex(_write_rows(tmp_path / "r.jsonl", rows))
+    assert (got.model, got.agent_version, got.session_id) == (None, None, "s-1")
+
+
+def test_codex_harness_is_wired_to_its_attribution_reader():
+    assert harness.CODEX.attribution is events.attribution_codex
+
+
 def test_codex_reader_distinguishes_current_pytest_completion_output():
     assert events._codex_is_error("Script completed\n77 passed in 0.79s") is False
+    assert events._codex_is_error("Script completed\n1 failed, 76 passed in 1.07s") is True
+
+
+def test_codex_reads_the_exit_status_the_structured_result_records():
+    """Codex frames a structured tool result with its own `Process exited with code N`. It is
+    a real exit status — the only one a Codex rollout carries — and it was being ignored in
+    favour of guessing the outcome from the runner's prose."""
+    passed = "Wall time: 1.1 seconds\nProcess exited with code 0\nOutput:\n77 passed in 1.07s\n"
+    failed = "Wall time: 1.1 seconds\nProcess exited with code 1\nOutput:\n1 failed, 76 passed\n"
+    assert events._codex_is_error(passed) is False
+    assert events._codex_is_error(failed) is True
+    # Where it actually buys something: output no runner summary can classify. The prose
+    # fallback returns None here — "can't tell" — while the status is right there.
+    assert events._codex_is_error("Process exited with code 2\nOutput:\nruff: not found\n") is True
+    assert events._codex_is_error("Process exited with code 0\nOutput:\nAll checks passed!\n") is False
+
+
+def test_codex_exit_status_comes_from_the_header_not_the_command_output():
+    # The header precedes `Output:`, so a command that prints this phrase itself — grepping a
+    # log, echoing a transcript — must not overwrite the status Codex recorded.
+    text = (
+        "Process exited with code 0\nOutput:\n"
+        "$ grep -r 'exited' build.log\nProcess exited with code 1\n"
+    )
+    assert events._codex_is_error(text) is False
+
+
+def test_codex_falls_back_to_the_runner_summary_without_an_exit_status():
+    # The freeform shape records no status at all; the prose is all there is.
     assert events._codex_is_error("Script completed\n1 failed, 76 passed in 1.07s") is True
 
 

@@ -67,7 +67,7 @@ from .spelling import (
 
 def detect(repo: Path) -> list[str]:
     """Enabled harnesses that appear to be present, in stable order. Gated to
-    `harness_mod.ENABLED_NAMES` (Claude only for now): the other installers still exist and
+    `harness_mod.ENABLED_NAMES` (Claude and Codex): the other installers still exist and
     are tested, but init must not prompt to wire them up."""
     return [name for name in HARNESSES if name in harness_mod.ENABLED_NAMES and _is_present(name, repo)]
 

@@ -219,6 +219,7 @@ CODEX = Harness(
     messages=events.assistant_messages_codex,
     # Anchors on the latest turn's task_started; Codex is the only harness with a turn_id.
     turn_start=events.turn_start_codex,
+    attribution=events.attribution_codex,
 )
 
 OPENCODE = Harness(
@@ -240,7 +241,11 @@ BY_NAME = {h.name: h for h in ALL}
 
 # Exposed in normal usage; the rest keep their adapters and unit tests but aren't wired.
 # ponytail: single gate — re-widen by adding a name here.
-ENABLED_NAMES = ("claude",)
+#
+# Codex joins Claude once its reader was checked against transcripts the current version
+# actually wrote: it reads both shell-tool shapes, takes the exit status the rollout records,
+# and reports model, version and session id. `VERIFIED_AGAINST` below is the standing claim.
+ENABLED_NAMES = ("claude", "codex")
 ENABLED = tuple(h for h in ALL if h.name in ENABLED_NAMES)
 
 # The harness version each hook contract was last checked against, plus the local
@@ -263,7 +268,7 @@ ENABLED = tuple(h for h in ALL if h.name in ENABLED_NAMES)
 VERIFIED_AGAINST = {
     "claude": {"version": "2.1.220", "probe": ("claude", "--version")},
     "cursor": {"version": "2026.07.09-a3815c0", "probe": ("cursor-agent", "--version")},
-    "codex": {"version": "0.144.4", "probe": ("codex", "--version")},
+    "codex": {"version": "0.145.0", "probe": ("codex", "--version")},
 }
 
 

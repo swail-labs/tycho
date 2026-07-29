@@ -195,6 +195,15 @@ def parse_cursor(transcript: Path) -> tuple[Event, ...]:
     return tuple(events)
 
 
+# Codex spells one shell run two ways, and both are live in the same release: the freeform
+# `exec` tool arrives as `custom_tool_call` carrying a JS snippet, the structured
+# `exec_command` tool as `function_call` carrying JSON. Reading only the first made Tycho
+# blind to whole sessions — no events, so the Stop saw no verifiable activity and stayed
+# silent, which is indistinguishable from a clean turn.
+_CODEX_CALL_TYPES = ("custom_tool_call", "function_call")
+_CODEX_OUTPUT_TYPES = ("custom_tool_call_output", "function_call_output")
+
+
 def parse_codex(transcript: Path) -> tuple[Event, ...]:
     """Read *every* turn from a Codex rollout JSONL transcript, not just the latest, so
     session-scoped checks can reason across turns; the Stop narrows via ``turn_start_codex``,
@@ -206,11 +215,11 @@ def parse_codex(transcript: Path) -> tuple[Event, ...]:
     for entry in _entries(transcript):
         payload = entry.get("payload") or {}
         ts = _epoch(entry.get("timestamp"))
-        if entry.get("type") == "response_item" and payload.get("type") == "custom_tool_call":
-            command = _codex_command(payload.get("input"))
+        if entry.get("type") == "response_item" and payload.get("type") in _CODEX_CALL_TYPES:
+            command = _codex_command_of(payload)
             if command:
                 calls[payload.get("call_id", "")] = (ts, command)
-        elif entry.get("type") == "response_item" and payload.get("type") == "custom_tool_call_output":
+        elif entry.get("type") == "response_item" and payload.get("type") in _CODEX_OUTPUT_TYPES:
             output = payload.get("output")
             results[payload.get("call_id", "")] = (_codex_is_error(output), _codex_output_text(output))
         elif entry.get("type") == "event_msg" and payload.get("type") == "patch_apply_end":
@@ -260,6 +269,33 @@ def assistant_messages_codex(transcript: Path) -> tuple[Message, ...]:
             if isinstance(text, str) and text.strip():
                 messages.append(Message(ts=ts, text=text))
     return tuple(messages)
+
+
+def attribution_codex(transcript: Path) -> Attribution:
+    """Who produced this Codex session: model id, CLI version, session id.
+
+    Verified against real rollouts under ``~/.codex/sessions`` (2026-07): ``session_meta``
+    opens every file with ``session_id`` and ``cli_version``, and each ``turn_context`` names
+    the ``model`` (e.g. ``gpt-5.6-sol``). The *last* of each wins, as in the Claude reader — a
+    resumed session can continue under a newer build or a different model, and the turn being
+    verified ran under the latest. Never guesses: a field this build doesn't write yields
+    None, since the decay ledger is only worth anything if attribution was observed.
+    """
+    model = version = session_id = None
+    try:
+        for entry in _entries(transcript):
+            payload = entry.get("payload") or {}
+            if entry.get("type") == "session_meta":
+                if isinstance(sid := payload.get("session_id"), str) and sid:
+                    session_id = sid
+                if isinstance(ver := payload.get("cli_version"), str) and ver:
+                    version = ver
+            elif entry.get("type") == "turn_context":
+                if isinstance(name := payload.get("model"), str) and name:
+                    model = name
+    except OSError:
+        return Attribution()
+    return Attribution(model=model, agent_version=version, session_id=session_id)
 
 
 def turn_start_codex(transcript: Path) -> float:
@@ -371,27 +407,63 @@ def _codex_latest_turn_with_events(entries: list[dict], turn_ids: list[str]) -> 
             tagged = p.get("turn_id") or (p.get("internal_chat_message_metadata_passthrough") or {}).get("turn_id")
             if tagged != tid:
                 continue
-            if e.get("type") == "response_item" and p.get("type") in ("custom_tool_call",):
+            if e.get("type") == "response_item" and p.get("type") in _CODEX_CALL_TYPES:
                 return tid
             if e.get("type") == "event_msg" and p.get("type") == "patch_apply_end":
                 return tid
     return None
 
 
+def _codex_command_of(payload: dict) -> str | None:
+    """The shell command one Codex tool call ran, or None if it ran none.
+
+    Two encodings for the same act: `custom_tool_call` passes a JS snippet in ``input``,
+    `function_call` passes JSON in ``arguments``. Session plumbing — ``wait``, ``write_stdin``
+    — comes through as a `function_call` with no ``cmd``; those drive an already-running
+    shell, and counting them would invent runs that never happened.
+    """
+    if payload.get("type") == "custom_tool_call":
+        # Whitelist, not blacklist: `input` is free text on every other tool — `apply_patch`
+        # carries patch bodies — and a substring hit there would fabricate a run that never
+        # happened. Going blind to a renamed tool is the safer failure, and the version pin
+        # is what catches it.
+        if payload.get("name") != "exec":
+            return None
+        return _codex_command(payload.get("input"))
+    try:
+        arguments = json.loads(payload.get("arguments") or "{}")
+    except (TypeError, ValueError):
+        return None
+    command = arguments.get("cmd") if isinstance(arguments, dict) else None
+    return command if isinstance(command, str) and command.strip() else None
+
+
+# `cmd` in either spelling Codex emits — `{cmd:"…"}` and `{"cmd":"…"}` both appear in the
+# same release — with the value matched escape-aware so an embedded `\"` can't end it early.
+_CODEX_CMD = re.compile(r'"?cmd"?\s*:\s*"((?:[^"\\]|\\.)*)"')
+
+
 def _codex_command(value: object) -> str | None:
+    """The command out of an `exec` call's JS snippet.
+
+    Scanning for the one literal `{cmd:"` and then guessing which of four delimiters closed
+    the value dropped every call using the quoted spelling — 49 of the exec calls in a single
+    real session — and truncated any command containing an escaped quote at that quote, so a
+    `python3 -c "…"` run reached the checks as a fragment of itself. One escape-aware match
+    covers both spellings and stops guessing.
+    """
     if not isinstance(value, str):
         return None
-    start = value.find('{cmd:"')
-    if start < 0:
+    match = _CODEX_CMD.search(value)
+    if not match:
         return None
-    start += 6
-    for delim in ('","workdir"', '",', '"}', '")'):
-        end = value.find(delim, start)
-        if end >= 0:
-            return value[start:end]
-    if value.endswith('"') and start < len(value) - 1:
-        return value[start:-1]
-    return None
+    raw = match.group(1)
+    try:
+        command = json.loads(f'"{raw}"')
+    except ValueError:
+        # A JS-only escape JSON won't take (`\'`). Keep the text rather than drop the run.
+        command = raw.replace('\\"', '"')
+    return command if command.strip() else None
 
 
 def _codex_output_text(value: object) -> str:
@@ -410,6 +482,16 @@ def _codex_output_text(value: object) -> str:
     return ""
 
 
+# A real exit status, in the two places a Codex rollout records one. `Process exited with
+# code N` is Codex's own framing on a structured tool result — line-anchored and taken
+# first-match, because the header precedes the `Output:` block and a command that prints the
+# same phrase (grepping a log, echoing a transcript) must not overwrite the recorded status.
+_CODEX_EXIT_PATTERNS = (
+    re.compile(r'"exit_code"\s*:\s*(\d+)'),
+    re.compile(r"^Process exited with code (\d+)$", re.MULTILINE),
+)
+
+
 def _codex_is_error(value: object) -> bool | None:
     if isinstance(value, dict):
         if isinstance(value.get("exit_code"), int):
@@ -418,11 +500,11 @@ def _codex_is_error(value: object) -> bool | None:
     if isinstance(value, list):
         return next((r for item in value if (r := _codex_is_error(item)) is not None), None)
     if isinstance(value, str):
-        match = re.search(r'"exit_code"\s*:\s*(\d+)', value)
-        if match:
-            return int(match.group(1)) != 0
-        # Codex rollouts omit the exec exit code, so fall back to the runner's own summary.
-        # ("Script completed" is not success — it appears for failed commands too.)
+        for pattern in _CODEX_EXIT_PATTERNS:
+            if match := pattern.search(value):
+                return int(match.group(1)) != 0
+        # The freeform shape records no status at all, so fall back to the runner's own
+        # summary. ("Script completed" is not success — it appears for failed commands too.)
         return runlog.outcome(value)
     return None
 
