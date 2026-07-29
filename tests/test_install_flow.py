@@ -18,7 +18,6 @@ from tycho import cli
 from tycho.store import state
 from tycho.wire import hook as hook_mod
 from tycho.wire import install as init_mod
-from tycho.wire.install import globalignore
 
 CLAUDE = Path(".claude/settings.json")
 

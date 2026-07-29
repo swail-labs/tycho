@@ -1,18 +1,26 @@
-"""`tycho init` / `tycho uninstall` — manage the completion hook in each harness's config.
+"""Wiring Tycho into a machine, and into a repo — two different acts, two pairs of verbs.
 
-Writes are repo-local by default; a harness's `$HOME` dir is read, never written, as a
-detection signal. The one exception is `--global` (`init_global`), which writes the
-user-level Claude config behind an explicit prompt.
+    install / uninstall    this machine: the user-level harness hooks, and one line in the
+                           global git excludes file
+    init / off / on        this repo: the committed `.tycho.toml`, the commit trailer, and
+                           whether a machine-wide install may verify here at all
+
+`install` is the one command a new user runs, and the one `install.sh` runs for them. It
+writes nothing into any repo — that is what the global excludes line buys, since
+`gitignore._install_gitignore` asks `git check-ignore` rather than scanning and so
+short-circuits everywhere. `init` stays self-sufficient: with no machine-wide install it
+wires that repo's own hooks, so a single repo works alone.
 
     spelling     how a Tycho command is written, and how we recognize one
     configfile   load / merge / back up / write, defensively
     claude       settings.json, the status line, the slash commands
     harnesses    cursor, codex, opencode
     githook      the prepare-commit-msg trailer hook
-    gitignore    the `.tycho/` entry
+    gitignore    the `.tycho/` entry in one repo
+    globalignore the `.tycho/` line covering every repo
 
-Idempotent both ways: this module drives the sequence, and every writer below refuses what
-it can't parse rather than guessing.
+Idempotent in both directions: this module drives the sequence, and every writer below
+refuses what it can't parse rather than guessing.
 """
 
 from __future__ import annotations
@@ -56,7 +64,7 @@ from .spelling import (
     config_path as config_path,
     hook_argv as hook_argv,
     hook_command as hook_command,
-    settings_path,
+    settings_path as settings_path,
     status_command as status_command,
 )
 
