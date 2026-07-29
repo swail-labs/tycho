@@ -68,6 +68,21 @@ def turn_record(**overrides) -> dict:
     return rec
 
 
+def pytest_addoption(parser):
+    """`--update-goldens` rewrites the per-harness golden projections from today's readers.
+
+    Deliberately a flag rather than a script: regenerating and reviewing are the same act, and
+    a separate tool makes it easy to regenerate without reading the diff — which is how a
+    golden stops catching anything.
+    """
+    parser.addoption(
+        "--update-goldens",
+        action="store_true",
+        default=False,
+        help="rewrite tests/fixtures/harness/*/golden.json from the current readers",
+    )
+
+
 @pytest.fixture(autouse=True)
 def _isolate_tycho_home(tmp_path_factory, monkeypatch):
     monkeypatch.setenv("TYCHO_HOME", str(tmp_path_factory.mktemp("tycho-home")))
@@ -77,6 +92,13 @@ def _isolate_tycho_home(tmp_path_factory, monkeypatch):
     # behaviour. `harness.home` reads this var first, redirecting detection and installation
     # together; tests exercising the `Path.home()` fallback delete it instead.
     monkeypatch.setenv("TYCHO_CLAUDE_HOME", str(tmp_path_factory.mktemp("claude-home")))
+    # And off the developer's real OpenCode store, for the same reason but a different path:
+    # `opencode.db_path()` resolves an XDG data dir rather than a `~/.<name>` dotdir, so
+    # `TYCHO_CLAUDE_HOME` never covered it. On a machine with OpenCode installed, a test
+    # materializing an unknown session id read the live DB and got a real (empty) session
+    # back instead of None — passing or failing on whatever that developer happened to have
+    # run. Tests exercising the fallback delete this var.
+    monkeypatch.setenv("TYCHO_OPENCODE_HOME", str(tmp_path_factory.mktemp("opencode-home")))
 
 
 def pytest_terminal_summary(terminalreporter):

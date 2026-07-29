@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from ...model import CheckResult, CheckStatus, Session
-from .cmdread import _runner_segment
+from .cmdread import _runner_segment, standing_filters
 from .common import _r, _scope, _short
 from .outcome import (
     _exec_run_for, _outcome, _ran_less_than_claimed, _runner_events, _status_is_masked,
@@ -52,7 +52,12 @@ def command_execution(session: Session) -> CheckResult:
         via = " (read from its output — exit status masked by the shell)" if masked else ""
     if outcome:
         return _r("command_execution", CheckStatus.FAIL, f"`{cmd}` ran but reported an error{via}")
-    unresolved = [e for e in _unresolved_reds(session.turn_events, session.commands) if e.ts < last.ts]
+    unresolved = [
+        e for e in _unresolved_reds(
+            session.turn_events, session.commands, standing_filters(session.config.standing_filters)
+        )
+        if e.ts < last.ts
+    ]
     if unresolved:
         red = _short(_runner_segment(unresolved[0].input.get("command", "")) or "")
         return _r(

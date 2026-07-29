@@ -18,6 +18,15 @@ exclude = ["LICENSE"]
 # Check names to disable entirely (rarely needed), e.g. "command_execution".
 disable = []
 
+[tests]
+# Runner filters this project puts on every test run, as you'd type them, e.g.
+# standing = ["-m \"not e2e\""]. A filter narrows a run, so a green carrying one
+# normally can't stand in for a red that ran without it. Declared here it is dropped
+# from both sides before they're compared, because it restricts both alike. Declare
+# ONLY what genuinely runs every time — anything else here hides a real narrowing.
+# Selectors naming last run's failures (--lf, --sw) are never cancelled even if listed.
+standing = ["-m \"not e2e\""]
+
 [relay]
 # Feed a non-VERIFIED verdict back to the agent so it keeps working until VERIFIED
 # (Claude Code only, bounded by TYCHO_RELAY_MAX). Off by default — verdicts stay

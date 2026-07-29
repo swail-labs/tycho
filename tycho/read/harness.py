@@ -20,6 +20,42 @@ from ..model import Attribution
 
 
 @dataclass(frozen=True)
+class Capabilities:
+    """What a harness's transcript actually records — the honest declaration of its reach.
+
+    Every field is required, deliberately: this is the one thing you cannot forget when
+    adding a harness, because the constructor won't build without it. That makes "correctly
+    blind" and "quietly broken" distinguishable in the suite — the conformance tests assert
+    both directions, that a declared capability yields real data and an undeclared one
+    degrades rather than guessing. Without the declaration the two look identical, and
+    Tycho's characteristic failure is the quiet no-op that reads exactly like a clean turn.
+
+    These describe the *transcript*, not the checks. ``records_exit_status`` says a status is
+    written down, not that it is the status of anything useful — OpenCode records a piped
+    pipeline's exit code, which is a real recorded status and still worthless for telling a
+    red suite from a green one.
+    """
+
+    # A per-command exit status or error flag survives into the transcript.
+    records_exit_status: bool
+    # The runner's own stdout/stderr survives — what lets the engine re-read a suite's
+    # summary when the shell masked the status. The highest-value field here.
+    records_runner_output: bool
+    # Events carry real timestamps, so a turn can be scoped to a boundary.
+    records_timestamps: bool
+    # Assistant prose is recoverable, for tool_call_provenance.
+    records_prose: bool
+    # Model id / agent version / session id are recorded, for the decay ledger.
+    records_attribution: bool
+    # An edit records the file's prior contents, so a diff needs no git baseline.
+    records_edit_originals: bool
+    # The harness labels its own turns, rather than the boundary being inferred.
+    has_turn_ids: bool
+    # The transcript is a file the harness maintains, not something Tycho rebuilds.
+    transcript_is_file: bool
+
+
+@dataclass(frozen=True)
 class Harness:
     """How one harness reads its transcript, names the repo root, and formats output."""
 
@@ -31,6 +67,9 @@ class Harness:
     # Transcript to verify, from a hook payload. OpenCode rebuilds it from opencode.db into
     # a temp file the caller unlinks. None: nothing to verify.
     transcript_of: Callable[[dict], Path | None]
+    # What this harness's transcript records, declared rather than inferred. Required, so a
+    # new harness cannot enter the registry without saying what it can and cannot see.
+    capabilities: Capabilities
     # Every transcript on disk for a repo, oldest first — what `backfill` replays. Default
     # empty: a harness whose history Tycho can't enumerate backfills nothing rather than
     # guessing at one session.
@@ -188,6 +227,19 @@ CLAUDE = Harness(
     notice_output=lambda text: {"systemMessage": text},
     discover=_claude_discover,
     transcript_of=_payload_transcript,
+    # The most complete of the four: `is_error` per tool_result, stdout/stderr in
+    # `toolUseResult`, ISO timestamps, text blocks, sessionId/version/model, and
+    # `originalFile` on every edit. No turn ids — `turn_starts` infers boundaries.
+    capabilities=Capabilities(
+        records_exit_status=True,
+        records_runner_output=True,
+        records_timestamps=True,
+        records_prose=True,
+        records_attribution=True,
+        records_edit_originals=True,
+        has_turn_ids=False,
+        transcript_is_file=True,
+    ),
     history=_claude_history,
     turn_start=events.turn_start,
     messages=events.assistant_messages,
@@ -203,6 +255,20 @@ CURSOR = Harness(
     format_output=_cursor_output,
     discover=_cursor_discover,
     transcript_of=_payload_transcript,
+    # The blindest of the four, and the reason this dataclass exists. Cursor's Stop
+    # transcript carries only `name` + `input` per tool_use — no ids, no timestamps, no
+    # tool_result at all. Everything false here is a structural fact about Cursor, printed
+    # on the scorecard forever rather than mistaken for a Tycho bug.
+    capabilities=Capabilities(
+        records_exit_status=False,
+        records_runner_output=False,
+        records_timestamps=False,
+        records_prose=False,
+        records_attribution=False,
+        records_edit_originals=False,
+        has_turn_ids=False,
+        transcript_is_file=True,
+    ),
     # turn_start stays 0.0: parse_cursor gives every Event ts=0.0, so nothing to scope by.
 )
 
@@ -216,6 +282,20 @@ CODEX = Harness(
     notice_output=lambda text: {"systemMessage": text},
     discover=_codex_discover,
     transcript_of=_payload_transcript,
+    # Nearly Claude's reach, with one real gap: `patch_apply_end` names the changed paths
+    # and whether it was an add or an update, but never the prior contents — so a Codex diff
+    # needs git for its baseline where a Claude one does not. The only harness that labels
+    # its own turns.
+    capabilities=Capabilities(
+        records_exit_status=True,
+        records_runner_output=True,
+        records_timestamps=True,
+        records_prose=True,
+        records_attribution=True,
+        records_edit_originals=False,
+        has_turn_ids=True,
+        transcript_is_file=True,
+    ),
     messages=events.assistant_messages_codex,
     # Anchors on the latest turn's task_started; Codex is the only harness with a turn_id.
     turn_start=events.turn_start_codex,
@@ -232,6 +312,21 @@ OPENCODE = Harness(
     # No transcript file — both paths rebuild it from opencode.db.
     discover=_opencode_discover,
     transcript_of=_opencode_transcript,
+    # Records an exit status, and it is the *pipeline's* — true of `pytest | tee`, so it
+    # says nothing about the runner. That is why `records_exit_status` is not the same
+    # claim as "a lie has somewhere to show up": with no runner output kept, OpenCode
+    # cannot tell a red suite from a green one behind a pipe. The only harness whose
+    # transcript Tycho rebuilds rather than reads.
+    capabilities=Capabilities(
+        records_exit_status=True,
+        records_runner_output=False,
+        records_timestamps=True,
+        records_prose=False,
+        records_attribution=False,
+        records_edit_originals=False,
+        has_turn_ids=False,
+        transcript_is_file=False,
+    ),
     # Anchors on the last user message, which is what opens an OpenCode turn.
     turn_start=events.turn_start_opencode,
 )
@@ -273,6 +368,11 @@ VERIFIED_AGAINST = {
     # (`originator: "Codex Desktop"`, `cli_version: "0.146.0-alpha.3.1"`) and a CLI turn —
     # same rollout directory, same Stop payload, same event shapes.
     "codex": {"version": "0.146.0", "probe": ("codex", "--version")},
+    # OpenCode ships no CLI version to probe, so drift here can only be caught by re-reading
+    # a capture. The entry exists anyway: the version is recorded (its sessions carry
+    # `info.version`, which is where this came from), and an explicit `probe: None` is a
+    # decision on the record where a missing key reads as an oversight.
+    "opencode": {"version": "1.17.20", "probe": None},
 }
 
 
