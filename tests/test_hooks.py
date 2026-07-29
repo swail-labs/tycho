@@ -215,6 +215,91 @@ def test_codex_session_scope_catches_a_source_uncovered_since_an_earlier_green_r
     assert checks.test_freshness(session).status is CheckStatus.STALE
 
 
+def _codex_function_call_rows() -> list[dict]:
+    """A turn in Codex's structured shell shape: `function_call`, not `custom_tool_call`."""
+    return [
+        {
+            "timestamp": "2026-07-23T21:22:31.000Z",
+            "type": "event_msg",
+            "payload": {"type": "task_started", "turn_id": "turn-1"},
+        },
+        {
+            "timestamp": "2026-07-23T21:22:32.000Z",
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "exec_command",
+                "call_id": "call_a",
+                "arguments": json.dumps({
+                    "cmd": "pytest -q",
+                    "workdir": "/repo",
+                    "yield_time_ms": 10000,
+                }),
+                "internal_chat_message_metadata_passthrough": {"turn_id": "turn-1"},
+            },
+        },
+        {
+            "timestamp": "2026-07-23T21:22:34.000Z",
+            "type": "response_item",
+            "payload": {
+                "type": "function_call_output",
+                "call_id": "call_a",
+                "output": "Wall time: 1.1 seconds\nProcess exited with code 0\nOutput:\n77 passed in 1.07s\n",
+            },
+        },
+        # Session plumbing, not a command: no `cmd`, so nothing to attribute a run to.
+        {
+            "timestamp": "2026-07-23T21:22:35.000Z",
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "write_stdin",
+                "call_id": "call_b",
+                "arguments": json.dumps({"session_id": 50408, "chars": "y\n"}),
+            },
+        },
+        {
+            "timestamp": "2026-07-23T21:22:36.000Z",
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "wait",
+                "call_id": "call_c",
+                "arguments": json.dumps({"cell_id": "30", "yield_time_ms": 10000}),
+            },
+        },
+    ]
+
+
+def _write_rows(path: Path, rows: list[dict]) -> Path:
+    path.write_text("\n".join(json.dumps(row) for row in rows), encoding="utf-8")
+    return path
+
+
+def test_codex_reader_extracts_commands_from_the_structured_shell_shape(tmp_path: Path):
+    """Codex runs the shell through `function_call name:"exec_command"` as well as the
+    freeform `custom_tool_call name:"exec"`. Reading only the latter made Tycho blind to
+    entire sessions — every command invisible, so the Stop found no verifiable activity
+    and said nothing at all."""
+    transcript = _write_rows(tmp_path / "rollout.jsonl", _codex_function_call_rows())
+    evs = events.parse_codex(transcript)
+    assert [e.input["command"] for e in evs if e.tool == "Bash"] == ["pytest -q"]
+
+
+def test_codex_reader_ignores_function_calls_that_carry_no_command(tmp_path: Path):
+    # `wait` and `write_stdin` drive an already-running session; counting them as commands
+    # would invent runs that never happened.
+    transcript = _write_rows(tmp_path / "rollout.jsonl", _codex_function_call_rows())
+    assert len([e for e in events.parse_codex(transcript) if e.tool == "Bash"]) == 1
+
+
+def test_codex_turn_start_anchors_on_a_structured_shell_turn(tmp_path: Path):
+    # The turn is only "real" if the reader can see its events; before exec_command was
+    # read, this turn looked empty and the boundary fell back to 0.0.
+    transcript = _write_rows(tmp_path / "rollout.jsonl", _codex_function_call_rows())
+    assert events.turn_start_codex(transcript) == events._epoch("2026-07-23T21:22:31.000Z")
+
+
 def test_codex_reader_distinguishes_current_pytest_completion_output():
     assert events._codex_is_error("Script completed\n77 passed in 0.79s") is False
     assert events._codex_is_error("Script completed\n1 failed, 76 passed in 1.07s") is True

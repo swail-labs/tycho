@@ -181,6 +181,15 @@ def parse_cursor(transcript: Path) -> tuple[Event, ...]:
     return tuple(events)
 
 
+# Codex spells one shell run two ways, and both are live in the same release: the freeform
+# `exec` tool arrives as `custom_tool_call` carrying a JS snippet, the structured
+# `exec_command` tool as `function_call` carrying JSON. Reading only the first made Tycho
+# blind to whole sessions — no events, so the Stop saw no verifiable activity and stayed
+# silent, which is indistinguishable from a clean turn.
+_CODEX_CALL_TYPES = ("custom_tool_call", "function_call")
+_CODEX_OUTPUT_TYPES = ("custom_tool_call_output", "function_call_output")
+
+
 def parse_codex(transcript: Path) -> tuple[Event, ...]:
     """Read *every* turn from a Codex rollout JSONL transcript, not just the latest, so
     session-scoped checks can reason across turns; the Stop narrows via ``turn_start_codex``,
@@ -192,11 +201,11 @@ def parse_codex(transcript: Path) -> tuple[Event, ...]:
     for entry in _entries(transcript):
         payload = entry.get("payload") or {}
         ts = _epoch(entry.get("timestamp"))
-        if entry.get("type") == "response_item" and payload.get("type") == "custom_tool_call":
-            command = _codex_command(payload.get("input"))
+        if entry.get("type") == "response_item" and payload.get("type") in _CODEX_CALL_TYPES:
+            command = _codex_command_of(payload)
             if command:
                 calls[payload.get("call_id", "")] = (ts, command)
-        elif entry.get("type") == "response_item" and payload.get("type") == "custom_tool_call_output":
+        elif entry.get("type") == "response_item" and payload.get("type") in _CODEX_OUTPUT_TYPES:
             output = payload.get("output")
             results[payload.get("call_id", "")] = (_codex_is_error(output), _codex_output_text(output))
         elif entry.get("type") == "event_msg" and payload.get("type") == "patch_apply_end":
@@ -357,11 +366,29 @@ def _codex_latest_turn_with_events(entries: list[dict], turn_ids: list[str]) -> 
             tagged = p.get("turn_id") or (p.get("internal_chat_message_metadata_passthrough") or {}).get("turn_id")
             if tagged != tid:
                 continue
-            if e.get("type") == "response_item" and p.get("type") in ("custom_tool_call",):
+            if e.get("type") == "response_item" and p.get("type") in _CODEX_CALL_TYPES:
                 return tid
             if e.get("type") == "event_msg" and p.get("type") == "patch_apply_end":
                 return tid
     return None
+
+
+def _codex_command_of(payload: dict) -> str | None:
+    """The shell command one Codex tool call ran, or None if it ran none.
+
+    Two encodings for the same act: `custom_tool_call` passes a JS snippet in ``input``,
+    `function_call` passes JSON in ``arguments``. Session plumbing — ``wait``, ``write_stdin``
+    — comes through as a `function_call` with no ``cmd``; those drive an already-running
+    shell, and counting them would invent runs that never happened.
+    """
+    if payload.get("type") == "custom_tool_call":
+        return _codex_command(payload.get("input"))
+    try:
+        arguments = json.loads(payload.get("arguments") or "{}")
+    except (TypeError, ValueError):
+        return None
+    command = arguments.get("cmd") if isinstance(arguments, dict) else None
+    return command if isinstance(command, str) and command.strip() else None
 
 
 def _codex_command(value: object) -> str | None:
