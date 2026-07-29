@@ -570,13 +570,36 @@ def _codex_repo(repo: Path) -> Path:
 
 
 def _trust(repo: Path, scope: str = init_mod.REPO, digest: str = "sha256:whatever") -> None:
-    """Record Codex's approval of the Stop hook, the way Codex records it."""
+    """Record Codex's approval of the Stop hook, the way Codex records it.
+
+    The key is written as a TOML *literal* string (single quotes), not a basic one. A Windows
+    path is full of backslashes, and in a double-quoted TOML key those are escapes — `\\U` in
+    `C:\\Users\\...` is an invalid one, so the whole file fails to parse. `codex_untrusted` then
+    fail-opens to "trusted" and this test passed on POSIX while asserting nothing on Windows.
+    """
     config = init_mod.harness_mod.home("codex") / "config.toml"
     config.parent.mkdir(parents=True, exist_ok=True)
     key = f"{init_mod.config_path(repo, 'codex', scope)}:stop:0:0"
     config.write_text(
-        f'[hooks.state."{key}"]\ntrusted_hash = "{digest}"\n', encoding="utf-8"
+        f"[hooks.state.'{key}']\ntrusted_hash = \"{digest}\"\n", encoding="utf-8"
     )
+
+
+def test_a_windows_style_trust_key_is_read_not_silently_dropped():
+    """A backslash path must survive the round trip into `[hooks.state]` and back.
+
+    `codex_untrusted` fail-opens on an unparseable config, which is right — a missing or foreign
+    `config.toml` means Codex has never run, and a diagnostic that fires on absence of evidence
+    gets ignored. But it means a *parse* bug is indistinguishable from "approved", so the parse
+    is asserted directly rather than trusted.
+    """
+    import tomllib
+
+    key = r"C:\Users\me\repo\.codex\hooks.json:stop:0:0"
+    parsed = tomllib.loads(f"[hooks.state.'{key}']\ntrusted_hash = \"sha256:x\"\n")
+    assert list(parsed["hooks"]["state"]) == [key]
+    prefix = r"C:\Users\me\repo\.codex\hooks.json:stop:"
+    assert any(k.startswith(prefix) for k in parsed["hooks"]["state"])
 
 
 def test_an_unapproved_codex_hook_is_reported_broken_not_healthy(tmp_path: Path):
