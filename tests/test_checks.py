@@ -2,6 +2,7 @@
 
 
 import pytest
+import shlex
 from dataclasses import replace
 from pathlib import Path
 
@@ -1018,6 +1019,25 @@ def test_redirects_are_plumbing_not_arguments(cmd, expected):
     reads as narrowed."""
     assert checks._runner_segment(cmd) == expected, cmd
     assert checks._selects_whole_suite(checks._runner_segment(cmd)) is not None, cmd
+
+
+@pytest.mark.parametrize("cmd,expected", [
+    ('pytest -q -m "not e2e"', ["pytest", "-q", "-m", "not e2e"]),
+    ("pytest -q -m 'not e2e'", ["pytest", "-q", "-m", "not e2e"]),
+    ('.venv/bin/python -m pytest -m "not e2e"', ["python", "-m", "pytest", "-m", "not e2e"]),
+    ('pytest --ignore "tests/dir with space" tests/x.py',
+     ["pytest", "--ignore", "tests/dir with space", "tests/x.py"]),
+    ("pytest -q tests/x.py", ["pytest", "-q", "tests/x.py"]),   # unquoted argv is unchanged
+])
+def test_normalization_keeps_quoted_argument_boundaries(cmd, expected):
+    """A quoted value is one token, and normalization has to hand it on as one token.
+
+    Flattened, `-m "not e2e"` becomes `-m not e2e`: `-m` swallows `not` and `e2e` is left
+    looking like a positional, which is to say a test path that was never on the command line.
+    Every reader downstream — family, breadth, selection, `tycho exec` argv matching — reads
+    this string, so a boundary lost here is a phantom target invented for all of them.
+    """
+    assert shlex.split(checks._runner_segment(cmd)) == expected, cmd
 
 
 @pytest.mark.parametrize("cmd,expected", [

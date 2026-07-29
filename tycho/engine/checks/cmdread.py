@@ -253,14 +253,31 @@ def _normalize_segment(segment: str) -> str:
     if parts:
         exe = parts[0].rsplit("/", 1)[-1]
         exe = re.sub(r"\.(?:exe|bat|cmd|ps1)$", "", exe, flags=re.IGNORECASE)
-        segment = " ".join([exe, *parts[1:]])
+        # `shlex.join`, not `" ".join`: the split above already consumed the quotes, and joining
+        # on spaces welds a multi-word value onto its neighbours. `-m "not e2e"` came back as
+        # `-m not e2e`, where `-m` takes `not` and `e2e` is left reading as a positional — a
+        # test path nobody asked to run, invented by the reader rather than typed by the agent.
+        segment = shlex.join([exe, *parts[1:]])
     return segment
+
+
+def _tokens(segment: str) -> list[str]:
+    """A normalized segment's argv, with quoted values kept whole.
+
+    `_normalize_segment` re-quotes what it parsed, so a plain `.split()` here would undo the
+    boundary it just preserved. Unbalanced quotes fall back to whitespace: the same lossy read
+    as before, which is a reader that gives up, not one that crashes mid-check.
+    """
+    try:
+        return shlex.split(segment)
+    except ValueError:
+        return segment.split()
 
 
 def _is_discovery(segment: str) -> bool:
     """True when the segment lists, compiles or prints instead of running the suite —
     `pytest --collect-only`, `cargo test --no-run`, `tox -e lint` all exit 0 proving nothing."""
-    tokens = segment.split()
+    tokens = _tokens(segment)
     if any(t.split("=", 1)[0].lower() in _DISCOVERY_FLAGS for t in tokens):
         return True
     if tokens and tokens[0] == "tox":
@@ -309,7 +326,7 @@ def _runs_a_test_file(segment: str) -> bool:
     and reading it as a green test run is exactly the fabricated pass this codebase never
     issues.
     """
-    tokens = segment.split()
+    tokens = _tokens(segment)
     if len(tokens) < 2 or tokens[0] not in _DIRECT_INTERPRETERS:
         return False
     return any(_is_test_path(t) for t in tokens[1:] if not t.startswith("-"))
@@ -351,7 +368,7 @@ def _runner_span(segment: str) -> tuple[int, int] | None:
     matcher that only knew the `_TEST_RUNNERS` spellings read `uv run --with pytest pytest -q`
     as having no runner, silently making every scope question about wrappers unanswerable.
     """
-    tokens = segment.split()
+    tokens = _tokens(segment)
     if not tokens:
         return None
     # Longest direct match wins, so `python -m pytest` isn't read as the shorter `pytest`.
@@ -673,7 +690,7 @@ def _runner_family(segment: str) -> str | None:
     span = _runner_span(segment)
     if span is None:
         return None
-    phrase = segment.split()[span[0]:span[1]]
+    phrase = _tokens(segment)[span[0]:span[1]]
     for family, markers in _FAMILIES:
         # Token sublists, never substrings: `"go test" in "cargo test"` is true.
         for marker in markers:
@@ -707,7 +724,7 @@ def _selection(segment: str) -> frozenset[str] | object | None:
     whole = _WHOLE_SUITE_POSITIONALS[family]
 
     targets: set[str] = set()
-    tokens = segment.split()[span[1]:]
+    tokens = _tokens(segment)[span[1]:]
     i = 0
     while i < len(tokens):
         token = tokens[i]
