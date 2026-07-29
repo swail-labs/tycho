@@ -10,8 +10,9 @@ from pathlib import Path
 
 from . import ExitCode
 
-def _show(cwd: Path, turn: str | None) -> int:
-    """`tycho show [TURN]` — the full digest of a turn, on demand."""
+def _show(cwd: Path, turn: str | None, share: bool = False) -> int:
+    """`tycho show [TURN] [--share]` — the full digest of a turn, on demand. `--share` is the
+    paste-able variant: the same evidence, without this machine's turn id or directory tree."""
     from ..views import digest as digest_mod
     from ..store import record as record_mod
     from ..store import state
@@ -23,7 +24,7 @@ def _show(cwd: Path, turn: str | None) -> int:
     if not records:
         print("tycho: no turn recorded yet — the Stop hook writes one per verified turn.")
         return ExitCode.OK
-    print(digest_mod.render(records[0]))
+    print(digest_mod.render(records[0], share=share))
     return ExitCode.OK
 
 

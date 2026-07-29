@@ -90,7 +90,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         return command_mod.execute(state.root_for(Path.cwd()), args.cmd)
     if args.command == "show":
-        return _show(Path.cwd(), args.turn)
+        return _show(Path.cwd(), args.turn, share=args.share)
     if args.command == "blame":
         return _archaeology("blame", Path.cwd(), args.target, args.limit)
     if args.command == "log":
