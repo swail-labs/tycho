@@ -408,10 +408,13 @@ def _relay_guard(attempt: int, cap: int, override_on: bool = False, short: bool 
                 "returns to the user regardless of the verdict.")
     else:
         tail = f" Automatic re-check {attempt} of {cap}."
+    # The check is named literally rather than as `<check>`: this text goes out on a harness
+    # channel, and Codex HTML-escapes the field it delivers on — a metavariable would arrive as
+    # `&lt;check&gt;` inside the very instruction telling the agent what to type.
     override_line = (
         " If you are confident a specific check does not apply to this change and you can justify "
-        "why, you may record it with `tycho override <check> \"<reason>\"` — it is logged and shown "
-        "to the user. Use only when certain." if override_on else ""
+        "why, you may record it with `tycho override the-check-name \"why it doesn't apply\"` — it "
+        "is logged and shown to the user. Use only when certain." if override_on else ""
     )
     if short:
         return (

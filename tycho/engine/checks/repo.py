@@ -72,8 +72,11 @@ def scope_drift(session: Session) -> CheckResult:
     globs = session.config.scope_include
     excludes = session.config.scope_exclude
     if not globs:
+        # A concrete glob, not a `<glob>` metavariable: Codex HTML-escapes the field it delivers
+        # a verdict on, so angle brackets arrive as `&lt;glob&gt;` — in the copy the model reads,
+        # and in a command we are telling someone to run.
         return _r("scope_drift", CheckStatus.UNSUPPORTED,
-                  "no [scope] set — run `tycho scope add '<glob>'` to bound edits (zero-config)")
+                  "no [scope] set — run `tycho scope add 'src/**'` to bound edits (zero-config)")
     edited = {fe.path for fe in session.turn_edits}
     if not edited:
         return _r(

@@ -35,6 +35,43 @@ def name(request) -> str:
     return request.param
 
 
+# --- what survives the wire -------------------------------------------------
+
+
+def _authored_for_a_harness() -> list[tuple[str, str]]:
+    """Every string Tycho writes itself that can go out on a harness channel.
+
+    Check evidence and the relay guard, not the values interpolated into them: a command we
+    echo back can contain anything (`python - <<'PY'`) and that is the agent's business.
+    """
+    from tycho.engine import checks
+    from tycho.model import Session
+    from tycho.store.config import Config
+    from tycho.wire import hook
+
+    bare = Session(events=(), edits=(), repo=Path("/repo"), config=Config())
+    texts = [(f"evidence:{r.name}", r.evidence) for r in checks.run_checks(bare)]
+    texts.append(("_MANAGE", hook._MANAGE))
+    for attempt, cap in ((1, 3), (3, 3)):
+        for override_on in (False, True):
+            for short in (False, True):
+                texts.append((
+                    f"relay_guard({attempt},{cap},override={override_on},short={short})",
+                    hook._relay_guard(attempt, cap, override_on=override_on, short=short),
+                ))
+    return texts
+
+
+@pytest.mark.parametrize("label,text", _authored_for_a_harness())
+def test_no_authored_text_carries_an_angle_bracket(label: str, text: str):
+    """Codex HTML-escapes the field it delivers a verdict on, so a `<glob>` metavariable arrives
+    as `&lt;glob&gt;` — in the copy the model reads, and inside a command we are telling someone
+    to run. Two of these shipped that way before this test existed. Write a concrete example
+    instead; it reads better than a metavariable anyway.
+    """
+    assert "<" not in text and ">" not in text, f"{label} would be escaped on Codex: {text!r}"
+
+
 # --- detection --------------------------------------------------------------
 #
 # `detect` is ordered shape-sniffing over a payload dict, which means every harness added can
