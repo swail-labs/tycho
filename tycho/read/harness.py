@@ -336,12 +336,15 @@ CURSOR = Harness(
         records_exit_status=False,
         records_runner_output=False,
         records_timestamps=False,
-        records_prose=False,
+        # The one that was declared wrong: every assistant row carries `text` blocks, and
+        # saying otherwise made `tool_call_provenance` degrade against evidence in the file.
+        records_prose=True,
         records_attribution=False,
         records_edit_originals=False,
         has_turn_ids=False,
         transcript_is_file=True,
     ),
+    messages=events.assistant_messages_cursor,
     # turn_start stays 0.0: parse_cursor gives every Event ts=0.0, so nothing to scope by.
 )
 
@@ -441,7 +444,25 @@ ENABLED = tuple(h for h in ALL if h.name in ENABLED_NAMES)
 # version here can only move when real data from that version moves with it.
 VERIFIED_AGAINST = {
     "claude": {"version": "2.1.220", "probe": ("claude", "--version")},
-    "cursor": {"version": "2026.07.09-a3815c0", "probe": ("cursor-agent", "--version")},
+    # Re-read against a transcript 2026.07.23-e383d2b wrote, captured by `capture_harness.py`
+    # (`tests/fixtures/harness/cursor/`). What this pin does and does not claim:
+    #
+    #   VERIFIED — `parse_cursor` finds tool events (Read/StrReplace/Shell/Glob, 9 of them) and
+    #   the `Shell`->`Bash` / `StrReplace`->`Edit` renames still land; `_cursor_discover` finds
+    #   the newest transcript under `projects/<encoded-cwd>/agent-transcripts/*/`; `_cursor_root`
+    #   reads `workspace_roots`; `detect` routes the payload here; `_compose_cursor` still spells
+    #   `followup_message`. Every `Capabilities` false below re-confirmed on those bytes: not one
+    #   `tool_result` block, no timestamps, no exit status, no runner output, no edit originals.
+    #
+    #   NOT VERIFIED — that the Stop hook runs at all. It never fired once here, across both
+    #   config placements (`.cursor/hooks.json` and `.cursor/hooks/hooks.json`), both scopes
+    #   (repo and `~`), a trusted and an untrusted workspace, and both `-p` and a real
+    #   interactive turn. The CLI does carry a full hook executor with a Claude-shaped event set
+    #   (`stop`, `sessionStart`, `afterShellExecution`, `afterFileEdit`, …), but `case "stop"`
+    #   is dispatched from a server-driven `aiserver.v1` request — local config is necessary and
+    #   not sufficient, and the account here is free-tier. So this pin covers the *reader*, and
+    #   Cursor stays out of `ENABLED_NAMES` until a turn is observed reaching the hook.
+    "cursor": {"version": "2026.07.23-e383d2b", "probe": ("cursor-agent", "--version")},
     # One pin covers both front ends: the CLI and the ChatGPT desktop app run the same core
     # against the same CODEX_HOME. Re-checked 2026-07-29 against a desktop-app turn
     # (`originator: "Codex Desktop"`, `cli_version: "0.146.0-alpha.3.1"`) and a CLI turn —

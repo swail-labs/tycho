@@ -1,7 +1,52 @@
 [
   {
-    "tool": "Glob",
+    "tool": "Read",
     "command": null,
+    "path": "/private/tmp/claude-501/-Users-me-projects-swail-tycho/766e4d98-3515-450b-8efe-285bd654e375/scratchpad/cursorcap/app.py",
+    "is_error": null,
+    "has_result": false,
+    "has_output": false,
+    "has_ts": false
+  },
+  {
+    "tool": "Read",
+    "command": null,
+    "path": "/private/tmp/claude-501/-Users-me-projects-swail-tycho/766e4d98-3515-450b-8efe-285bd654e375/scratchpad/cursorcap/tests/test_app.py",
+    "is_error": null,
+    "has_result": false,
+    "has_output": false,
+    "has_ts": false
+  },
+  {
+    "tool": "Edit",
+    "command": null,
+    "path": "/private/tmp/claude-501/-Users-me-projects-swail-tycho/766e4d98-3515-450b-8efe-285bd654e375/scratchpad/cursorcap/app.py",
+    "is_error": null,
+    "has_result": false,
+    "has_output": false,
+    "has_ts": false
+  },
+  {
+    "tool": "Edit",
+    "command": null,
+    "path": "/private/tmp/claude-501/-Users-me-projects-swail-tycho/766e4d98-3515-450b-8efe-285bd654e375/scratchpad/cursorcap/tests/test_app.py",
+    "is_error": null,
+    "has_result": false,
+    "has_output": false,
+    "has_ts": false
+  },
+  {
+    "tool": "Bash",
+    "command": "python3 -m pytest -q tests/ 2>&1 | tail -3",
+    "path": null,
+    "is_error": null,
+    "has_result": false,
+    "has_output": false,
+    "has_ts": false
+  },
+  {
+    "tool": "Bash",
+    "command": "pip3 install pytest -q && python3 -m pytest -q tests/ 2>&1 | tail -3",
     "path": null,
     "is_error": null,
     "has_result": false,
@@ -18,8 +63,8 @@
     "has_ts": false
   },
   {
-    "tool": "Glob",
-    "command": null,
+    "tool": "Bash",
+    "command": "python3 -m venv .venv && .venv/bin/pip install pytest -q && .venv/bin/python -m pytest -q tests/ 2>&1 | tail -3",
     "path": null,
     "is_error": null,
     "has_result": false,
@@ -27,108 +72,9 @@
     "has_ts": false
   },
   {
-    "tool": "Read",
-    "command": null,
-    "path": "/Users/me/projects/swail/tycho/tycho/harness.py",
-    "is_error": null,
-    "has_result": false,
-    "has_output": false,
-    "has_ts": false
-  },
-  {
-    "tool": "Read",
-    "command": null,
-    "path": "/Users/me/projects/swail/tycho/tycho/hook.py",
-    "is_error": null,
-    "has_result": false,
-    "has_output": false,
-    "has_ts": false
-  },
-  {
-    "tool": "Read",
-    "command": null,
-    "path": "/Users/me/projects/swail/tycho/docs/free-tier-design.md",
-    "is_error": null,
-    "has_result": false,
-    "has_output": false,
-    "has_ts": false
-  },
-  {
-    "tool": "Read",
-    "command": null,
-    "path": "/Users/me/projects/swail/tycho/docs/free-implementation-plan.md",
-    "is_error": null,
-    "has_result": false,
-    "has_output": false,
-    "has_ts": false
-  },
-  {
-    "tool": "Read",
-    "command": null,
-    "path": "/Users/me/projects/swail/tycho/docs/free-build-plan.md",
-    "is_error": null,
-    "has_result": false,
-    "has_output": false,
-    "has_ts": false
-  },
-  {
-    "tool": "Read",
-    "command": null,
-    "path": "/Users/me/projects/swail/tycho/README.md",
-    "is_error": null,
-    "has_result": false,
-    "has_output": false,
-    "has_ts": false
-  },
-  {
-    "tool": "Read",
-    "command": null,
-    "path": "/Users/me/projects/swail/tycho/pyproject.toml",
-    "is_error": null,
-    "has_result": false,
-    "has_output": false,
-    "has_ts": false
-  },
-  {
-    "tool": "Read",
-    "command": null,
-    "path": "/Users/me/projects/swail/tycho/docs/end-to-end-flow.md",
-    "is_error": null,
-    "has_result": false,
-    "has_output": false,
-    "has_ts": false
-  },
-  {
-    "tool": "Grep",
-    "command": null,
-    "path": "/Users/me/projects/swail/tycho",
-    "is_error": null,
-    "has_result": false,
-    "has_output": false,
-    "has_ts": false
-  },
-  {
-    "tool": "Glob",
-    "command": null,
+    "tool": "Bash",
+    "command": "PATH=\"$(pwd)/.venv/bin:$PATH\" python3 -m pytest -q tests/ 2>&1 | tail -3",
     "path": null,
-    "is_error": null,
-    "has_result": false,
-    "has_output": false,
-    "has_ts": false
-  },
-  {
-    "tool": "Glob",
-    "command": null,
-    "path": null,
-    "is_error": null,
-    "has_result": false,
-    "has_output": false,
-    "has_ts": false
-  },
-  {
-    "tool": "Write",
-    "command": null,
-    "path": "/Users/me/projects/swail/tycho/docs/distribution-ideas.md",
     "is_error": null,
     "has_result": false,
     "has_output": false,

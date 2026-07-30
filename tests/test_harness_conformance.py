@@ -368,10 +368,28 @@ def test_an_enabled_harness_has_a_captured_corpus():
     beliefs. Every reader bug found so far came from a shape nobody would have invented — so
     entering `ENABLED_NAMES` requires a corpus a tool captured off the real binary.
     """
-    authored = [
-        n for n in harness_mod.ENABLED_NAMES if not assets.capture(n).get("captured_by")
-    ]
+    authored = [n for n in harness_mod.ENABLED_NAMES if not assets.is_captured(n)]
     assert not authored, (
         f"enabled but running on an authored corpus: {authored} — "
         f"run `python scripts/capture_harness.py <name>` against a real session"
     )
+
+
+def test_a_capture_claim_matches_the_transcript_the_tests_read():
+    """`captured_by` is a claim about the bytes the suite parses, so it has to be checked
+    against `TRANSCRIPTS` — not merely be present in `capture.json`.
+
+    Cursor's own capture is why this exists: `capture_harness.py` wrote a real transcript into
+    the per-harness dir, `capture.json` recorded `captured_by`, and the eval's `corpus` column
+    flipped to "captured" — while `TRANSCRIPTS["cursor"]` still pointed at the authored sample,
+    so not one test read a captured byte. A green nothing backed, in the file whose whole job
+    is refusing those.
+    """
+    for name in NAMES:
+        claimed = bool(assets.capture(name).get("captured_by"))
+        in_corpus = assets.TRANSCRIPTS[name].parent == assets.HARNESS_DIR / name
+        assert claimed == in_corpus, (
+            f"{name}: capture.json says captured_by={claimed!r} but the transcript the tests "
+            f"parse is {assets.TRANSCRIPTS[name]} — point TRANSCRIPTS at the captured file, "
+            f"or stop claiming it was captured"
+        )

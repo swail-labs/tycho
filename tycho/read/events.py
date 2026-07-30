@@ -195,6 +195,35 @@ def parse_cursor(transcript: Path) -> tuple[Event, ...]:
     return tuple(events)
 
 
+def assistant_messages_cursor(transcript: Path) -> tuple[Message, ...]:
+    """Cursor assistant prose, for `tool_call_provenance`.
+
+    Cursor's `Capabilities` declared `records_prose=False` while every assistant row carried
+    `text` blocks the whole time, so the check degraded to UNSUPPORTED against evidence sitting
+    in the file — the "correctly blind vs quietly broken" confusion the dataclass exists to make
+    impossible. Confirmed present on a captured 2026.07.23-e383d2b transcript.
+
+    `role`, not `type`: Cursor keys its rows the way the Anthropic API shapes a message, and the
+    only row carrying `type` is the terminal `turn_ended`. Filtering to assistant matters more
+    here than on Claude — a Cursor user row wraps the human's own words in `<user_query>`, and
+    counting those as the agent's claims would have `tool_call_provenance` check the prompt
+    against the transcript.
+
+    ts stays 0.0: no row carries a timestamp, so ordering is all there is, and `turn_start`
+    stays 0.0 to match.
+    """
+    out = []
+    for entry in _entries(transcript):
+        if entry.get("role") != "assistant":
+            continue
+        for block in _blocks(entry):
+            if block.get("type") == "text":
+                text = block.get("text")
+                if isinstance(text, str) and text.strip():
+                    out.append(Message(ts=0.0, text=text))
+    return tuple(out)
+
+
 # Codex spells one shell run two ways, and both are live in the same release: the freeform
 # `exec` tool arrives as `custom_tool_call` carrying a JS snippet, the structured
 # `exec_command` tool as `function_call` carrying JSON. Reading only the first made Tycho

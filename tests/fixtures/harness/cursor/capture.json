@@ -1,5 +1,5 @@
 {
-  "version_captured": "2026.07.09-a3815c0",
-  "captured_by": null,
-  "note": "Real session, captured before scripts/capture_harness.py existed, so nothing recorded how. Re-capture with the tool before Cursor enters ENABLED_NAMES."
+  "version_captured": "2026.07.23-e383d2b",
+  "captured_by": "scripts/capture_harness.py",
+  "source_events": 9
 }

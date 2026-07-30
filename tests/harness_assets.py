@@ -29,10 +29,24 @@ HARNESS_DIR = FIXTURES / "harness"
 # tool-captured one.
 TRANSCRIPTS = {
     "claude": HARNESS_DIR / "claude" / "transcript.jsonl",
-    "cursor": FIXTURES / "cursor_transcript_sample.jsonl",
+    "cursor": HARNESS_DIR / "cursor" / "transcript.jsonl",
     "codex": HARNESS_DIR / "codex" / "transcript.jsonl",
     "opencode": FIXTURES / "opencode_transcript_sample.json",
 }
+
+# `capture.json` says a corpus was tool-captured; `TRANSCRIPTS` says which bytes the tests
+# actually parse. Nothing tied the two together, so writing a capture flipped the eval's
+# `corpus` column to "captured" while every test went on reading the authored sample — the
+# scorecard sourcing its claim from a file no test consumes. Caught on Cursor's own capture.
+def is_captured(name: str) -> bool:
+    """Does `name`'s corpus claim hold up against the transcript the tests read?
+
+    Both halves, deliberately: a `captured_by` stamp on a transcript the suite never opens is
+    not a captured corpus, and a captured file nothing claims is not a re-verification.
+    """
+    path = TRANSCRIPTS[name]
+    in_corpus = path.parent == HARNESS_DIR / name
+    return bool(capture(name).get("captured_by")) and in_corpus
 
 
 def payload(name: str) -> dict:

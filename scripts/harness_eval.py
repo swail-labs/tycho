@@ -150,7 +150,7 @@ def build() -> dict:
             "blind": capability_count - reach,
             "catch": hit,
             "catch_of": total,
-            "corpus": "captured" if meta.get("captured_by") else "authored",
+            "corpus": "captured" if assets.is_captured(name) else "authored",
             "version_captured": meta.get("version_captured"),
             "version_pinned": (harness_mod.VERIFIED_AGAINST.get(name) or {}).get("version"),
             "version_installed": _installed_version(name),
