@@ -1,7 +1,11 @@
 {
+  "session_id": "019faf45-9fec-70a3-8725-6ef9efb2320a",
+  "turn_id": "019faf45-a097-72d2-9523-88c3d22e2d5b",
+  "transcript_path": "/Users/me/.codex/sessions/2026/07/29/rollout-2026-07-29T15-06-43-019faf45-9fec-70a3-8725-6ef9efb2320a.jsonl",
+  "cwd": "/Users/me/Desktop/Swail/tycho",
   "hook_event_name": "Stop",
-  "turn_id": "0199f4c2-7a3e-7b81-9f04-6d2c8e1a5b37",
-  "session_id": "0199f4c2-7a3e-7b81-9f04-6d2c8e1a5b37",
-  "transcript_path": "/Users/me/.codex/sessions/2026/07/29/rollout-2026-07-29T12-04-11-0199f4c2-7a3e-7b81-9f04-6d2c8e1a5b37.jsonl",
-  "cwd": "/Users/me/projects/tycho"
+  "model": "gpt-5.4-mini",
+  "permission_mode": "default",
+  "stop_hook_active": false,
+  "last_assistant_message": "Created `/Users/me/Desktop/Swail/tycho/app_probe.txt` with `probe`.\n\nI did not run the pytest suite, so I can’t say it passed."
 }

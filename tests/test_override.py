@@ -140,7 +140,8 @@ def test_relay_treats_overridden_as_terminal(tmp_path: Path):
     from types import SimpleNamespace
     state.set_relay_enabled(tmp_path, True)
     state.bump_relay_streak(tmp_path)
-    out = hook._relay_output(tmp_path, SimpleNamespace(name="claude"),
+    from tycho.read import harness as harness_mod
+    out = hook._relay_output(tmp_path, harness_mod.CLAUDE,
                              SimpleNamespace(name="OVERRIDDEN"), "report", "adverse")
     assert out is None
     assert state.relay_streak(tmp_path) == 0
@@ -360,8 +361,8 @@ def test_overridden_verdict_tells_user_how_to_veto_or_disable(tmp_path, monkeypa
     state.set_override_enabled(repo, True)
     state.record_override(repo, "test_freshness", "not applicable: docs-only turn")
 
-    class _HumanHarness:  # human-only channel present (like Claude/Codex)
-        notice_output = staticmethod(lambda t: {"systemMessage": t})
+    from tycho.read import harness as harness_mod
+    _HumanHarness = harness_mod.CLAUDE  # a free human channel
 
     results = _results(test_freshness=CheckStatus.STALE)
     out = hook._override_notice(repo, _HumanHarness, Verdict.OVERRIDDEN, results)
@@ -372,10 +373,13 @@ def test_overridden_verdict_tells_user_how_to_veto_or_disable(tmp_path, monkeypa
     # Non-OVERRIDDEN verdict -> no notice.
     assert hook._override_notice(repo, _HumanHarness, Verdict.VERIFIED, results) == ""
 
-    # Model-facing harness (no human-only channel) -> suppressed.
-    class _ModelHarness:
-        notice_output = None
-    assert hook._override_notice(repo, _ModelHarness, Verdict.OVERRIDDEN, results) == ""
+    # A harness that can reach nobody -> suppressed. Note this is no longer Codex: it has a
+    # shared channel, so the notice does reach a person there, which is the point of parity.
+    class _MuteHarness:
+        channels = harness_mod.Channels(
+            human_only=False, model_only=True, shared=False, relays=False
+        )
+    assert hook._override_notice(repo, _MuteHarness, Verdict.OVERRIDDEN, results) == ""
 
     # An override on a check that actually PASSed is a no-op — it must NOT be named as
     # "set aside" (mirrors _apply_overrides' disputed & non-PASS intersection).

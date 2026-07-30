@@ -346,3 +346,53 @@ def test_the_first_write_in_a_fresh_repo_anchors_at_the_git_root(tmp_path: Path)
     sub = repo / "packages" / "slug"
     sub.mkdir(parents=True)
     assert state.root_for(sub) == repo
+
+
+# --- the machine-wide install covers Codex too -------------------------------
+
+
+@pytest.fixture
+def codex_home(user_home: Path) -> Path:
+    """A machine that has Codex as well as Claude. `_present_for_user` asks by directory, so
+    creating it is what makes this user a Codex user."""
+    home = user_home.parent / ".codex"
+    home.mkdir(parents=True)
+    return home
+
+
+def test_install_wires_codex_as_well_as_claude(codex_home: Path, user_home: Path, git_home):
+    """`tycho install` is the one-command path — and the path the README sends people down.
+    It wired Claude's user-level config only, so a Codex user who followed it got a verifier
+    that never fired until they ran `tycho init` in every repo by hand."""
+    init_mod.install(confirm=lambda: True)
+    data = json.loads((codex_home / "hooks.json").read_text())
+    command = data["hooks"]["Stop"][0]["hooks"][0]["command"]
+    assert init_mod._is_tycho_hook(command)
+    assert init_mod.globally_wired() == ["claude", "codex"]
+
+
+def test_the_codex_guard_stands_down_on_codexs_own_repo_config(codex_home: Path, user_home, git_home):
+    """The stand-down guard has to name the harness's *own* repo-local file. Pointed at
+    `.claude/settings.json` — the only spelling that existed — a repo that ran `tycho init`
+    would keep firing the machine-wide Codex hook alongside its own, verifying (and relaying)
+    the same turn twice."""
+    init_mod.install(confirm=lambda: True)
+    data = json.loads((codex_home / "hooks.json").read_text())
+    command = data["hooks"]["Stop"][0]["hooks"][0]["command"]
+    assert ".codex/hooks.json" in command
+    assert ".claude/settings.json" not in command
+
+
+def test_a_claude_only_machine_is_never_offered_a_codex_path(user_home: Path, git_home):
+    """No `~/.codex`, so nothing about Codex may be written or even named in the consent
+    prompt — the prompt's whole job is that it lists exactly what gets touched."""
+    init_mod.install(confirm=lambda: True)
+    assert not (user_home.parent / ".codex").exists()
+    assert init_mod.globally_wired() == ["claude"]
+    assert not any("codex" in str(p) for p in init_mod._global_targets())
+
+
+def test_uninstall_removes_both_user_level_hooks(codex_home: Path, user_home, git_home):
+    init_mod.install(confirm=lambda: True)
+    init_mod.uninstall_global()
+    assert init_mod.globally_wired() == []

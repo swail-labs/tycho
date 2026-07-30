@@ -378,3 +378,81 @@ def test_a_prune_publishes_when_nothing_landed_under_it(tmp_path: Path):
 
     assert record._publish(tmp, path, path.stat().st_size) is True
     assert path.read_text(encoding="utf-8") == '{"i":2}\n'
+
+
+# --- the append nothing guards ------------------------------------------------
+#
+# `append` writes without the lock once `_LOCK_ATTEMPTS` rounds have timed out, because losing
+# a turn is worse than losing the prune. On POSIX that write is atomic and the path is also
+# unreachable under test — the heaviest load in this suite takes the lock every single time. So
+# these force the lock to fail, which is what a Windows CI runner does under contention: 4
+# processes x 200 appends produced 798 records there, and could not be reproduced anywhere else.
+
+
+@contextmanager
+def lock_always_unavailable():
+    """Make every `_locked` yield False, without touching the real locking code."""
+    from tycho.store import state
+
+    real = state._locked
+
+    @contextmanager
+    def never(path, timeout=None):
+        with real(path, timeout):  # still create/remove it, so the shape is unchanged
+            yield False
+
+    state._locked = never
+    try:
+        yield
+    finally:
+        state._locked = real
+
+
+def test_an_unlockable_append_still_lands(tmp_path: Path):
+    from tycho.store import record
+
+    repo = tmp_path / "repo"
+    with lock_always_unavailable():
+        assert record.append(repo, {"schema": 1, "id": "a", "ended_at": 1.0}) is True
+    assert [r["id"] for r in record.iter_records(repo)] == ["a"]
+
+
+def test_an_unlockable_append_that_gets_erased_is_rewritten(tmp_path: Path):
+    """The Windows failure, simulated: the line is written and something else clobbers it. The
+    read-back is what turns a silently lost turn into a second attempt."""
+    from tycho.store import record
+
+    repo = tmp_path / "repo"
+    record.append(repo, {"schema": 1, "id": "first", "ended_at": 1.0})
+    erased = []
+
+    real_write = record._write_line
+
+    def erasing(p: Path, line: str) -> None:
+        real_write(p, line)
+        if not erased:  # only the first write is lost, as a colliding appender would do
+            erased.append(line)
+            kept = [ln for ln in p.read_text(encoding="utf-8").splitlines() if ln != line]
+            p.write_text("".join(ln + "\n" for ln in kept), encoding="utf-8")
+
+    record._write_line = erasing
+    try:
+        with lock_always_unavailable():
+            assert record.append(repo, {"schema": 1, "id": "b", "ended_at": 2.0}) is True
+    finally:
+        record._write_line = real_write
+
+    ids = [r["id"] for r in record.iter_records(repo)]
+    assert ids == ["first", "b"], f"the erased record was not rewritten: {ids}"
+
+
+def test_a_rewritten_append_is_never_duplicated(tmp_path: Path):
+    """The other direction, and the reason the retry is bounded at one: a record that *did*
+    land must not be written twice, or every tally downstream double-counts it."""
+    from tycho.store import record
+
+    repo = tmp_path / "repo"
+    with lock_always_unavailable():
+        assert record.append(repo, {"schema": 1, "id": "a", "ended_at": 1.0}) is True
+        assert record.append(repo, {"schema": 1, "id": "b", "ended_at": 2.0}) is True
+    assert [r["id"] for r in record.iter_records(repo)] == ["a", "b"]

@@ -96,7 +96,18 @@ def diagnose(repo: Path) -> list[Finding]:
             "covered by the machine-wide install — no per-repo hook needed",
             "`tycho init` also adds the commit trailer and a shareable .tycho.toml",
         ))
-        wired = ["claude"]
+        # What the machine-wide install actually covers, read back from the configs — not a
+        # hardcoded "claude", or a Codex-only machine reports the wrong harness and skips the
+        # drift and trust checks that only apply to the one it really has.
+        wired = init_mod.globally_wired()
+        if "codex" in wired and init_mod.codex_untrusted(repo, init_mod.GLOBAL):
+            findings.append(Finding(
+                BROKEN,
+                "codex: the machine-wide Stop hook is installed but Codex hasn't been told to "
+                "trust it — until then it reads the config and runs nothing",
+                "open Codex (CLI or the desktop app) and approve the hooks review it shows "
+                "at startup — once, for every repo",
+            ))
     elif not wired:
         findings.append(Finding(
             INFO, "Tycho is not set up on this machine", "run `tycho install` (once, for every repo)"
@@ -163,6 +174,16 @@ def _is_wired(repo: Path, name: str, recorded: dict, findings: list[Finding]) ->
             "run `tycho init` to rewrite it for this environment",
         ))
         return True  # wired (the entry exists), just not working
+
+    if name == "codex" and init_mod.codex_untrusted(repo):
+        findings.append(Finding(
+            BROKEN,
+            "codex: the Stop hook is installed but Codex hasn't been told to trust it — "
+            "until then it reads the config and runs nothing",
+            "open Codex (CLI or the desktop app) in this repo and approve the hooks review "
+            "it shows at startup",
+        ))
+        return True  # wired (the entry exists), just not running
 
     # Not compared against `init.hook_command()`: that answer depends on whether the venv is
     # on PATH right now, so one healthy install would read as two different "current"s.
@@ -276,8 +297,10 @@ def _transcript_finding(repo: Path) -> Finding:
     try:
         return Finding(OK, f"most recent session: {harness.name} ({path})")
     finally:
-        if harness.name == "opencode":
-            path.unlink(missing_ok=True)  # a rebuilt temp file — discovery hands it over
+        # A rebuilt temp file — discovery hands it over. Declared, not named, so the next
+        # harness Tycho rebuilds for lands on the right side of this without editing it.
+        if not harness.capabilities.transcript_is_file:
+            path.unlink(missing_ok=True)
 
 
 def _harness_drift(wired: list[str]) -> list[Finding]:

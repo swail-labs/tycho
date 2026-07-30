@@ -23,20 +23,32 @@ from .spelling import (
 
 
 def global_installed() -> bool:
-    """Is Tycho wired into the *user-level* Claude config right now? The config is the
+    """Is Tycho wired into *any* user-level harness config right now? The config is the
     truth, not a marker we wrote: hand-removing the entry is uninstalling. Never raises —
     unparseable reads as "not installed", since we'd refuse to write it."""
-    try:
-        data = _load(settings_path(Path.cwd(), GLOBAL))
-    except ConfigRefused:
-        return False
-    hooks = data.get("hooks") if isinstance(data.get("hooks"), dict) else {}
-    return any(
-        isinstance(entry, dict) and _is_tycho_owned(entry.get("command"))
-        for group in (hooks.get("Stop") or [])
-        if isinstance(group, dict)
-        for entry in (group.get("hooks") or [])
-    )
+    return bool(globally_wired())
+
+
+def globally_wired() -> list[str]:
+    """Which harnesses the machine-wide install currently covers. Both take Claude's
+    `hooks.Stop` shape, so one reader serves them; a harness the user doesn't have simply has
+    no file and drops out."""
+    found = []
+    for name, path in (("claude", settings_path(Path.cwd(), GLOBAL)),
+                       ("codex", config_path(Path.cwd(), "codex", GLOBAL))):
+        try:
+            data = _load(path)
+        except ConfigRefused:
+            continue
+        hooks = data.get("hooks") if isinstance(data.get("hooks"), dict) else {}
+        if any(
+            isinstance(entry, dict) and _is_tycho_owned(entry.get("command"))
+            for group in (hooks.get("Stop") or [])
+            if isinstance(group, dict)
+            for entry in (group.get("hooks") or [])
+        ):
+            found.append(name)
+    return found
 
 
 def installed_command(repo: Path, name: str) -> str | None:

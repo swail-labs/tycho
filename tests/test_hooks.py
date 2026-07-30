@@ -42,14 +42,41 @@ def test_detect_codex_by_stop_payload():
     assert harness.detect(payload).name == "codex"
 
 
+def test_detect_codex_on_a_session_start_payload(monkeypatch):
+    """A real captured Codex SessionStart, which carries no `turn_id`.
+
+    Every field in it — `session_id`, `transcript_path`, `cwd`, `hook_event_name`,
+    `permission_mode`, `source` — is one Claude's SessionStart carries too, so the Stop-shaped
+    row misses it and it used to fall through to Claude. Tycho then answered a Codex bootup on
+    Claude's channel, a field Codex drops, and the notice reached nobody. The transcript's own
+    location is what settles it.
+    """
+    payload = json.loads((FIXTURES / "harness" / "codex" / "session_start_payload.json").read_text())
+    monkeypatch.setattr(harness, "home", lambda name: Path("/Users/me") / f".{name}")
+    assert harness.detect(payload).name == "codex"
+
+
+def test_a_claude_session_start_is_not_mistaken_for_codex(monkeypatch):
+    """The off-diagonal of the same row: same shape, transcript under Claude's home."""
+    monkeypatch.setattr(harness, "home", lambda name: Path("/Users/me") / f".{name}")
+    payload = {
+        "session_id": "3f2b7c81",
+        "transcript_path": "/Users/me/.claude/projects/-Users-me-projects-tycho/3f2b7c81.jsonl",
+        "cwd": "/Users/me/projects/tycho",
+        "hook_event_name": "SessionStart",
+        "source": "startup",
+    }
+    assert harness.detect(payload).name == "claude"
+
+
 def test_repo_root_from_cwd_vs_workspace_roots():
     assert harness.CLAUDE.repo_root({"cwd": "/a"}) == Path("/a")
     assert harness.CURSOR.repo_root({"workspace_roots": ["/b"]}) == Path("/b")
 
 
 def test_output_channels_differ():
-    assert "systemMessage" in harness.CLAUDE.format_output("x")
-    assert "followup_message" in harness.CURSOR.format_output("x")
+    assert "systemMessage" in harness.CLAUDE.compose("x", "")
+    assert "followup_message" in harness.CURSOR.compose("x", "")
 
 
 # --- cursor Stop payload (pinned to cursor-agent 2026.07.09-a3815c0) ---------
@@ -72,7 +99,7 @@ def test_cursor_stop_payload_yields_repo_root_and_transcript():
 def test_cursor_stop_output_carries_only_followup_message():
     # Cursor's stop validator reads `followup_message` and nothing else — any other
     # key is silently dropped, which is how the old `user_message` reached nobody.
-    out = harness.CURSOR.format_output("Tycho: PASSED")
+    out = harness.CURSOR.compose("Tycho: PASSED", "")
     assert list(out) == ["followup_message"]
     assert isinstance(out["followup_message"], str)  # validator: must be a string
 
@@ -80,7 +107,7 @@ def test_cursor_stop_output_carries_only_followup_message():
 def test_cursor_followup_leads_with_verdict_then_tells_model_to_stop():
     # Cursor replays the verdict into the model loop, so it has to carry its own stop
     # condition — otherwise a FAILED verdict reads as "go fix this" and the agent works on.
-    out = harness.CURSOR.format_output("Tycho: FAILED — tests did not run")["followup_message"]
+    out = harness.CURSOR.compose("Tycho: FAILED — tests did not run", "")["followup_message"]
     assert out.startswith("Tycho: FAILED — tests did not run")  # verdict first, never buried
     assert "end your turn now" in out and "verbatim" in out
 
@@ -366,18 +393,18 @@ def test_codex_readers_hold_against_the_pinned_version(tmp_path: Path):
     """
     evs = events.parse_codex(CODEX_PIN_FIXTURE)
     runs = [e for e in evs if e.tool == "Bash"]
-    assert [e.input["command"] for e in runs] == ["pytest -q"]
+    assert [e.input["command"] for e in runs] == ["pytest -q ."]
     # The exit status is what `command_execution` reads; it going missing is the silent
     # failure this pin exists to catch.
     assert runs[0].is_error is False
     assert "77 passed" in (runs[0].result.get("stdout") or "")
     assert {e.path for e in events.file_edits(evs)} == {"/repo/app.py"}
-    assert events.turn_start_codex(CODEX_PIN_FIXTURE) == events._epoch("2026-07-23T22:09:59.000Z")
+    assert events.turn_start_codex(CODEX_PIN_FIXTURE) == events._epoch("2026-07-29T19:05:32.898Z")
     assert [m.text for m in events.assistant_messages_codex(CODEX_PIN_FIXTURE)] == [
         "Added the helper and ran the suite."
     ]
     got = events.attribution_codex(CODEX_PIN_FIXTURE)
-    assert (got.model, got.agent_version) == ("gpt-5.6-sol", "0.145.0")
+    assert (got.model, got.agent_version) == ("gpt-5.4-mini", "0.146.0")
     assert got.session_id
 
 
@@ -631,7 +658,13 @@ def test_hook_run_cursor_produces_followup_message(tmp_path: Path):
     assert out is not None and "Tycho:" in out["followup_message"]
 
 
-def test_hook_run_codex_produces_system_message(tmp_path: Path):
+def test_hook_run_codex_reaches_the_user_with_the_relay_off(tmp_path: Path):
+    """The default configuration, and the one that was broken for a whole release.
+
+    This asserted `systemMessage` before, which Codex accepts and renders nowhere — so it passed
+    while every Codex user with the relay off (the default) saw nothing at all, on every turn.
+    Reaching a person there means blocking, because `reason` is the only field that arrives.
+    """
     payload = json.dumps({
         "hook_event_name": "Stop",
         "turn_id": "turn-current",
@@ -639,7 +672,12 @@ def test_hook_run_codex_produces_system_message(tmp_path: Path):
         "transcript_path": str(CODEX_FIXTURE),
     })
     out = hook.run(payload)
-    assert out is not None and "Tycho:" in out["systemMessage"]
+    assert out is not None, "codex turn produced no output at all"
+    assert "systemMessage" not in out, "systemMessage reaches nobody on codex"
+    assert out["decision"] == "block"
+    assert "Tycho:" in out["reason"]
+    # And the model is told this is a report, or a status line becomes unrequested work.
+    assert "end your turn now" in out["reason"]
 
 
 def test_hook_run_fails_open_on_bad_input():

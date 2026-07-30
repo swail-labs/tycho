@@ -88,8 +88,9 @@ def _verify(args: argparse.Namespace) -> int:
                 parse=harness.parse, messages=harness.messages,
             )
         finally:
-            # OpenCode's transcript is a rebuilt temp file — discovery owns cleanup.
-            if not args.session and harness.name == "opencode":
+            # A rebuilt transcript is a temp file discovery owns; one the harness maintains
+            # must never be deleted. Declared, so a new harness needs no edit here.
+            if not args.session and not harness.capabilities.transcript_is_file:
                 transcript.unlink(missing_ok=True)
     except Exception as exc:
         # A traceback is not a verdict: say plainly that we couldn't verify.

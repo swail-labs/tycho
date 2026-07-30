@@ -138,9 +138,11 @@ def test_codex_stop_relays_end_to_end(tmp_path: Path):
     state.set_relay_enabled(tmp_path, True)
     out = hook.run(_codex_payload(tmp_path))
     assert out["decision"] == "block"
-    assert "Tycho:" in out["systemMessage"]
     assert "Tycho:" in out["reason"]
     assert "not a new instruction" in out["reason"]
+    # No `systemMessage`: Codex accepts the field and renders it nowhere (probed against
+    # 0.146.0, CLI and desktop app), so `reason` is the only thing either audience ever sees.
+    assert "systemMessage" not in out
 
 
 def test_codex_fabricated_web_search_triggers_relay(tmp_path: Path):
@@ -222,14 +224,15 @@ def test_codex_relay_does_not_recheck_the_previous_iteration(tmp_path: Path):
 
 def test_additionalContext_is_adverse_only_not_the_full_verdict(tmp_path: Path):
     # The harness renders additionalContext verbatim as "Stop hook feedback"; a full copy there
-    # reshows the whole verdict the human already reads on systemMessage. The model-facing copy
-    # carries only the adverse line(s); the human channel still carries every check.
+    # reshows the verdict the human already reads on systemMessage. Both sides are built from
+    # the adverse-only render now — the human's is capped for length, the model's is not, since
+    # nothing is competing for that space.
     state.set_relay_enabled(tmp_path, True)
     out = hook.run(_claude_payload(tmp_path))
     ctx = out["hookSpecificOutput"]["additionalContext"]
     assert "✗" in ctx  # the failing check is present, so the agent knows what to fix
     assert "•" not in ctx  # ...but the non-adverse (UNSUPPORTED) lines are not re-listed
-    assert "•" in out["systemMessage"]  # the human still sees every check
+    assert "✗" in out["systemMessage"]  # and the human is told what failed
 
 
 def test_guard_tells_agent_not_to_regurgitate_the_verdict(tmp_path: Path):
@@ -280,14 +283,27 @@ def test_guard_uses_TYCHO_prefix_and_points_at_the_relay_command(tmp_path: Path)
 
 # --- _relay_output unit cases the fixture can't reach ------------------------
 
-def _fake(name: str) -> SimpleNamespace:
+def _fake(name: str):
+    """The *real* harness record for `name`.
+
+    Was a bare `SimpleNamespace(name=...)`, which is how the relay's per-harness behaviour went
+    untested for the thing that mattered: a stub carries whatever the code asks it for, so a unit
+    test built on one asserts against a harness that does not exist. These now read the declared
+    channels, so a delivery that only works because of how Claude is shaped fails here."""
+    from tycho.read import harness as harness_mod
+
+    return harness_mod.BY_NAME[name]
+
+
+def _verdict(name: str) -> SimpleNamespace:
+    """A stand-in verdict. Only `.name` is read on this path."""
     return SimpleNamespace(name=name)
 
 
 def test_verified_verdict_never_injects_and_clears_streak(tmp_path: Path):
     state.set_relay_enabled(tmp_path, True)
     state.bump_relay_streak(tmp_path)
-    out = hook._relay_output(tmp_path, _fake("claude"), _fake("VERIFIED"), "report", "adverse")
+    out = hook._relay_output(tmp_path, _fake("claude"), _verdict("VERIFIED"), "report", "adverse")
     assert out is None  # nothing to fix — the turn ends
     assert state.relay_streak(tmp_path) == 0
 
@@ -295,23 +311,113 @@ def test_verified_verdict_never_injects_and_clears_streak(tmp_path: Path):
 def test_codex_relays_with_block_reason(tmp_path: Path):
     state.set_relay_enabled(tmp_path, True)
     out = hook._relay_output(
-        tmp_path, _fake("codex"), _fake("FAILED"), "full report", "adverse report"
+        tmp_path, _fake("codex"), _verdict("FAILED"), "full report", "adverse report"
     )
     assert out["decision"] == "block"
-    assert "adverse report" in out["reason"]
+    # The human's copy is the full render, same as Claude's — only the delivery differs.
+    assert "full report" in out["reason"]
     assert "not a new instruction" in out["reason"]
-    assert "full report" in out["systemMessage"]
+    assert "systemMessage" not in out  # Codex renders it nowhere — see the end-to-end case
     assert state.relay_streak(tmp_path) == 1
+
+
+def test_the_verdict_block_caps_the_check_list_and_says_what_it_cut(tmp_path: Path):
+    """A ten-check block is half a screen and reads as ten problems. Capped on every harness,
+    with the remainder pointed at `tycho show` — Codex is where the cost was visible (the block
+    comes back as a full-width message bubble) but it was never cheap on Claude either."""
+    report = "\n".join(["🔍 Tycho: INDETERMINATE"] + [f"  • check_{i} — nothing to read" for i in range(9)])
+    block = hook._verdict_block(report)
+    body = block.splitlines()
+    assert body[0] == "🔍 Tycho: INDETERMINATE"
+    assert len(body) == hook._BLOCK_MAX_LINES + 2  # header + cap + the "…and N more" line
+    assert f"…and {9 - hook._BLOCK_MAX_LINES} more" in body[-1] and "tycho show" in body[-1]
+    assert block.count("\n") < report.count("\n")
+
+
+def test_a_shared_channel_says_it_once_per_turn(tmp_path: Path):
+    """Speaking on a shared channel blocks the Stop, and the agent's reply produces another one.
+
+    Observed live on Codex before this: one user turn, two identical blocks, two model replies,
+    for a turn that had one thing to report. `stop_hook_active` is the harness saying "this Stop
+    *is* that reply". Decay would usually go quiet on the second pass, but usually is not a leash.
+    A free human channel has nothing to bound — it costs no turn — so it still speaks.
+    """
+    from tycho.read import harness as harness_mod
+
+    for name in ("claude", "codex"):
+        harness = harness_mod.BY_NAME[name]
+        first = hook._speak(harness, "🔍 Tycho: FAILED", continuation=False)
+        again = hook._speak(harness, "🔍 Tycho: FAILED", continuation=True)
+        assert first is not None, f"{name}: said nothing the first time"
+        if harness.channels.human_only:
+            assert again is not None, f"{name}: a free channel needs no leash"
+        else:
+            assert again is None, f"{name}: blocked twice for one turn"
+
+
+def test_a_finding_is_never_dropped_to_save_space(tmp_path: Path):
+    """The cap is for absences, never for findings.
+
+    Every line above is "nothing here to read" and the tenth is worth no more than the fourth.
+    A line that names a *failure* is the entire product, so six of them are six lines — hiding
+    one to fit a screen is the only trade this code must never make.
+    """
+    n = hook._BLOCK_MAX_LINES + 3  # more findings than the cap would otherwise allow
+    report = "\n".join(["🔍 Tycho: FAILED"] + [f"  ✗ check_{i} — broke" for i in range(n)])
+    block = hook._verdict_block(report)
+    assert block == report, "a finding was truncated"
+    for i in range(n):
+        assert f"check_{i}" in block
+    assert "tycho show" not in block  # nothing was cut, so nothing to point at
+
+
+def test_every_harness_shows_the_user_the_same_thing(tmp_path: Path):
+    """The parity invariant, and the reason it is a test and not a docstring.
+
+    A person switching harness must read the same words — same verdict block, same pointer at
+    how to turn the relay off. What differs is delivery, because the harnesses do: Claude has a
+    human field and a model field, Codex has one field that is both. That is a fact about the
+    harness; a user noticing it is a bug. Codex went silent for a whole release because this
+    lived in prose.
+    """
+    from tycho.model import CheckResult, CheckStatus, Verdict
+    from tycho.views.report import render
+
+    results = [
+        CheckResult(name="command_execution", status=CheckStatus.FAIL, evidence="exited 1"),
+        CheckResult(name="file_state", status=CheckStatus.PASS, evidence="present on disk"),
+    ]
+    report = render(Verdict.FAILED, results)
+    agent_report = render(Verdict.FAILED, results, only_adverse=True)
+
+    seen = {}
+    for name in ("claude", "codex"):
+        repo = tmp_path / name
+        repo.mkdir()
+        state.set_relay_enabled(repo, True)
+        out = hook._relay_output(
+            repo, _fake(name), Verdict.FAILED, report, agent_report, results
+        )
+        # Whatever field this harness renders to a person, minus the model's instruction.
+        text = out.get("systemMessage") or out["reason"]
+        seen[name] = text.split("\n\n[TYCHO] The above")[0]
+
+    assert seen["claude"] == seen["codex"], (
+        "the user-facing relay text diverged between harnesses:\n"
+        f"claude:\n{seen['claude']}\n\ncodex:\n{seen['codex']}"
+    )
+    assert "✗ command_execution" in seen["claude"]  # the verdict itself, not just any text
+    assert "tycho relay" in seen["claude"]          # ...and how to turn it off
 
 
 def test_other_harnesses_never_inject_even_when_enabled(tmp_path: Path):
     state.set_relay_enabled(tmp_path, True)
     for h in ("cursor", "opencode"):
-        assert hook._relay_output(tmp_path, _fake(h), _fake("FAILED"), "report", "adverse") is None
+        assert hook._relay_output(tmp_path, _fake(h), _verdict("FAILED"), "report", "adverse") is None
 
 
 def test_disabled_relay_returns_none(tmp_path: Path):
-    assert hook._relay_output(tmp_path, _fake("claude"), _fake("FAILED"), "report", "adverse") is None
+    assert hook._relay_output(tmp_path, _fake("claude"), _verdict("FAILED"), "report", "adverse") is None
 
 
 # --- cli: `tycho relay [--on|--off]` -----------------------------------------
@@ -400,3 +506,26 @@ def test_slash_commands_include_relay(tmp_path: Path):
     for name in ("tycho-relay.md", "tycho-relay-on.md", "tycho-relay-off.md"):
         assert (commands / name).exists()
     assert "relay --on" in (commands / "tycho-relay-on.md").read_text()
+
+
+def test_a_verdict_no_check_names_is_nudged_once_not_three_times(tmp_path: Path):
+    """An INDETERMINATE that comes from the combination — files changed, nothing corroborated
+    them — hands the agent nothing to fix, so re-asking it the full three times only bought
+    three turns of "no fix needed" (and, on Codex, three full-width bubbles). A verdict a check
+    can actually name still gets the whole leash."""
+    from tycho.model import CheckResult, CheckStatus
+
+    def relay(results):
+        return hook._relay_output(
+            tmp_path, _fake("codex"), _verdict("INDETERMINATE"), "report", "adverse", results
+        )
+
+    quiet = [CheckResult(name="file_state", status=CheckStatus.PASS, evidence="present on disk")]
+    state.set_relay_enabled(tmp_path, True)
+    assert relay(quiet) is not None      # one nudge: you changed code, nothing verified it
+    assert relay(quiet) is None          # …and then the turn is allowed to end
+
+    state.reset_relay_streak(tmp_path)
+    named = [CheckResult(name="command_execution", status=CheckStatus.FAIL, evidence="exited 1")]
+    assert [relay(named) is not None for _ in range(3)] == [True, True, True]
+    assert relay(named) is None          # the full leash, then stop

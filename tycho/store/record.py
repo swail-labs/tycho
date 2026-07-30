@@ -327,6 +327,17 @@ def append(repo: Path, record: dict) -> bool:
     already waits, but its deadline is a stuck holder's, and on Windows it reads progress from
     a clock too coarse to see the lock change hands.
 
+    And an unlocked append is not only at risk from the prune. The opening sentence holds on
+    POSIX, where ``O_APPEND`` makes the seek-to-end and the write one atomic step; the Windows
+    CRT implements append as a seek followed by a write, so two unlocked appenders can resolve
+    the same end offset and the second erases the first. Observed on CI: 4 processes x 200
+    appends, 798 records on disk, Windows only — never once reproducible on macOS, where this
+    same load never fails to take the lock at all (so the fallback never runs). Hence the
+    read-back: on the path where the write is unprotected, confirm it survived, and re-append
+    once if it did not. Bounded at one retry deliberately — a lost turn is the failure being
+    fixed, but a *duplicated* turn double-counts in every tally downstream, so the blast radius
+    of `_landed` being wrong stays one record either way.
+
     ``ensure_ascii=True`` because a lone surrogate in the agent's prose isn't encodable UTF-8,
     and the raise lost the whole turn rather than one odd character.
     """
@@ -335,19 +346,53 @@ def append(repo: Path, record: dict) -> bool:
         state._private_dir(path.parent)
         line = json.dumps(record, ensure_ascii=True, separators=(",", ":"))
         state._touch_private(path)
-        for attempt in range(_LOCK_ATTEMPTS):
+        for _ in range(_LOCK_ATTEMPTS):
             with state._locked(path) as held:
-                if not held and attempt < _LOCK_ATTEMPTS - 1:
+                if not held:
                     continue  # try again for the lock before writing where a prune can lose it
-                _terminate(path)
-                with path.open("a", encoding="utf-8") as fh:
-                    fh.write(line + "\n")
-                if held:
-                    _prune(path, max_records())
+                _write_line(path, line)
+                _prune(path, max_records())
                 return True
-        return False  # unreachable: the last attempt always writes
+        # Every attempt at the lock timed out. Write without it anyway — losing a turn is
+        # worse than losing the prune — but verify, because this is the write nothing guards.
+        _write_line(path, line)
+        if _landed(path, line):
+            return True
+        _write_line(path, line)
+        return _landed(path, line)
     except (OSError, TypeError, ValueError):
         return False
+
+
+def _write_line(path: Path, line: str) -> None:
+    """One append of one terminated line. `_terminate` first, or a previous process killed
+    mid-write leaves this record spliced onto its partial one."""
+    _terminate(path)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(line + "\n")
+
+
+def _landed(path: Path, line: str) -> bool:
+    """Is ``line`` on disk as a whole line? The check for an unguarded append.
+
+    Only the last `_LANDED_WINDOW` lines are considered, because a match further back is a
+    *different* record that happens to serialize identically, and treating that as success is
+    how a genuinely lost turn would be reported as landed. The read itself is of the whole
+    file — a tail seek would be the optimization, and this path only runs when the lock was
+    unavailable for `_LOCK_ATTEMPTS` rounds, which never happened once on POSIX under the
+    heaviest load in the suite.
+    """
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            tail = fh.readlines()[-_LANDED_WINDOW:]
+    except OSError:
+        return False
+    return line in (candidate.rstrip("\n") for candidate in tail)
+
+
+# How far back `_landed` looks for its own line: enough that every concurrent appender on the
+# machine could have written since this one did.
+_LANDED_WINDOW = 64
 
 
 def _terminate(path: Path) -> None:

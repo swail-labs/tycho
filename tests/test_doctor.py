@@ -553,3 +553,98 @@ def test_the_codex_pin_has_real_transcript_data_behind_it():
         f"codex is pinned to {pinned} but {fixture.name} carries {sorted(v for v in versions if v)} "
         "— capture a transcript from the pinned version before moving the pin"
     )
+
+
+# --- codex hook trust: installed is not the same as armed ---------------------
+#
+# Codex will not run a hook it has not shown a human. Until it is approved, the config is read
+# and nothing runs — while the file exists, the command resolves, and every other signal doctor
+# has says healthy. The only trace of an approval is a `[hooks.state]` entry in
+# CODEX_HOME/config.toml, keyed by config path and event, holding a hash of the hook.
+
+
+def _codex_repo(repo: Path) -> Path:
+    (repo / ".codex").mkdir(parents=True, exist_ok=True)
+    init_mod.init(repo, only="codex", assume_yes=True)
+    return repo
+
+
+def _trust(repo: Path, scope: str = init_mod.REPO, digest: str = "sha256:whatever") -> None:
+    """Record Codex's approval of the Stop hook, the way Codex records it.
+
+    The key is written as a TOML *literal* string (single quotes), not a basic one. A Windows
+    path is full of backslashes, and in a double-quoted TOML key those are escapes — `\\U` in
+    `C:\\Users\\...` is an invalid one, so the whole file fails to parse. `codex_untrusted` then
+    fail-opens to "trusted" and this test passed on POSIX while asserting nothing on Windows.
+    """
+    config = init_mod.harness_mod.home("codex") / "config.toml"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    key = f"{init_mod.config_path(repo, 'codex', scope)}:stop:0:0"
+    config.write_text(
+        f"[hooks.state.'{key}']\ntrusted_hash = \"{digest}\"\n", encoding="utf-8"
+    )
+
+
+def test_a_windows_style_trust_key_is_read_not_silently_dropped():
+    """A backslash path must survive the round trip into `[hooks.state]` and back.
+
+    `codex_untrusted` fail-opens on an unparseable config, which is right — a missing or foreign
+    `config.toml` means Codex has never run, and a diagnostic that fires on absence of evidence
+    gets ignored. But it means a *parse* bug is indistinguishable from "approved", so the parse
+    is asserted directly rather than trusted.
+    """
+    import tomllib
+
+    key = r"C:\Users\me\repo\.codex\hooks.json:stop:0:0"
+    parsed = tomllib.loads(f"[hooks.state.'{key}']\ntrusted_hash = \"sha256:x\"\n")
+    assert list(parsed["hooks"]["state"]) == [key]
+    prefix = r"C:\Users\me\repo\.codex\hooks.json:stop:"
+    assert any(k.startswith(prefix) for k in parsed["hooks"]["state"])
+
+
+def test_an_unapproved_codex_hook_is_reported_broken_not_healthy(tmp_path: Path):
+    """The whole point: everything else about this install is fine and it still runs nothing.
+
+    Codex has run here (its config.toml exists and holds approvals for *other* hooks) — which is
+    what separates "not approved" from "never asked", the distinction the fail-open below rests
+    on."""
+    repo = _codex_repo(tmp_path / "repo")
+    _trust(tmp_path / "some-other-repo")  # Codex has run; this hook just isn't in the list
+    findings = doctor.diagnose(repo)
+    broken = [f for f in doctor.adverse(findings) if "trust" in f.text]
+    assert broken, f"an unapproved codex hook read as healthy: {[f.text for f in findings]}"
+    assert not doctor.healthy(findings)
+    assert "approve" in broken[0].fix
+
+
+def test_an_approved_codex_hook_is_healthy(tmp_path: Path):
+    repo = _codex_repo(tmp_path / "repo")
+    _trust(repo)
+    findings = doctor.diagnose(repo)
+    assert not [f for f in doctor.adverse(findings) if "trust" in f.text]
+
+
+def test_no_codex_config_at_all_does_not_cry_wolf(tmp_path: Path):
+    """A missing config.toml means Codex has never run, not that approval was refused. A
+    diagnostic that fires on absence of evidence gets ignored when it is finally right."""
+    repo = _codex_repo(tmp_path / "repo")
+    assert not (init_mod.harness_mod.home("codex") / "config.toml").exists()
+    assert init_mod.codex_untrusted(repo) is False
+
+
+def test_reinstalling_with_a_new_command_warns_that_approval_went_stale(tmp_path: Path):
+    """The quiet case. Codex pins the approval to a hash of the hook, so rewriting the command
+    invalidates it — Tycho moving from a `.venv` to a global install is enough. The entry is
+    still *there* afterwards, which is all `codex_untrusted` can see, so nothing downstream
+    could tell. The write is the event that stales it, so the installer has to say so."""
+    repo = _codex_repo(tmp_path / "repo")
+    _trust(repo)
+    # Approved and unchanged: nothing to say.
+    assert "approv" not in init_mod._install_codex(repo)
+    # Now the command changes, exactly as a reinstall from a different path does.
+    hooks = repo / ".codex" / "hooks.json"
+    data = json.loads(hooks.read_text(encoding="utf-8"))
+    data["hooks"]["Stop"][0]["hooks"][0]["command"] = "/somewhere/else/tycho hook"
+    hooks.write_text(json.dumps(data), encoding="utf-8")
+    line = init_mod._install_codex(repo)
+    assert "no longer matches" in line and "approve the hooks again" in line
