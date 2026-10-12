@@ -26,13 +26,17 @@ import subprocess
 from pathlib import Path
 
 from .configfile import _current_text, _write_text
-from .gitignore import _IGNORE_ENTRY, _IGNORE_NOTE
+from .gitignore import _IGNORE_BAK, _IGNORE_ENTRY, _IGNORE_NOTE, _blocks
 
 
 _GLOBAL_NOTE = f"{_IGNORE_NOTE} Added by `tycho install`; removed by `tycho uninstall`."
 
 
-_BLOCK = f"{_GLOBAL_NOTE}\n{_IGNORE_ENTRY}\n"
+# Pre-0.2.2, without the `.bak` line: upgraded in place, and still removable as it stands.
+_LEGACY_BLOCK = f"{_GLOBAL_NOTE}\n{_IGNORE_ENTRY}\n"
+
+
+_BLOCK = f"{_LEGACY_BLOCK}{_IGNORE_BAK}\n"
 
 
 def configured_path() -> Path | None:
@@ -73,10 +77,13 @@ def install() -> str | None:
     directory is read-only, and the per-repo `.gitignore` fallback still covers that case.
     """
     target = path()
-    if installed():
-        return None
     current = _current_text(target)
-    text = _BLOCK if current is None else f"{current}\n{_BLOCK}"
+    if current is not None and _LEGACY_BLOCK in current and _BLOCK not in current:
+        text = current.replace(_LEGACY_BLOCK, _BLOCK, 1)  # our older block — upgrade in place
+    elif installed():
+        return None
+    else:
+        text = _BLOCK if current is None else f"{current}\n{_BLOCK}"
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
     except OSError:
@@ -90,10 +97,10 @@ def uninstall() -> str | None:
     """Take our two lines back out, leaving everything else byte-for-byte. None when absent."""
     target = path()
     current = _current_text(target)
-    if not current or _BLOCK not in current:
+    if not current or _LEGACY_BLOCK not in current:  # a prefix of both blocks
         return None
     # Longest match first, so the separator we added leaves with the block it belongs to.
-    for pattern, replacement in ((f"\n\n{_BLOCK}", "\n"), (f"\n{_BLOCK}", ""), (_BLOCK, "")):
+    for pattern, replacement in _blocks(_BLOCK, _LEGACY_BLOCK):
         if pattern in current:
             text = current.replace(pattern, replacement, 1)
             break

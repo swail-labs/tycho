@@ -118,15 +118,18 @@ def hook_argv(command: str) -> list[str]:
 
 def _is_ours(command: object, subcommand: str) -> bool:
     """True if an existing entry is one of ours (any resolved form) — install and uninstall
-    both route through this. Tolerant of the Windows ``tycho.exe`` suffix, surrounding
-    quotes, and both path separators. Pure matching; no filesystem access."""
+    both route through this. Tolerant of surrounding quotes, both path separators, and any
+    launcher suffix: `tycho.exe`, and npm's `tycho.CMD`/`tycho.ps1`, which is what
+    `shutil.which` hands back after `npm i -g tycho`. Matching only `tycho`/`tycho.exe` meant
+    a re-install stripped nothing and appended a second copy of every hook, silently, on
+    every run. Pure matching; no filesystem access."""
     if not isinstance(command, str) or not command.endswith(f" {subcommand}"):
         return False
     program = command[: -len(f" {subcommand}")].rstrip()
     if program.endswith("tycho.cli"):  # `<python> -m tycho.cli <subcommand>`
         return True
     base = re.split(r"[\\/]", program.strip('"'))[-1]  # basename, either separator
-    return base.lower() in ("tycho", "tycho.exe")
+    return base.split(".", 1)[0].lower() == "tycho"  # `tycho`, `tycho.exe`, `tycho.CMD`, …
 
 
 def _is_tycho_hook(command: object) -> bool:
@@ -226,7 +229,7 @@ def _global_guard(name: str = "claude") -> str:
     local = {"claude": ".claude/settings.json", "codex": ".codex/hooks.json"}[name]
     return (
         'git rev-parse --show-toplevel >/dev/null 2>&1 || exit 0; '
-        'grep -qsE "tycho(\\.exe)? hook|tycho\\.cli hook" '
+        'grep -qsE "tycho[^ ]* hook" '  # any launcher suffix: .exe, npm's .CMD, `tycho.cli`
         f'"$(git rev-parse --show-toplevel)/{local}" && exit 0; '
     )
 

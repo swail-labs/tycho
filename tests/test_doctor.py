@@ -181,6 +181,27 @@ def test_a_stale_path_to_a_deleted_venv_is_broken(tmp_path: Path):
     assert doctor.BROKEN in _levels(doctor.diagnose(tmp_path))
 
 
+def test_a_recorded_command_that_no_longer_exists_names_the_dead_path(tmp_path: Path):
+    """When the config can't be read back as ours, say what install.json knows.
+
+    The field case that earned this: `npm i -g` spelled the hook `tycho.CMD`, `_is_ours`
+    matched only `tycho`/`tycho.exe`, and npm later pruned the shim. Doctor read the live
+    entry as not-ours and reported "it's gone from settings.json" — the wrong file, and it
+    never named the path that died. `_is_ours` is fixed, but doctor's answer must not depend
+    on it being right: the command we recorded is the one thing we always know we wrote.
+    """
+    _install(tmp_path)
+    dead = "C:/Users/me/AppData/Roaming/npm/tycho.CMD hook"
+    state.write_install(tmp_path, "claude", dead)
+    (tmp_path / CLAUDE).write_text(json.dumps({"model": "opus"}))  # unreadable as ours
+
+    findings = doctor.diagnose(tmp_path)
+    assert not doctor.healthy(findings)
+    broken = next(f for f in findings if f.level == doctor.BROKEN)
+    assert dead in broken.text, broken.text
+    assert "tycho init" in broken.fix
+
+
 def test_the_console_script_form_is_not_flagged(tmp_path: Path):
     # `init.hook_command()` returns a console script or `<python> -m` depending on whether
     # the venv is on PATH right then, and comparing against it marked four working hooks

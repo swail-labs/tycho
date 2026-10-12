@@ -156,6 +156,21 @@ def _is_wired(repo: Path, name: str, recorded: dict, findings: list[Finding]) ->
 
     if command is None:
         if name in recorded:
+            # "Can't read it back as ours" is two different faults, and blaming the wrong one
+            # sends the user to the wrong file. install.json holds the command we wrote, so ask
+            # it first: if that program is gone, the entry is almost certainly still sitting in
+            # the config in a spelling we failed to recognize (an npm `.cmd` shim was the one
+            # that got out), and the dead path is what the user needs to see.
+            entry = recorded.get(name)
+            stale = entry.get("command") if isinstance(entry, dict) else None
+            if isinstance(stale, str) and not _resolves(stale):
+                findings.append(Finding(
+                    BROKEN,
+                    f"{name}: the program Tycho wired this repo to is no longer on this "
+                    f"machine — {stale}",
+                    "run `tycho init` to rewrite it for this environment",
+                ))
+                return True  # wired (we wrote it), just pointing at nothing
             # We installed it and it's gone (an upgrade or a hand-edit rewrote the config).
             # Loud, because the user believes they're covered and isn't.
             findings.append(Finding(

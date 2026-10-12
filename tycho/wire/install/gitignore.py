@@ -1,7 +1,9 @@
-"""The `.tycho/` entry in the repo's `.gitignore`.
+"""Tycho's block in the repo's `.gitignore`: `.tycho/`, and the `*.tycho.bak` files init
+leaves beside a config it rewrote.
 
-Machine-local state, and `turns.jsonl` carries the agent's own prose. Appended politely and
-restored byte-for-byte on uninstall.
+Machine-local state, and `turns.jsonl` carries the agent's own prose. Everything in the block
+is Tycho's own — nothing here ignores a file the user wrote. Appended politely and restored
+byte-for-byte on uninstall.
 """
 
 from __future__ import annotations
@@ -20,7 +22,24 @@ _IGNORE_ENTRY = ".tycho/"
 _IGNORE_NOTE = "# Tycho's machine-local state (tally, heartbeat, turn record)."
 
 
-_IGNORE_BLOCK = f"{_IGNORE_NOTE}\n{_IGNORE_ENTRY}\n"
+# The `.bak` init leaves beside a config it rewrites is ours too — one ignore block covers
+# both, rather than a second mechanism for our own litter.
+_IGNORE_BAK = "*.tycho.bak"
+
+
+# The block as installs before 0.2.2 wrote it: still out there, so install upgrades it in
+# place and uninstall must still recognize it.
+_LEGACY_BLOCK = f"{_IGNORE_NOTE}\n{_IGNORE_ENTRY}\n"
+
+
+_IGNORE_BLOCK = f"{_LEGACY_BLOCK}{_IGNORE_BAK}\n"
+
+
+def _blocks(block: str, legacy: str) -> list[tuple[str, str]]:
+    """Removal patterns, longest match and newest block first — the older block is a prefix
+    of the current one, so matching it first would strand the `.bak` line."""
+    return [p for b in (block, legacy)
+            for p in ((f"\n\n{b}", "\n"), (f"\n{b}", ""), (b, ""))]
 
 
 def _already_ignored(repo: Path) -> bool:
@@ -40,10 +59,17 @@ def _already_ignored(repo: Path) -> bool:
 def _install_gitignore(repo: Path) -> str | None:
     """Add `.tycho/` to the repo's `.gitignore`. None when there is nothing to do. Appended
     rather than rewritten, backed up first, and never the reason an install fails."""
-    if not gitstate.is_repo(repo) or _already_ignored(repo):
+    if not gitstate.is_repo(repo):
         return None
     path = repo / ".gitignore"
     current = _current_text(path)
+    if current is not None and _LEGACY_BLOCK in current and _IGNORE_BLOCK not in current:
+        # Our own older block — it ignores `.tycho/`, so the check below would call this done
+        # and leave every `.bak` we write untracked forever. Swap it, don't stack a second.
+        text = current.replace(_LEGACY_BLOCK, _IGNORE_BLOCK, 1)
+        return f"git: ignored {_IGNORE_BAK} → {path}" if _write_text(path, text) else None
+    if _already_ignored(repo):
+        return None
     if current is not None and _IGNORE_ENTRY in current.splitlines():
         return None  # present but not effective (negated later, say) — not ours to fight
     if current is None:
@@ -58,15 +84,14 @@ def _install_gitignore(repo: Path) -> str | None:
 
 
 def _uninstall_gitignore(repo: Path) -> str | None:
-    """Take our two lines back out, leaving every other line exactly as it was."""
+    """Take our block back out, leaving every other line exactly as it was."""
     path = repo / ".gitignore"
     current = _current_text(path)
-    if not current or _IGNORE_BLOCK not in current:
+    if not current or _LEGACY_BLOCK not in current:  # a prefix of both blocks
         return None
     # Longest match first, so the separator we added comes out with the block —
     # `init; uninstall` must restore the file byte-for-byte.
-    for pattern, replacement in ((f"\n\n{_IGNORE_BLOCK}", "\n"), (f"\n{_IGNORE_BLOCK}", ""),
-                                 (_IGNORE_BLOCK, "")):
+    for pattern, replacement in _blocks(_IGNORE_BLOCK, _LEGACY_BLOCK):
         if pattern in current:
             text = current.replace(pattern, replacement, 1)
             break

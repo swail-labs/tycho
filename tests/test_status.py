@@ -425,6 +425,28 @@ def test_init_composes_with_a_repo_level_statusline_and_restores_it(tmp_path: Pa
     assert json.loads((tmp_path / CLAUDE).read_text())["statusLine"] == theirs  # restored
 
 
+def test_the_badge_never_composes_with_itself(tmp_path: Path, monkeypatch):
+    """Tycho is never its own neighbour.
+
+    Found in the field: until `_is_ours` learned npm's `tycho.CMD`, init read Tycho's own
+    statusLine as a foreign one and recorded it as the line to compose with. That record
+    outlives the repair — `_with_statusline` deliberately won't re-derive an origin "repo"
+    record — so the badge shells out to `tycho statusline` once per render forever: a dead
+    spawn every second while the path is broken, unbounded recursion the moment it works.
+    """
+    state.write_statusline_wrap(tmp_path, "C:/npm/tycho.CMD statusline", origin="repo")
+
+    # Recorded, not raised: `_wrapped_output` swallows every exception by design.
+    ran = []
+
+    class _Proc:
+        returncode, stdout = 0, "NEIGHBOUR"
+
+    monkeypatch.setattr(status.subprocess, "run", lambda *a, **k: ran.append(a) or _Proc())
+    assert status._wrapped_output(tmp_path, "{}") == ""
+    assert ran == [], "shelled out to Tycho itself"
+
+
 def test_init_composes_with_a_user_level_statusline(tmp_path: Path, monkeypatch):
     # A user status line lives in ~/.claude/settings.json, which a repo-level line shadows.
     # Tycho records it as origin "user" and composes; the user file is never written, so it

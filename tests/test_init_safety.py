@@ -898,6 +898,68 @@ def test_a_guarded_global_command_is_recognized_on_every_platform_form():
     assert not init_mod._is_tycho_hook(init_mod._GLOBAL_GUARD + "/bin/tychonaut hook")
 
 
+def test_the_npm_shim_spellings_are_recognized_as_ours():
+    """`npm i -g tycho` puts a `tycho.CMD` (and `tycho.ps1`) on PATH, and that is the
+    spelling `shutil.which` hands back on Windows. Unrecognized, a re-install strips nothing
+    and appends a second copy of every hook — which is how one repo ended up with three."""
+    for program in (r"C:\Users\me\AppData\Roaming\npm\tycho.CMD",
+                    "C:/Users/me/AppData/Roaming/npm/tycho.cmd",
+                    '"C:/Program Files/npm/tycho.ps1"', "/usr/local/bin/tycho.bat"):
+        for subcommand in ("hook", "session-start", "prompt-submit", "pre-tool-use"):
+            assert init_mod._is_tycho_owned(f"{program} {subcommand}"), f"{program} {subcommand}"
+    assert not init_mod._is_tycho_owned("C:/npm/tychonaut.cmd hook")
+
+
+def test_installing_three_times_leaves_one_hook_per_channel(tmp_path: Path, monkeypatch):
+    # The field report: three `tycho init` runs through the npm shim, three identical groups
+    # under every channel, so every turn was verified (and relayed) three times over.
+    (tmp_path / ".claude").mkdir()
+    monkeypatch.setattr(init_mod.shutil, "which",
+                        lambda name: r"C:\Users\me\AppData\Roaming\npm\tycho.CMD")
+    for _ in range(3):
+        init_mod.init(tmp_path, only="claude", assume_yes=True)
+    hooks = json.loads((tmp_path / CLAUDE).read_text())["hooks"]
+    for channel in ("Stop", "SessionStart", "UserPromptSubmit", "PreToolUse"):
+        ours = [h["command"] for g in hooks[channel] for h in g["hooks"]
+                if init_mod._is_tycho_owned(h["command"])]
+        assert len(ours) == 1, f"{channel}: {ours}"
+
+
+def test_init_repairs_a_config_an_older_tycho_already_triplicated(tmp_path: Path, monkeypatch):
+    # The upgrade path: the damage is already on disk, and the next init has to undo it.
+    npm = "C:/Users/me/AppData/Roaming/npm/tycho.CMD"
+    channels = {"Stop": "hook", "SessionStart": "session-start",
+                "UserPromptSubmit": "prompt-submit", "PreToolUse": "pre-tool-use"}
+    settings = tmp_path / CLAUDE
+    settings.parent.mkdir(parents=True)
+    settings.write_text(json.dumps({"hooks": {
+        channel: [{"hooks": [{"type": "command", "command": f"{npm} {sub}"}]}] * 3
+        for channel, sub in channels.items()
+    }}))
+    monkeypatch.setattr(init_mod.shutil, "which", lambda name: npm)
+    init_mod.init(tmp_path, only="claude", assume_yes=True)
+    hooks = json.loads(settings.read_text())["hooks"]
+    for channel in channels:
+        assert len([h for g in hooks[channel] for h in g["hooks"]]) == 1, hooks[channel]
+
+
+def test_a_moved_tycho_replaces_its_stale_entry_and_keeps_the_users_own(tmp_path: Path, monkeypatch):
+    """Idempotence can't key on the command string: an npm install, then a pipx one, writes a
+    different path — the old entry must be replaced, not stacked beside the new one. The
+    user's own Stop hook is not ours to touch either way."""
+    settings = tmp_path / CLAUDE
+    settings.parent.mkdir(parents=True)
+    settings.write_text(json.dumps({"hooks": {"Stop": [
+        {"hooks": [{"type": "command", "command": "my-own-hook"}]}]}}))
+    monkeypatch.setattr(init_mod.shutil, "which", lambda name: "C:/npm/tycho.CMD")
+    init_mod.init(tmp_path, only="claude", assume_yes=True)
+    monkeypatch.setattr(init_mod.shutil, "which", lambda name: "C:/Tools/tycho.exe")
+    init_mod.init(tmp_path, only="claude", assume_yes=True)
+    stop = [h["command"] for g in json.loads(settings.read_text())["hooks"]["Stop"]
+            for h in g["hooks"]]
+    assert stop == ["my-own-hook", "C:/Tools/tycho.exe hook"]  # theirs kept, ours replaced
+
+
 # --- .gitignore for `.tycho/` -----------------------------------
 #
 # Machine-local, and `turns.jsonl` carries the agent's prose. Untracked it dirties every
@@ -947,6 +1009,45 @@ def test_init_says_nothing_when_tycho_is_already_ignored(tmp_path: Path):
     lines = init_mod.init(repo, only="claude", assume_yes=True)
     assert not any("ignored" in ln for ln in lines)
     assert _gitignore(repo).read_text() == ".tycho\n"  # left exactly alone
+
+
+def _git_ignores(repo: Path, relpath: str) -> bool:
+    return subprocess.run(["git", "-C", str(repo), "check-ignore", "-q", relpath],
+                          capture_output=True).returncode == 0
+
+
+def test_init_ignores_the_backups_it_leaves_behind(tmp_path: Path):
+    """`.claude/settings.json.tycho.bak` is Tycho's litter, not the user's work — untracked
+    it dirties every `git status`, and one `git add .` commits it."""
+    repo = _init_repo(tmp_path)
+    (repo / CLAUDE).write_text(json.dumps({"model": "opus"}))  # existing config → a .bak
+    init_mod.init(repo, only="claude", assume_yes=True)
+    assert (repo / ".claude" / "settings.json.tycho.bak").exists()
+    assert _git_ignores(repo, ".claude/settings.json.tycho.bak")
+
+
+# What an install before that fix left in a user's repo; hard-coded because it has to match
+# what is really out there, not what the constant says today.
+_OLD_BLOCK = "# Tycho's machine-local state (tally, heartbeat, turn record).\n.tycho/\n"
+
+
+def test_an_older_block_is_upgraded_in_place_not_stacked(tmp_path: Path):
+    repo = _init_repo(tmp_path)
+    _gitignore(repo).write_text(f"*.log\n\n{_OLD_BLOCK}")
+    init_mod.init(repo, only="claude", assume_yes=True)
+    text = _gitignore(repo).read_text()
+    assert text.count(".tycho/") == 1 and "*.tycho.bak" in text
+    init_mod.uninstall(repo, only="claude")
+    assert _gitignore(repo).read_text() == "*.log\n"  # and still comes back out whole
+
+
+def test_uninstall_removes_an_older_block_it_never_upgraded(tmp_path: Path):
+    # Upgrade Tycho, then uninstall without re-initialising: the block on disk is the old
+    # spelling, and leaving it behind would be litter in a tracked file.
+    repo = _init_repo(tmp_path)
+    _gitignore(repo).write_text(_OLD_BLOCK)
+    init_mod.uninstall(repo, only="claude")
+    assert not _gitignore(repo).exists()  # the file was only ever ours
 
 
 def test_uninstall_restores_the_gitignore_byte_for_byte(tmp_path: Path):

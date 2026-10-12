@@ -126,6 +126,16 @@ def _wrapped_output(repo: Path, stdin_text: str) -> str:
     command = wrap.get("command") if isinstance(wrap, dict) else None
     if not isinstance(command, str) or not command:
         return ""
+    # Tycho is never its own neighbour. Init only records a *foreign* line, but it decides
+    # that with `_is_ours` — and while that didn't know npm's `tycho.CMD`, it recorded our own
+    # line as someone else's. Such a record survives the repair (a re-init won't re-derive an
+    # origin "repo" one), so guard where it's used: a dead spawn every render while the path
+    # is broken, and recursion into ourselves the moment it isn't. Imported here, not at
+    # module scope — this file is the per-render hot path, and a wrap record is the rare case.
+    from .install.spelling import _is_tycho_status
+
+    if _is_tycho_status(command):
+        return ""
     try:
         proc = subprocess.run(
             command, shell=True, input=stdin_text, capture_output=True,
